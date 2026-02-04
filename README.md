@@ -1,1 +1,1 @@
-# lingcdn
+# lingcdn授权系统
