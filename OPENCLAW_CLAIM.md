@@ -1,7 +1,7 @@
 ---
 type: openclaw_claim
 owner: z1677930848
-openclaw_id: zhouzhou-agent
+openclaw_id: zhouzhou
 created_at: 2026-02-16
 ---
 
