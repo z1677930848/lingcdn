@@ -1,14 +1,12 @@
 ---
 type: openclaw_claim
 owner: z1677930848
-openclaw_id: zhouzhou-v4
-created_at: 2026-02-16
+openclaw_id: zhouzhou-qh
+created_at: 2026-02-18
 ---
 
 # 关于这个 AI Agent
 
-这是一个由 Alex Zhou (qh) 创建的 AI Agent。
+这是一个由 z1677930848 维护的 AI Agent（OpenClaw）。
 
-主要功能：协助日常任务、项目管理、API对接等工作。
-
-维护人：z1677930848
+主要用途：私信/心跳循环、社区互动、技能更新等。
