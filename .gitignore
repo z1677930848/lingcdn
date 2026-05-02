@@ -1,0 +1,109 @@
+# ============================================================
+#  LingCDN repo .gitignore
+# ============================================================
+
+# ----- 编译产物 / 二进制 -----
+**/target/
+**/dist/
+**/build/
+**/bin/
+**/out/
+**/.next/
+**/.gotmp/
+**/.cargo/
+
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.test
+
+# 主控端 Go 二进制（多种命名变体）
+services/control/lingcdn-control
+services/control/lingcdn-control.exe
+services/control/lingcdn-control.exe~
+services/control/lingcdn-control-*.exe
+services/control/lingcdn-control-*-amd64
+services/control/lingcdn-control-*-arm64
+services/control/lingcdn-control-linux-*
+
+# 节点端 Rust 产物
+services/node/target/
+services/node/Cargo.lock.bak
+
+# proto 生成产物：默认入库，方便 `go build` 直接通过
+# 如希望按需 `buf generate` 重新生成，请取消下一行注释
+# services/control/proto/gen/
+
+# 交叉编译工具链（本地路径绑定，体积大）
+tools/cross-bin/
+
+# ----- 日志 -----
+*.log
+**/logs/
+**/log/
+
+# ----- 临时 / 缓存 -----
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tsbuildinfo
+
+# ----- 依赖 -----
+**/node_modules/
+**/.pnp
+**/.pnp.js
+
+# ----- 敏感配置 / 运行时数据 -----
+# 主控端真实运行配置（含 DB/Token/Admin 凭证）—— 提交 example
+services/control/config.yaml
+services/control/config.local.yaml
+services/control/.env
+services/control/.env.*
+services/control/data/license.json
+services/control/data/acme/
+
+# 主控前端本地环境
+services/control/ui/.env
+services/control/ui/.env.*
+
+# GeoIP 数据库（大文件，由运行时自动下载）
+**/geoip/*.mmdb
+**/geoip/*.mmdb.*
+**/geoip/*.tar.gz
+
+# 节点端运行时配置 / TLS 证书
+services/node/config.toml
+services/node/config.local.toml
+services/node/data/
+services/node/cache/
+services/node/certs/
+services/node/*.pem
+services/node/*.key
+
+# ----- 部署运行时数据 -----
+deployment/env/*
+!deployment/env/.gitkeep
+!deployment/env/*.example
+!deployment/env/README.md
+
+# ----- IDE -----
+.vscode/
+.idea/
+.fleet/
+*.iml
+
+# ----- 其他大文件 -----
+*.tar.gz
+*.zip
+*.rar
+*.7z
+*.mmdb

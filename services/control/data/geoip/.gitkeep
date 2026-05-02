@@ -1,0 +1,2 @@
+# GeoIP 数据库会在主控启动后由 GeoIP updater 自动下载到此目录。
+# *.mmdb 文件已在 .gitignore 中排除，请勿提交。

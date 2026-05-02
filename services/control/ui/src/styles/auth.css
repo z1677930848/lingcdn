@@ -1,0 +1,36 @@
+/*
+ * Shared assets for the auth view family (LoginView, AdminLoginView,
+ * RegisterView, ForgotPasswordView).
+ *
+ * These keyframes used to be redeclared in each view's <style scoped> block —
+ * with subtle drift between copies. They live here as global keyframes; the
+ * scoped style blocks reference them by name without redeclaring (Vue does
+ * not hash externally-declared @keyframes names).
+ */
+
+@keyframes float-orb {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(15px, -20px) scale(1.05); }
+  66% { transform: translate(-10px, 15px) scale(0.95); }
+}
+
+@keyframes ring-expand {
+  0% { opacity: 0.5; }
+  50% { opacity: 0.15; }
+  100% { opacity: 0; }
+}
+
+@keyframes ring-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.9; }
+}
+
+@keyframes hero-enter {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes form-enter {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}

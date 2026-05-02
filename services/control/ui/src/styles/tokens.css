@@ -1,0 +1,250 @@
+/*
+ * Design tokens for the LingCDN control console.
+ *
+ * Loaded from main.ts immediately after TDesign's vendor stylesheet so the
+ * variables here override TDesign defaults but stay above the project's own
+ * overrides. Variables are declared on :root (not on a wrapper class) so
+ * they reach TDesign components that teleport to <body>: Dialog, Drawer,
+ * Popup, Message, Notification, Tooltip popper, Select dropdown, etc.
+ */
+
+:root {
+  /* ===== Brand palette (Stripe / Notion family) =====
+   * Indigo-violet replaces the TDesign default blue. Stop
+   * progression follows TDesign's 10-stop convention so all
+   * built-in light/hover/focus aliases below stay consistent. */
+  --td-brand-color: #635BFF;
+  --td-brand-color-1: #F5F4FF;
+  --td-brand-color-2: #ECE9FF;
+  --td-brand-color-3: #D5CFFF;
+  --td-brand-color-4: #B8AFFE;
+  --td-brand-color-5: #9385FE;
+  --td-brand-color-6: #635BFF;
+  --td-brand-color-7: #4D44E0;
+  --td-brand-color-8: #3D35BC;
+  --td-brand-color-9: #2D2899;
+  --td-brand-color-10: #1F1B70;
+
+  --td-brand-color-hover: var(--td-brand-color-5);
+  --td-brand-color-focus: var(--td-brand-color-2);
+  --td-brand-color-active: var(--td-brand-color-7);
+  --td-brand-color-disabled: var(--td-brand-color-3);
+  --td-brand-color-light: var(--td-brand-color-1);
+  --td-brand-color-light-hover: var(--td-brand-color-2);
+
+  /* ===== Status palette (warmer, Stripe-inspired) ===== */
+  --td-success-color: #00A47C;
+  --td-success-color-1: #ECFAF5;
+  --td-success-color-2: #C6F0E1;
+  --td-success-color-7: #008466;
+  --td-success-color-8: #006851;
+
+  --td-warning-color: #FF8F0E;
+  --td-warning-color-1: #FFF7EB;
+  --td-warning-color-2: #FFE9C2;
+  --td-warning-color-7: #DB7400;
+  --td-warning-color-8: #A85800;
+
+  --td-error-color: #DF1B41;
+  --td-error-color-1: #FEF1F4;
+  --td-error-color-2: #FCD9E1;
+  --td-error-color-7: #B81633;
+  --td-error-color-8: #8B0F26;
+
+  /* ===== Neutral surfaces / text / borders (warm gray, Notion-like) ===== */
+  --td-bg-color-page: #FAFAFA;
+  --td-bg-color-container: #FFFFFF;
+  --td-bg-color-container-hover: #F7F7F8;
+  --td-bg-color-container-active: #EFEEEE;
+  --td-bg-color-component: #F7F7F8;
+  --td-bg-color-component-hover: #EFEEEE;
+  --td-bg-color-component-active: #E5E4E5;
+  --td-bg-color-secondarycontainer: #F7F7F8;
+  --td-bg-color-secondarycomponent: #EFEEEE;
+
+  --td-text-color-primary: #191919;
+  --td-text-color-secondary: #5A5A5A;
+  --td-text-color-placeholder: #9B9B9B;
+  --td-text-color-disabled: #C7C7C7;
+  --td-text-color-anti: #FFFFFF;
+  --td-text-color-brand: var(--td-brand-color-7);
+
+  --td-border-level-1-color: #EBEBEC;
+  --td-border-level-2-color: #DDDDDE;
+  --td-component-border: #EBEBEC;
+  --td-component-stroke: #EBEBEC;
+
+  /* ===== Shape (larger, friendlier radii à la Stripe/Notion) ===== */
+  --td-radius-small: 6px;
+  --td-radius-default: 8px;
+  --td-radius-medium: 10px;
+  --td-radius-large: 14px;
+  --td-radius-extraLarge: 20px;
+  --td-radius-round: 999px;
+  --td-radius-circle: 50%;
+
+  /* ===== Elevation (multi-layer soft shadows, almost imperceptible) ===== */
+  --td-shadow-1: 0 1px 2px rgba(15, 15, 15, 0.04);
+  --td-shadow-2: 0 2px 8px rgba(15, 15, 15, 0.04), 0 1px 3px rgba(15, 15, 15, 0.06);
+  --td-shadow-3: 0 12px 32px rgba(15, 15, 15, 0.08), 0 4px 12px rgba(15, 15, 15, 0.05);
+
+  /* ============================================================
+   * App-level tokens (project semantics, layered on top of TDesign)
+   * ============================================================ */
+
+  /* Surfaces & structure */
+  --app-bg-page: var(--td-bg-color-page);
+  --app-surface: #FFFFFF;
+  --app-surface-muted: #F7F7F8;
+  --app-surface-hover: #EFEEEE;
+  --app-border: #EBEBEC;
+  --app-border-strong: #DDDDDE;
+  --app-divider: #F0F0F1;
+  --app-divider-soft: #F7F7F8;
+
+  /* Text */
+  --app-text-strong: #191919;
+  --app-text: #3F3F3F;
+  --app-text-muted: #6E6E6E;
+  --app-text-faint: #A3A3A3;
+  --app-text-on-brand: #FFFFFF;
+
+  /* Brand alpha-blends (Stripe indigo #635BFF) */
+  --app-brand: var(--td-brand-color);
+  --app-brand-strong: var(--td-brand-color-7);
+  --app-brand-soft-bg: rgba(99, 91, 255, 0.08);
+  --app-brand-soft-border: rgba(99, 91, 255, 0.20);
+  --app-brand-ring: rgba(99, 91, 255, 0.18);
+  --app-brand-shadow-sm: 0 1px 3px rgba(99, 91, 255, 0.20);
+  --app-brand-shadow-md: 0 8px 24px rgba(99, 91, 255, 0.18);
+  --app-brand-gradient: linear-gradient(135deg, #635BFF 0%, #8E5BFF 100%);
+  --app-brand-gradient-soft: linear-gradient(135deg, #FFFFFF 0%, #F5F4FF 50%, #FFF1F8 100%);
+
+  /* Status palette (used by pills, tags, charts, status dots) */
+  --app-success: #00A47C;
+  --app-success-strong: #006851;
+  --app-success-soft-bg: #ECFAF5;
+  --app-success-soft-fg: #006851;
+
+  --app-warning: #FF8F0E;
+  --app-warning-strong: #A85800;
+  --app-warning-soft-bg: #FFF7EB;
+  --app-warning-soft-fg: #A85800;
+
+  --app-danger: #DF1B41;
+  --app-danger-strong: #8B0F26;
+  --app-danger-soft-bg: #FEF1F4;
+  --app-danger-soft-fg: #8B0F26;
+
+  --app-info: #635BFF;
+  --app-info-strong: #4D44E0;
+  --app-info-soft-bg: #F5F4FF;
+  --app-info-soft-fg: #4D44E0;
+
+  --app-neutral-soft-bg: #F0F0F1;
+  --app-neutral-soft-fg: #5A5A5A;
+
+  /* Shape (larger radii for the friendlier Stripe look) */
+  --app-card-radius: 16px;
+  --app-card-radius-sm: 12px;
+  --app-pill-radius: 999px;
+  --app-input-radius: 10px;
+  --app-button-radius: 10px;
+
+  /* Elevation ("hairline + soft glow" double-layer) */
+  --app-shadow-card: 0 0 0 1px rgba(15, 15, 15, 0.04), 0 1px 2px rgba(15, 15, 15, 0.04);
+  --app-shadow-card-hover: 0 0 0 1px rgba(15, 15, 15, 0.04), 0 8px 24px rgba(15, 15, 15, 0.08);
+  --app-shadow-popover: 0 12px 32px rgba(15, 15, 15, 0.10), 0 0 0 1px rgba(15, 15, 15, 0.04);
+
+  /* Layout */
+  --app-sidebar-width-expanded: 232px;
+  --app-sidebar-width-collapsed: 64px;
+  --app-header-height: 56px;
+  --app-page-gap: 20px;
+  --app-page-gap-tight: 16px;
+  --app-card-padding: 20px;
+  --app-card-padding-tight: 14px;
+  --app-touch-target: 36px;
+
+  /* Sidebar (Notion-style near-black gray, indigo accent) */
+  --app-sidebar-bg: #1A1A1A;
+  --app-sidebar-bg-hover: rgba(255, 255, 255, 0.06);
+  --app-sidebar-bg-active: rgba(99, 91, 255, 0.18);
+  --app-sidebar-text: rgba(255, 255, 255, 0.62);
+  --app-sidebar-text-strong: rgba(255, 255, 255, 0.94);
+  --app-sidebar-text-active: #B8AFFE;
+  --app-sidebar-divider: rgba(255, 255, 255, 0.08);
+  --app-sidebar-active-rail: #9385FE;
+  --app-sidebar-brand-bg: #141414;
+  --app-sidebar-brand-bg-hover: #1F1F1F;
+
+  /* Animation */
+  --app-anim-fast: 0.15s;
+  --app-anim-base: 0.2s;
+  --app-anim-slow: 0.3s;
+  --app-easing-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --app-anim-card-hover: box-shadow var(--app-anim-base) var(--app-easing-standard),
+                         border-color var(--app-anim-base) var(--app-easing-standard);
+
+  /* Focus ring (accessibility) */
+  --app-focus-ring: 0 0 0 3px var(--app-brand-ring);
+  --app-focus-ring-color: var(--td-brand-color);
+}
+
+/* ============================================================
+ * Optional dark mode (token-only — no toggle UI in this revision).
+ * Activate by setting `theme-mode="dark"` on <body> or <html> in DevTools
+ * to verify token coverage. TDesign's own components honor this attribute
+ * automatically. The site chrome inherits via --app-* tokens below.
+ * ============================================================ */
+:root[theme-mode="dark"],
+body[theme-mode="dark"] {
+  /* Dark mode: Linear/Vercel-style near-black surfaces with the same
+   * indigo brand. Multi-step grays (#0F0F0F → #1A1A1A → #232323) keep
+   * cards visually layered without resorting to colored tints. */
+  --td-bg-color-page: #0F0F0F;
+  --td-bg-color-container: #1A1A1A;
+  --td-bg-color-container-hover: #232323;
+  --td-bg-color-container-active: #2C2C2C;
+  --td-bg-color-component: #1A1A1A;
+  --td-bg-color-component-hover: #232323;
+  --td-bg-color-component-active: #2C2C2C;
+  --td-bg-color-secondarycontainer: #141414;
+  --td-bg-color-secondarycomponent: #1A1A1A;
+
+  --td-text-color-primary: #FAFAFA;
+  --td-text-color-secondary: #A8A8A8;
+  --td-text-color-placeholder: #6E6E6E;
+  --td-text-color-disabled: #4A4A4A;
+
+  --td-border-level-1-color: #2A2A2A;
+  --td-border-level-2-color: #383838;
+  --td-component-border: #2A2A2A;
+  --td-component-stroke: #2A2A2A;
+
+  --app-bg-page: #0F0F0F;
+  --app-surface: #1A1A1A;
+  --app-surface-muted: #141414;
+  --app-surface-hover: #232323;
+  --app-border: #2A2A2A;
+  --app-border-strong: #383838;
+  --app-divider: #232323;
+  --app-divider-soft: #1A1A1A;
+
+  --app-text-strong: #FAFAFA;
+  --app-text: #D4D4D4;
+  --app-text-muted: #A8A8A8;
+  --app-text-faint: #6E6E6E;
+
+  --app-shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --app-shadow-card-hover: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 8px 24px rgba(0, 0, 0, 0.5);
+  --app-shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
+
+  --app-success-soft-bg: rgba(0, 164, 124, 0.16);
+  --app-warning-soft-bg: rgba(255, 143, 14, 0.16);
+  --app-danger-soft-bg: rgba(223, 27, 65, 0.18);
+  --app-info-soft-bg: rgba(99, 91, 255, 0.18);
+  --app-neutral-soft-bg: rgba(255, 255, 255, 0.06);
+
+  --app-brand-gradient-soft: linear-gradient(135deg, #141414 0%, #1A1A2E 55%, #232333 100%);
+}

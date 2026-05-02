@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package lingcdn.node.v1;
+
+option go_package = "github.com/lingcdn/control/proto/gen;controlpb";
+
+message RegisterNodeRequest {
+  string bootstrap_token = 1;
+  string hostname = 2;
+  string version = 3;
+  repeated string capabilities = 4;
+  string region = 5;
+}
+message RegisterNodeResponse {
+  string node_id = 1;
+  string token = 2;
+}
+message WAFBanReport {
+  string ip = 1;
+  string reason = 2;
+  int32 strikes = 3;
+  int64 expires_at_unix = 4;
+}
+message HeartbeatRequest {
+  string node_id = 1;
+  string token = 2;
+  string version = 3;
+  string status = 4;
+  map<string, string> metrics = 5;
+  string region = 6;
+  repeated WAFBanReport waf_bans = 7;
+}
+message HeartbeatResponse {
+  string config_version = 1;
+  string message = 2;
+  bool ok = 3;
+}
+message ConfigEnvelope {
+  string version = 1;
+  bytes payload = 2;
+  string checksum = 3;
+}
+message ConfigAck {
+  string version = 1;
+  bool ok = 2;
+  string reason = 3;
+}
+message CertificateRequest {
+  string node_id = 1;
+  string domain = 2;
+  string csr_pem = 3;
+  string token = 4;
+}
+message CertificateResponse {
+  bool ok = 1;
+  string cert_pem = 2;
+  string key_pem = 3;
+  string chain_pem = 4;
+  string reason = 5;
+}
+message GetCertificateRequest {
+  string node_id = 1;
+  string token = 2;
+  string cert_id = 3;
+}
+message GetCertificateResponse {
+  bool ok = 1;
+  string cert_id = 2;
+  string domain = 3;
+  string cert_pem = 4;
+  string key_pem = 5;
+  string reason = 6;
+}
+message Metric {
+  string name = 1;
+  double value = 2;
+  map<string, string> labels = 3;
+  int64 timestamp_ms = 4;
+}
+message MetricsBatch {
+  repeated Metric metrics = 1;
+}
+message LogEntry {
+  int64 timestamp_ms = 1;
+  string level = 2;
+  string message = 3;
+  map<string, string> labels = 4;
+}
+message LogsBatch {
+  repeated LogEntry entries = 1;
+}
+message PurgeCommand {
+  repeated string urls = 1;
+  string request_id = 2;
+}
+message PurgeResult {
+  string request_id = 1;
+  bool ok = 2;
+  string reason = 3;
+}
+message NodePingRequest {}
+message NodePingResponse { bool ok = 1; string message = 2; }
+message ReportWAFBanRequest {
+  string node_id = 1;
+  string token = 2;
+  WAFBanReport ban = 3;
+}
+message ReportWAFBanResponse {
+  bool ok = 1;
+  string message = 2;
+}
+service NodeControl {
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc StreamConfig(stream ConfigAck) returns (stream ConfigEnvelope);
+  rpc StreamPurge(stream PurgeResult) returns (stream PurgeCommand);
+  rpc ReportMetrics(MetricsBatch) returns (HeartbeatResponse);
+  rpc ReportLogs(LogsBatch) returns (HeartbeatResponse);
+  rpc Purge(PurgeCommand) returns (PurgeResult);
+  rpc Ping(NodePingRequest) returns (NodePingResponse);
+  rpc RequestCertificate(CertificateRequest) returns (CertificateResponse);
+  // GetCertificate fetches a stored certificate+key by cert_id for node-side SNI use.
+  rpc GetCertificate(GetCertificateRequest) returns (GetCertificateResponse);
+  rpc ReportWAFBan(ReportWAFBanRequest) returns (ReportWAFBanResponse);
+}

@@ -1,0 +1,93 @@
+/*
+ * TDesign component-level polish.
+ *
+ * Brand-color, status, neutral, radius, and shadow tokens live in tokens.css
+ * (declared on :root so they reach teleported components like Dialog and
+ * Popup). This file is reserved for component-specific touch-ups that go
+ * beyond CSS variables — table chrome, tag weight, focus ring, etc.
+ *
+ * No more `.tdTheme` class scoping: tokens are global. The selectors here
+ * target TDesign components directly so they apply everywhere.
+ */
+
+.t-card {
+  border-radius: var(--app-card-radius);
+  transition: var(--app-anim-card-hover);
+}
+
+.t-input {
+  border-radius: var(--app-input-radius);
+  transition: border-color var(--app-anim-base) var(--app-easing-standard),
+              box-shadow var(--app-anim-base) var(--app-easing-standard);
+}
+
+.t-input.t-is-focused {
+  box-shadow: var(--app-focus-ring);
+}
+
+.t-button {
+  border-radius: var(--app-button-radius);
+  font-weight: 500;
+  transition: all var(--app-anim-base) var(--app-easing-standard);
+}
+
+.t-button--theme-primary {
+  box-shadow: var(--app-brand-shadow-sm);
+}
+
+.t-button--theme-primary:hover {
+  box-shadow: var(--app-brand-shadow-md);
+}
+
+.t-select {
+  border-radius: var(--app-input-radius);
+}
+
+.t-tag {
+  border-radius: var(--td-radius-default);
+  font-weight: 500;
+}
+
+.t-table th {
+  font-weight: 600;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  background: var(--app-surface-muted);
+}
+
+.t-table td {
+  color: var(--app-text);
+  transition: background var(--app-anim-fast) var(--app-easing-standard);
+}
+
+.t-table tr:hover td {
+  background: var(--app-surface-muted);
+}
+
+.t-tabs__nav-item.t-is-active {
+  font-weight: 600;
+}
+
+/* Make TDesign portals (Dialog, Drawer, Popup, Message, Notification)
+ * pick up the same elevation system as the rest of the app. */
+.t-dialog {
+  border-radius: var(--app-card-radius);
+  box-shadow: var(--app-shadow-popover);
+}
+
+.t-popup__content,
+.t-select__dropdown,
+.t-dropdown__popup,
+.t-tooltip__content {
+  border-radius: var(--app-card-radius-sm);
+  box-shadow: var(--app-shadow-popover);
+}
+
+/* Keyboard focus ring for interactive shells (links, buttons, custom
+ * triggers like the brand button in the header). */
+:where(a, button, [role="button"], [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--app-focus-ring);
+  border-radius: var(--app-input-radius);
+}

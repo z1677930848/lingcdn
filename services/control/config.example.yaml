@@ -1,0 +1,96 @@
+# LingCDN 主控端示例配置
+#
+# 使用方式：
+#   cp config.example.yaml config.yaml
+# 然后按下方注释填入真实凭证。**禁止**把真实 config.yaml 提交到仓库。
+#
+# 所有键都可以通过同名环境变量覆盖（大写下划线形式）。
+
+# ---------- 数据库与缓存 ----------
+DATABASE_URL: postgres://lingcdn:CHANGE_ME@127.0.0.1:5432/lingcdn?sslmode=disable
+REDIS_URL: redis://127.0.0.1:6379/0
+
+# ---------- 监听端口 ----------
+HTTP_ADDR: :8080
+GRPC_ADDR: :9443
+METRICS_ADDR: :9100
+METRICS_TOKEN: ""
+HTTPS_ADDR: :443
+
+# ---------- 控制面 ----------
+# memory = 内存（仅供本地冒烟测试），生产请使用 postgres
+STORE_BACKEND: postgres
+CONTROL_SERVICE: lingcdn-control
+CONTROL_ID: control
+CONTROL_UI_DIR: ui/dist
+
+# 以下 4 个都是密钥，请用 `openssl rand -base64 32` 各自生成一份
+SERVICE_TOKEN: REPLACE_WITH_RANDOM_SECRET
+ADMIN_BOOTSTRAP_TOKEN: REPLACE_WITH_RANDOM_SECRET
+AUTH_SECRET: REPLACE_WITH_RANDOM_SECRET
+WEBHOOK_SECRET: REPLACE_WITH_RANDOM_SECRET
+PORTAL_REPORT_SECRET: REPLACE_WITH_RANDOM_SECRET
+
+# ---------- 管理员引导账号 ----------
+ADMIN_USERNAME: admin
+ADMIN_EMAIL: admin@example.com
+ADMIN_PASSWORD: CHANGE_ME_STRONG_PASSWORD
+
+# ---------- 网络身份 ----------
+PUBLIC_GRPC_ENDPOINT: ""
+PUBLIC_IP: ""
+PORTAL_BASE: ""
+UPGRADE_API: ""
+UPGRADE_PUBKEY: ""
+
+# ---------- 日志 ----------
+LOG_LEVEL: info
+LOG_FORMAT: console
+LOG_FILE: ""
+
+# ---------- TLS / ACME ----------
+TLS_CERT_FILE: ""
+TLS_KEY_FILE: ""
+TLS_CLIENT_CA: ""
+CA_CERT_FILE: ""
+CA_KEY_FILE: ""
+ACME_ENABLE: false
+ACME_EMAIL: ""
+ACME_CACHE_DIR: /etc/lingcdn/acme
+ACME_STAGING: false
+ACME_CERT_FILE: ""
+ACME_KEY_FILE: ""
+
+# ---------- 授权 / License ----------
+LICENSE_FILE: data/license.json
+# online | offline ；离线模式下需要预先放置 license.json
+LICENSE_MODE: online
+LICENSE_STATIC_INDEX_URL: ""
+LICENSE_GRACE_HOURS: 24
+LICENSE_VERIFY_INTERVAL: 5m0s
+LICENSE_PUBKEY: ""
+ALLOW_INSECURE_LICENSE_PUBKEY: false
+
+# ---------- 邮件 / GeoIP ----------
+SMTP_HOST: ""
+SMTP_PORT: 587
+SMTP_USER: ""
+SMTP_PASS: ""
+SMTP_FROM: ""
+SMTP_TLS: true
+SMTP_INSECURE_SKIP_VERIFY: false
+
+MAXMIND_LICENSE_KEY: ""
+GEOIP_STORAGE_DIR: data/geoip
+GEOIP_EDITION: GeoLite2-City
+GEOIP_UPDATE_INTERVAL: 168h0m0s
+SYSTEM_REPORT_INTERVAL: 10m0s
+
+# ---------- Elasticsearch（访问日志） ----------
+ES_URL: ""
+ES_USER: ""
+ES_PASS: ""
+ES_INDEX_PREFIX: cdn-access
+ES_FIELD_TIMESTAMP: '@timestamp'
+ES_FIELD_DOMAIN: domain.keyword
+ES_FIELD_BYTES: bytes

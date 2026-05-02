@@ -1,0 +1,66 @@
+# LingCDN 节点端示例配置
+#
+# 使用方式（任选其一）：
+#   1) cp node.example.toml node.toml  # 进程启动时自动加载
+#   2) 放置到 /etc/lingcdn/node.toml
+#   3) 通过环境变量 NODE_CONFIG_PATH 指定
+#
+# 任意字段都可被同名大写环境变量覆盖（例如 CONTROL_ENDPOINT、BOOTSTRAP_TOKEN）。
+
+# ---------- 与主控通信 ----------
+control_endpoint    = "https://control.example.com:9443"
+control_tls_enabled = true
+# control_tls_ca_file              = "/etc/lingcdn/ca.crt"
+# control_tls_client_cert_file     = "/etc/lingcdn/node.crt"
+# control_tls_client_key_file      = "/etc/lingcdn/node.key"
+# control_tls_domain_name          = "control.example.com"
+
+# 节点身份；首次接入时由主控签发
+# node_id        = "node-xxxxxxxx"
+bootstrap_token  = "REPLACE_WITH_REGISTERED_BOOTSTRAP_TOKEN"
+# hostname 默认取系统 hostname，留空即可
+capabilities     = ["http", "https", "cache"]
+
+# ---------- 监听 ----------
+listen_addr      = "0.0.0.0:80"      # tls_enabled=true 时建议改 :443
+ops_listen_addr  = "127.0.0.1:9101"
+# ops_token      = "REPLACE_WITH_RANDOM_OPS_TOKEN"
+tls_enabled      = false
+
+# ---------- 缓存与限制 ----------
+cache_dir                       = "/var/lib/lingcdn/cache"
+memory_cache_capacity           = 10000
+max_request_body_bytes          = 33554432       # 32 MiB
+max_response_body_bytes         = 536870912      # 512 MiB
+max_cache_object_bytes          = 33554432       # 32 MiB
+disk_cache_max_bytes            = 21474836480    # 20 GiB
+disk_cache_gc_interval_seconds  = 60
+disk_cache_recreate_on_exceed   = true
+max_connections                 = 1024
+
+# ---------- 日志 ----------
+access_log_path = "/var/log/lingcdn/access.log"
+error_log_path  = "/var/log/lingcdn/error.log"
+
+# ---------- GeoIP ----------
+# region                          = "cn-east-1"
+# geoip_db_path                   = "/var/lib/lingcdn/geoip/GeoLite2-City.mmdb"
+# geoip_update_endpoint           = "https://control.example.com/geoip"
+geoip_update_seconds              = 604800
+geoip_update_max_download_bytes   = 268435456
+# geoip_update_token              = "REPLACE_IF_REQUIRED"
+
+# ---------- 自动升级 ----------
+# upgrade_endpoint        = "https://control.example.com/upgrade"
+# upgrade_pubkey          = "BASE64_ED25519_PUBLIC_KEY"
+upgrade_channel           = "stable"
+upgrade_check_seconds     = 900
+upgrade_max_download_bytes = 1073741824
+
+# ---------- XDP/eBPF（仅 Linux，需 cargo build --features xdp） ----------
+xdp_enabled               = false
+# xdp_interface           = "eth0"
+xdp_rate_limit_enabled    = true
+xdp_syn_flood_enabled     = true
+xdp_rate_limit_pps        = 10000
+xdp_syn_limit_pps         = 100

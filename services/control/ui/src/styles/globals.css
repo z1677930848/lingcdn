@@ -1,0 +1,126 @@
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-weight: 400;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  color: var(--app-text-strong);
+  background: var(--app-bg-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--app-border-strong);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--app-text-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*
+ * Tables should always be horizontally scrollable when they overflow.
+ * (See history note: a previous version nested this in a 768px media
+ * query, which broke 769–1400px viewports for wide admin tables.)
+ */
+.t-table__content {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Global mobile adaptations */
+@media (max-width: 768px) {
+  .t-dialog {
+    max-width: calc(100vw - 32px) !important;
+    margin: 16px auto !important;
+  }
+
+  .t-dialog__body {
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+
+  .t-drawer__content-wrapper {
+    max-width: 100vw !important;
+  }
+
+  /* Touch targets — Apple HIG recommends 44px minimum */
+  .t-button {
+    min-height: var(--app-touch-target);
+  }
+
+  .t-input__wrap {
+    min-height: 40px;
+  }
+
+  .t-select .t-input__wrap {
+    min-height: 40px;
+  }
+
+  .t-form--inline .t-form__item {
+    width: 100%;
+    margin-right: 0;
+  }
+
+  .t-pagination__btn,
+  .t-pagination__number {
+    min-width: 32px;
+    height: 32px;
+  }
+
+  .t-tabs__nav-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .t-tabs__nav-scroll {
+    overflow: visible;
+  }
+
+  .t-card__body {
+    padding: var(--app-card-padding-tight) !important;
+  }
+}
+
+/*
+ * Mid-width viewports (tablet landscape, 13" laptops) — toolbars on
+ * list pages pack many fixed-width inputs/selects/buttons side by side.
+ * Force them to wrap and let controls absorb the remaining space.
+ */
+@media (max-width: 1200px) {
+  .header-actions {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .header-actions .t-input,
+  .header-actions .t-select {
+    min-width: 140px;
+  }
+}
+
+@media (max-width: 480px) {
+  .t-dialog {
+    max-width: calc(100vw - 16px) !important;
+    margin: 8px auto !important;
+  }
+}

@@ -1,0 +1,687 @@
+﻿package server
+
+// WAF (Web Application Firewall) admin handlers: policy/rule/ban/whitelist
+// CRUD consumed by the UI. Authorization rule: admins act at any scope;
+// regular users are restricted to domain-scoped policies for domains they
+// own and need an active product with custom_cc_rules enabled.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/lingcdn/control/internal/store"
+)
+
+func (s *Servers) handleWAFPolicies(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	switch r.Method {
+	case http.MethodGet:
+		policies, err := s.store.ListWAFPolicies(ctx)
+		if err != nil {
+			writeInternalError(w, "list WAF policies", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"policies": policies})
+	case http.MethodPost:
+		var req store.WAFPolicy
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+			return
+		}
+		if strings.TrimSpace(req.Name) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "名称不能为空"})
+			return
+		}
+		if req.Scope == "" {
+			req.Scope = "global"
+		}
+		if !isValidWAFScope(req.Scope) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的作用域"})
+			return
+		}
+		if role := getUserRole(ctx); role != "admin" {
+			userID, _ := ctx.Value(ctxKeyUserID).(string)
+			if userID != "" {
+				product, _ := s.getUserActiveProduct(ctx, userID, "")
+				if product == nil {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "无有效套餐，请先购买套餐"})
+					return
+				}
+				if !product.CustomCCRules {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "当前套餐不支持自定义 CC 规则"})
+					return
+				}
+				if req.Scope != "domain" {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "非管理员只能创建域名级别的防护策略"})
+					return
+				}
+				if strings.TrimSpace(req.ScopeID) == "" {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "域名作用域需要scope_id"})
+					return
+				}
+				scopeDomain, err := s.store.GetDomain(ctx, req.ScopeID)
+				if err != nil {
+					writeInternalError(w, "get domain for scope check", err)
+					return
+				}
+				if scopeDomain == nil {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "scope_id 对应的域名不存在"})
+					return
+				}
+				if scopeDomain.UserID != userID {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权为此域名创建防护策略"})
+					return
+				}
+			}
+		}
+		if req.ID == "" {
+			req.ID = uuid.NewString()
+		}
+		now := time.Now()
+		req.CreatedAt = now
+		req.UpdatedAt = now
+		if err := s.store.CreateWAFPolicy(ctx, &req); err != nil {
+			writeInternalError(w, "create WAF policy", err)
+			return
+		}
+		if err := s.replaceWAFRules(ctx, req.ID, req.Rules, now); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		_ = s.startPublishTask(ctx, "auto", "", "waf.policy.create:"+req.ID, "", nil)
+		pol, _ := s.store.GetWAFPolicy(ctx, req.ID)
+		writeJSON(w, http.StatusCreated, pol)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+	}
+}
+
+func (s *Servers) handleWAFPolicyByID(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := strings.TrimPrefix(r.URL.Path, "/api/waf/policies/")
+
+	// Dedicated "toggle" endpoint: PATCH /api/waf/policies/{id}/enabled
+	// The list view calls this from a small switch on each row; we deliberately
+	// avoid round-tripping the policy's entire rule set because any pre-existing
+	// rule that no longer satisfies replaceWAFRules' stricter validation would
+	// reject the toggle — surfacing as a mysterious "保存失败" for users who
+	// only wanted to flip a switch.
+	if strings.HasSuffix(id, "/enabled") {
+		id = strings.TrimSuffix(id, "/enabled")
+		s.handleWAFPolicyEnabled(w, r, id)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		pol, err := s.store.GetWAFPolicy(ctx, id)
+		if err != nil {
+			writeInternalError(w, "get WAF policy", err)
+			return
+		}
+		if pol == nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "策略不存在"})
+			return
+		}
+		writeJSON(w, http.StatusOK, pol)
+	case http.MethodPut:
+		var req store.WAFPolicy
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+			return
+		}
+		req.ID = id
+		if strings.TrimSpace(req.Name) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "名称不能为空"})
+			return
+		}
+		if req.Scope == "" {
+			req.Scope = "global"
+		}
+		if !isValidWAFScope(req.Scope) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的作用域"})
+			return
+		}
+		if role := getUserRole(ctx); role != "admin" {
+			userID, _ := ctx.Value(ctxKeyUserID).(string)
+			if userID != "" {
+				product, _ := s.getUserActiveProduct(ctx, userID, "")
+				if product == nil {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "无有效套餐，请先购买套餐"})
+					return
+				}
+				if !product.CustomCCRules {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "当前套餐不支持自定义 CC 规则"})
+					return
+				}
+				if req.Scope != "domain" {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "非管理员只能管理域名级别的防护策略"})
+					return
+				}
+				if strings.TrimSpace(req.ScopeID) == "" {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "域名作用域需要scope_id"})
+					return
+				}
+				scopeDomain, err := s.store.GetDomain(ctx, req.ScopeID)
+				if err != nil {
+					writeInternalError(w, "get domain for scope check", err)
+					return
+				}
+				if scopeDomain == nil {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "scope_id 对应的域名不存在"})
+					return
+				}
+				if scopeDomain.UserID != userID {
+					writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权管理此域名的防护策略"})
+					return
+				}
+			}
+		}
+		req.UpdatedAt = time.Now()
+		if err := s.store.UpdateWAFPolicy(ctx, &req); err != nil {
+			writeInternalError(w, "update WAF policy", err)
+			return
+		}
+		if err := s.replaceWAFRules(ctx, req.ID, req.Rules, req.UpdatedAt); err != nil {
+			writeInternalError(w, "replace WAF rules", err)
+			return
+		}
+		_ = s.startPublishTask(ctx, "auto", "", "waf.policy.update:"+id, "", nil)
+		pol, _ := s.store.GetWAFPolicy(ctx, id)
+		writeJSON(w, http.StatusOK, pol)
+	case http.MethodDelete:
+		if role := getUserRole(ctx); role != "admin" {
+			userID, _ := ctx.Value(ctxKeyUserID).(string)
+			existing, err := s.store.GetWAFPolicy(ctx, id)
+			if err != nil {
+				writeInternalError(w, "get WAF policy", err)
+				return
+			}
+			if existing == nil {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": "策略不存在"})
+				return
+			}
+			if existing.Scope != "domain" || strings.TrimSpace(existing.ScopeID) == "" {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权删除此防护策略"})
+				return
+			}
+			scopeDomain, _ := s.store.GetDomain(ctx, existing.ScopeID)
+			if scopeDomain == nil || scopeDomain.UserID != userID {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权删除此防护策略"})
+				return
+			}
+		}
+		if err := s.store.DeleteWAFPolicy(ctx, id); err != nil {
+			writeInternalError(w, "delete WAF policy", err)
+			return
+		}
+		_ = s.startPublishTask(ctx, "auto", "", "waf.policy.delete:"+id, "", nil)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+	}
+}
+
+// replaceWAFRules normalizes, validates, and atomically replaces all rules
+// attached to a policy. Validation errors surface as 400s (via the caller);
+// store errors propagate unchanged as 500s.
+//
+// Historically this function rejected the *entire* batch if any one rule had
+// drifted from today's invariants (e.g. legacy rate_limit rows saved before
+// window_seconds was enforced, or challenge_captcha rules with an obsolete
+// captcha_type). In practice that meant the admin UI's "enable" toggle — which
+// round-trips the whole policy including existing rules — would fail with a
+// validation error for a field the user never touched. To make ordinary
+// interactions robust, we now *repair* such fields to sensible defaults rather
+// than refusing the whole PUT. Hard-invalid rule types/actions still error so
+// typos and malformed POSTs don't silently corrupt data.
+func (s *Servers) replaceWAFRules(ctx context.Context, policyID string, rules []*store.WAFRule, now time.Time) error {
+	for _, r := range rules {
+		if r == nil {
+			continue
+		}
+		if r.ID == "" {
+			r.ID = uuid.NewString()
+		}
+		r.PolicyID = policyID
+		if r.CreatedAt.IsZero() {
+			r.CreatedAt = now
+		}
+		r.UpdatedAt = now
+		if r.Action == "" {
+			r.Action = "deny"
+		}
+		if r.Type == "" {
+			r.Type = "ip_cidr"
+		}
+		if !isValidWAFRuleType(r.Type) {
+			return fmt.Errorf("无效的规则类型: %s", r.Type)
+		}
+		if !isValidWAFAction(r.Action) {
+			return fmt.Errorf("无效的规则动作: %s", r.Action)
+		}
+		if r.Type == "ip_cidr" && strings.TrimSpace(r.Value) != "" {
+			if _, _, err := net.ParseCIDR(r.Value); err != nil {
+				if ip := net.ParseIP(strings.TrimSpace(r.Value)); ip == nil {
+					return fmt.Errorf("无效的 IP/CIDR 格式: %s", r.Value)
+				}
+			}
+		}
+		if r.Type == "rate_limit" {
+			// Repair instead of reject: legacy rows with 0 threshold/window
+			// should not block the user from toggling/saving the policy.
+			if r.Threshold <= 0 {
+				r.Threshold = 60
+			}
+			if r.WindowSeconds <= 0 {
+				r.WindowSeconds = 60
+			}
+			if r.WindowSeconds > 86400 {
+				r.WindowSeconds = 86400
+			}
+		}
+		if r.Type == "challenge_captcha" && r.CaptchaType != "" {
+			if !isValidCaptchaType(r.CaptchaType) {
+				// Unknown captcha types are coerced to empty so the node
+				// falls back to its default; previously this returned 400
+				// and orphaned the whole policy.
+				r.CaptchaType = ""
+			}
+		}
+		if r.BanMode != "" && !isValidBanMode(r.BanMode) {
+			r.BanMode = "ipset"
+		}
+		if r.BanSeconds < 0 {
+			r.BanSeconds = 0
+		}
+		if r.AutoChallengeQPS < 0 {
+			r.AutoChallengeQPS = 0
+		}
+		if r.ShieldSeconds == 0 {
+			r.ShieldSeconds = 5
+		}
+		if r.BanSeconds == 0 {
+			r.BanSeconds = 300
+		}
+	}
+	return s.store.ReplaceWAFRules(ctx, policyID, rules)
+}
+
+func isValidWAFRuleType(t string) bool {
+	switch t {
+	case "ip_cidr", "rate_limit", "challenge_captcha", "shield_5s":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidWAFAction(a string) bool {
+	switch a {
+	case "allow", "deny":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidCaptchaType(t string) bool {
+	switch t {
+	case "slide", "click", "rotate", "slide_region", "js_challenge":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidBanMode(m string) bool {
+	switch m {
+	case "ipset", "drop", "page":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidWAFScope(scope string) bool {
+	switch strings.ToLower(scope) {
+	case "global", "domain", "line_group":
+		return true
+	default:
+		return false
+	}
+}
+
+// WAF bans CRUD (simple)
+func (s *Servers) handleWAFBans(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	switch r.Method {
+	case http.MethodGet:
+		bans, err := s.store.ListWAFBans(ctx, 200)
+		if err != nil {
+			writeInternalError(w, "list WAF bans", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"bans": bans})
+	case http.MethodPost:
+		var req store.WAFBan
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+			return
+		}
+		if strings.TrimSpace(req.IP) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "IP不能为空"})
+			return
+		}
+		if req.Strikes <= 0 {
+			req.Strikes = 1
+		}
+		if req.ExpiresAt.IsZero() {
+			req.ExpiresAt = time.Now().Add(10 * time.Minute)
+		}
+		if req.CreatedAt.IsZero() {
+			req.CreatedAt = time.Now()
+		}
+		req.UpdatedAt = time.Now()
+		if err := s.store.CreateOrUpdateWAFBan(ctx, &req); err != nil {
+			writeInternalError(w, "create WAF ban", err)
+			return
+		}
+		_ = s.startPublishTask(ctx, "auto", "", "waf.ban.upsert:"+strings.TrimSpace(req.IP), "", nil)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case http.MethodDelete:
+		ip := r.URL.Query().Get("ip")
+		if strings.TrimSpace(ip) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "IP不能为空"})
+			return
+		}
+		if err := s.store.DeleteWAFBan(ctx, ip); err != nil {
+			writeInternalError(w, "delete WAF ban", err)
+			return
+		}
+		_ = s.startPublishTask(ctx, "auto", "", "waf.ban.delete:"+strings.TrimSpace(ip), "", nil)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+	}
+}
+
+// WAF whitelist CRUD
+func (s *Servers) handleWAFWhitelist(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	switch r.Method {
+	case http.MethodGet:
+		list, err := s.store.ListWAFWhitelist(ctx)
+		if err != nil {
+			writeInternalError(w, "list WAF whitelist", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"whitelist": list})
+	case http.MethodPost:
+		var req store.WAFWhitelist
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+			return
+		}
+		if strings.TrimSpace(req.IP) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "IP不能为空"})
+			return
+		}
+		if req.ID == "" {
+			req.ID = uuid.NewString()
+		}
+		req.CreatedAt = time.Now()
+		req.UpdatedAt = time.Now()
+		if err := s.store.CreateWAFWhitelist(ctx, &req); err != nil {
+			writeInternalError(w, "create WAF whitelist", err)
+			return
+		}
+		_ = s.startPublishTask(ctx, "auto", "", "waf.whitelist.create:"+strings.TrimSpace(req.IP), "", nil)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": req.ID})
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if strings.TrimSpace(id) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ID不能为空"})
+			return
+		}
+		if err := s.store.DeleteWAFWhitelist(ctx, id); err != nil {
+			writeInternalError(w, "delete WAF whitelist", err)
+			return
+		}
+		_ = s.startPublishTask(ctx, "auto", "", "waf.whitelist.delete:"+strings.TrimSpace(id), "", nil)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+	}
+}
+
+type ccPolicyPayload struct {
+	Level           string `json:"level"`             // low|medium|high
+	Action          string `json:"action"`            // challenge|shield
+	BanSeconds      int64  `json:"ban_seconds"`       // base ban seconds
+	FailLimit       int64  `json:"fail_limit"`        // challenge fail limit
+	TemplateHTML    string `json:"template_html"`     // optional challenge HTML
+	BanTemplateHTML string `json:"ban_template_html"` // optional ban HTML
+	RedirectURL     string `json:"redirect_url"`      // optional challenge redirect
+	BanMode         string `json:"ban_mode"`          // ipset | drop | page
+}
+
+// handleCCPolicy manages global CC policy.
+func (s *Servers) handleCCPolicy(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := store.WithTimeout(r.Context())
+	defer cancel()
+	const policyID = "global-cc"
+	switch r.Method {
+	case http.MethodGet:
+		pol, _ := s.store.GetWAFPolicy(ctx, policyID)
+		resp := ccPolicyPayload{
+			Level:      "medium",
+			Action:     "challenge",
+			BanSeconds: 300,
+			FailLimit:  3,
+			BanMode:    "ipset",
+		}
+		if pol != nil && len(pol.Rules) > 0 {
+			rule := pol.Rules[0]
+			qps := rule.AutoChallengeQPS
+			switch qps {
+			case 20:
+				resp.Level = "low"
+			case 200:
+				resp.Level = "high"
+			default:
+				resp.Level = "medium"
+			}
+			if rule.Type == "shield_5s" {
+				resp.Action = "shield"
+			} else {
+				resp.Action = "challenge"
+			}
+			if rule.BanSeconds > 0 {
+				resp.BanSeconds = rule.BanSeconds
+			}
+			if rule.Threshold > 0 {
+				resp.FailLimit = rule.Threshold
+			}
+			resp.TemplateHTML = rule.TemplateHTML
+			resp.BanTemplateHTML = rule.BanTemplateHTML
+			if strings.TrimSpace(resp.TemplateHTML) == "" {
+				if tpl, err := s.defaultWAFChallengeTemplate(ctx); err == nil {
+					resp.TemplateHTML = tpl
+				}
+			}
+			if strings.TrimSpace(resp.BanTemplateHTML) == "" && strings.ToLower(resp.BanMode) == "page" {
+				if tpl, err := s.defaultWAFBanTemplate(ctx); err == nil {
+					resp.BanTemplateHTML = tpl
+				}
+			}
+			resp.RedirectURL = rule.RedirectURL
+			if rule.BanMode != "" {
+				resp.BanMode = rule.BanMode
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case http.MethodPost:
+		var payload ccPolicyPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+			return
+		}
+		levelMap := map[string]int64{
+			"low":    20,
+			"medium": 50,
+			"high":   200,
+		}
+		qps, ok := levelMap[strings.ToLower(payload.Level)]
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的级别"})
+			return
+		}
+		action := strings.ToLower(payload.Action)
+		if action != "challenge" && action != "shield" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的操作"})
+			return
+		}
+		banMode := strings.ToLower(payload.BanMode)
+		if banMode == "" {
+			banMode = "ipset"
+		}
+		if banMode != "ipset" && banMode != "drop" && banMode != "page" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的封禁模式"})
+			return
+		}
+		if payload.BanSeconds <= 0 {
+			payload.BanSeconds = 300
+		}
+		if payload.FailLimit <= 0 {
+			payload.FailLimit = 3
+		}
+		now := time.Now()
+		pol := &store.WAFPolicy{
+			ID:          policyID,
+			Name:        "Global CC",
+			Scope:       "global",
+			ScopeID:     "",
+			Description: "Global CC policy",
+			Enabled:     true,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		_ = s.store.CreateWAFPolicy(ctx, pol)
+
+		rule := &store.WAFRule{
+			ID:               uuid.NewString(),
+			PolicyID:         policyID,
+			Type:             "challenge_captcha",
+			Action:           "deny",
+			Value:            "",
+			Threshold:        payload.FailLimit,
+			WindowSeconds:    1,
+			ShieldSeconds:    5,
+			AutoChallengeQPS: qps,
+			BanSeconds:       payload.BanSeconds,
+			TemplateHTML:     payload.TemplateHTML,
+			BanTemplateHTML:  payload.BanTemplateHTML,
+			RedirectURL:      payload.RedirectURL,
+			BanMode:          banMode,
+			Priority:         1,
+			Enabled:          true,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		if action == "shield" {
+			rule.Type = "shield_5s"
+			rule.Threshold = 0
+			rule.TemplateHTML = ""
+			rule.BanTemplateHTML = ""
+			rule.RedirectURL = ""
+		}
+
+		if err := s.replaceWAFRules(ctx, policyID, []*store.WAFRule{rule}, now); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		task := s.startPublishTask(r.Context(), "auto", "", "waf.cc", "", nil)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "qps": qps, "action": action, "publish_task_id": task.ID})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+	}
+}
+
+// handleWAFPolicyEnabled flips ONLY the enabled flag on a policy. We split
+// this out from the generic PUT handler because the list page's per-row
+// switch does not have the policy's full rule set in hand, and forcing a
+// round-trip through replaceWAFRules would (a) require the UI to preserve
+// every rule field verbatim and (b) fail for any pre-existing rule that no
+// longer matches the current validation schema. This endpoint is authorized
+// identically to PUT but touches only the policy row.
+func (s *Servers) handleWAFPolicyEnabled(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPatch && r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+		return
+	}
+	ctx := r.Context()
+	if strings.TrimSpace(id) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "策略ID不能为空"})
+		return
+	}
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+		return
+	}
+
+	existing, err := s.store.GetWAFPolicy(ctx, id)
+	if err != nil {
+		writeInternalError(w, "get WAF policy", err)
+		return
+	}
+	if existing == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "策略不存在"})
+		return
+	}
+
+	// Same ownership rules as PUT: non-admins may only toggle domain-scoped
+	// policies they own, and their product must allow custom CC rules.
+	if role := getUserRole(ctx); role != "admin" {
+		userID, _ := ctx.Value(ctxKeyUserID).(string)
+		if userID != "" {
+			product, _ := s.getUserActiveProduct(ctx, userID, "")
+			if product == nil {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "无有效套餐，请先购买套餐"})
+				return
+			}
+			if !product.CustomCCRules {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "当前套餐不支持自定义 CC 规则"})
+				return
+			}
+			if existing.Scope != "domain" {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "非管理员只能管理域名级别的防护策略"})
+				return
+			}
+			scopeDomain, err := s.store.GetDomain(ctx, existing.ScopeID)
+			if err != nil || scopeDomain == nil || scopeDomain.UserID != userID {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权管理此域名的防护策略"})
+				return
+			}
+		}
+	}
+
+	existing.Enabled = body.Enabled
+	existing.UpdatedAt = time.Now()
+	if err := s.store.UpdateWAFPolicy(ctx, existing); err != nil {
+		writeInternalError(w, "update WAF policy enabled", err)
+		return
+	}
+	_ = s.startPublishTask(ctx, "auto", "", "waf.policy.enabled:"+id, "", nil)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": existing.Enabled})
+}

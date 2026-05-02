@@ -1,0 +1,47 @@
+﻿syntax = "proto3";
+
+package lingcdn.admin.v1;
+
+option go_package = "github.com/lingcdn/control/proto/gen;controlpb";
+
+message Domain {
+  string id = 1;
+  string name = 2;
+  string origin_id = 3;
+}
+message Origin {
+  string id = 1;
+  string name = 2;
+  repeated string addresses = 3;
+}
+message Certificate {
+  string id = 1;
+  string name = 2;
+  string domain = 3;
+  bytes cert_pem = 4;
+  bytes key_pem = 5;
+}
+message ConfigVersion {
+  string version = 1;
+  string checksum = 2;
+  string created_at = 3;
+}
+message Empty {}
+message CreateDomainRequest { Domain domain = 1; }
+message CreateDomainResponse { Domain domain = 1; }
+message ListDomainsRequest {}
+message ListDomainsResponse { repeated Domain domains = 1; }
+message PublishConfigRequest { string version = 1; repeated string node_ids = 2; }
+message PublishConfigResponse { bool ok = 1; string message = 2; }
+message PurgeRequest { repeated string urls = 1; }
+message PurgeResponse { bool ok = 1; string message = 2; }
+message AdminPingRequest {}
+message AdminPingResponse { bool ok = 1; string message = 2; }
+service AdminControl {
+  rpc CreateDomain(CreateDomainRequest) returns (CreateDomainResponse);
+  rpc ListDomains(ListDomainsRequest) returns (ListDomainsResponse);
+  rpc PublishConfig(PublishConfigRequest) returns (PublishConfigResponse);
+  rpc Purge(PurgeRequest) returns (PurgeResponse);
+  rpc Ping(AdminPingRequest) returns (AdminPingResponse);
+}
+

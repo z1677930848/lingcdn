@@ -1,0 +1,429 @@
+.admin-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-page-gap);
+}
+
+.admin-list-card {
+  border-radius: var(--app-card-radius);
+  border: 1px solid var(--app-border);
+  overflow: hidden;
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow-card);
+}
+
+.admin-tabs {
+  background: var(--app-surface);
+}
+
+.admin-tabs .t-tabs__nav {
+  padding: 0 20px;
+  margin: 0;
+  border-bottom: 1px solid var(--app-divider);
+}
+
+.admin-tabs .t-tabs__nav-item {
+  padding: 12px 0;
+  font-size: 14px;
+  color: var(--app-text);
+  font-weight: 500;
+}
+
+.admin-tabs .t-tabs__content {
+  padding: 20px;
+}
+
+.admin-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.admin-toolbar-left,
+.admin-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.admin-search-select {
+  width: 110px;
+}
+
+.admin-search-input {
+  min-width: 260px;
+}
+
+.admin-filters-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.admin-filters-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.admin-filter-select {
+  width: 120px;
+}
+
+.admin-filter-select-large {
+  width: 170px;
+}
+
+.admin-table-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 360px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+
+.admin-table-description {
+  display: inline-block;
+  max-width: 520px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  color: var(--app-text-muted);
+}
+
+.admin-table-muted {
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.admin-empty {
+  padding: 32px 0;
+  color: var(--app-text-faint);
+}
+
+.admin-group-placeholder {
+  padding: 24px 0;
+}
+
+.admin-error-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-danger-soft-bg);
+  border: 1px solid var(--td-error-color-2);
+  color: var(--app-danger-strong);
+  font-size: 13px;
+  font-weight: 500;
+  flex-wrap: wrap;
+  word-break: break-word;
+}
+
+.admin-loading {
+  padding: 20px;
+}
+
+@media (max-width: 960px) {
+  .admin-search-input {
+    min-width: 200px;
+  }
+}
+
+/* Generic mobile card toggle (reusable) */
+.admin-desktop-only {
+  display: block;
+}
+
+.admin-mobile-only {
+  display: none;
+}
+
+/* Backward-compat aliases — still in use by AdminUsersView. Do not delete
+ * without first migrating that view to .admin-desktop-only/.admin-mobile-only. */
+.admin-users-desktop {
+  display: block;
+}
+
+.admin-users-mobile {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .admin-desktop-only,
+  .admin-users-desktop {
+    display: none;
+  }
+
+  .admin-mobile-only,
+  .admin-users-mobile {
+    display: block;
+  }
+
+  .admin-tabs .t-tabs__content {
+    padding: 12px;
+  }
+}
+
+/* User card styles (mobile) — still consumed by AdminUsersView. */
+.admin-user-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.admin-user-card {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-card-radius-sm);
+  padding: 14px 16px;
+  background: var(--app-surface);
+  transition: var(--app-anim-card-hover);
+}
+
+.admin-user-card:hover {
+  box-shadow: var(--app-shadow-card-hover);
+  border-color: var(--app-border-strong);
+}
+
+.admin-user-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-user-card-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.admin-user-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-card-tags {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.admin-user-card-email {
+  font-size: 13px;
+  color: var(--app-text);
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-card-meta {
+  font-size: 12px;
+  color: var(--app-text-faint);
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-user-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--app-divider);
+  padding-top: 12px;
+}
+
+.admin-user-card-actions .t-button {
+  min-height: var(--app-touch-target);
+}
+
+.admin-user-card-empty {
+  text-align: center;
+  padding: 40px 0;
+  color: var(--app-text-faint);
+  font-size: 13px;
+}
+
+.admin-user-card-pagination {
+  margin-top: 16px;
+}
+
+/* Generic mobile card (reusable across all admin views) */
+.admin-mobile-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.admin-mobile-card {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-card-radius-sm);
+  padding: 14px 16px;
+  background: var(--app-surface);
+  transition: var(--app-anim-card-hover);
+}
+
+.admin-mobile-card:hover {
+  box-shadow: var(--app-shadow-card-hover);
+  border-color: var(--app-border-strong);
+}
+
+.admin-mobile-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-mobile-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.admin-mobile-card-subtitle {
+  font-size: 13px;
+  color: var(--app-text-muted);
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-mobile-card-tags {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.admin-mobile-card-rows {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-mobile-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 3px 0;
+}
+
+.admin-mobile-card-label {
+  color: var(--app-text-faint);
+  flex-shrink: 0;
+}
+
+.admin-mobile-card-value {
+  color: var(--app-text-strong);
+  font-weight: 500;
+  text-align: right;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-mobile-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--app-divider);
+  padding-top: 12px;
+}
+
+.admin-mobile-card-actions .t-button {
+  min-height: var(--app-touch-target);
+}
+
+.admin-mobile-card-empty {
+  text-align: center;
+  padding: 40px 0;
+  color: var(--app-text-faint);
+  font-size: 13px;
+}
+
+.admin-mobile-pagination {
+  margin-top: 16px;
+}
+
+/* Mobile form grid */
+.admin-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0 16px;
+}
+
+@media (max-width: 640px) {
+  .admin-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .admin-search-input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .admin-filters-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .admin-filter-select,
+  .admin-filter-select-large {
+    width: 100%;
+  }
+
+  .admin-tabs .t-tabs__nav {
+    padding: 0 8px;
+  }
+
+  .admin-error-box {
+    align-items: flex-start;
+  }
+
+  .admin-error-box .t-button {
+    min-height: 44px;
+  }
+}
