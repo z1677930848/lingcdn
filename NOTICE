@@ -1,0 +1,44 @@
+LingCDN
+Copyright 2026 LingCDN Authors (https://github.com/z1677930848/lingcdn)
+
+This product is licensed to you under the Apache License, Version 2.0
+(the "License"); you may not use this product except in compliance with
+the License. A copy of the License is included at the root of this
+repository under the file name LICENSE, and is also available at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+---
+
+This product bundles or depends on the following third-party components.
+Their licenses apply to their respective portions of the product. No
+third-party notice here overrides the Apache-2.0 terms that apply to the
+rest of the Work.
+
+Go (control plane)
+  - github.com/golang-jwt/jwt/v5          — MIT
+  - github.com/google/uuid                — BSD-3-Clause
+  - github.com/jackc/pgx/v5               — MIT
+  - github.com/prometheus/client_golang   — Apache-2.0
+  - github.com/rs/zerolog                 — MIT
+  - github.com/spf13/cobra                — Apache-2.0
+  - google.golang.org/grpc                — Apache-2.0
+  See services/control/go.sum for the authoritative version pins.
+
+Rust (edge node)
+  - tokio, hyper, reqwest, tonic, ...     — MIT or Apache-2.0
+  See services/node/Cargo.toml and Cargo.lock for the authoritative
+  list and versions.
+
+Frontend (control UI)
+  - Vue 3                                 — MIT
+  - Vite                                  — MIT
+  - TDesign                               — MIT
+  - Pinia, Vue Router                     — MIT
+  See services/control/ui/package.json for the authoritative list.
+
+GeoIP data (optional, downloaded at runtime)
+  - MaxMind GeoLite2 data                 — Creative Commons Attribution-
+                                            ShareAlike 4.0 International
+                                            License (CC BY-SA 4.0). Not
+                                            redistributed in this repo.
