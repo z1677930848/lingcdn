@@ -132,6 +132,15 @@ buf generate
 - 主控前端构建产物（`ui/dist`）会被后端通过 `CONTROL_UI_DIR` 提供为静态资源。
 - 节点端内置 captcha / WAF / GeoIP / 自动升级 / 可选 XDP；XDP 仅在 Linux 编译生效。
 
+## 仓库镜像
+
+本项目 GitHub 与 GitCode **双站同步**。详见 [`docs/PUSH-MIRROR.md`](docs/PUSH-MIRROR.md)。
+
+- GitHub：<https://github.com/z1677930848/lingcdn>
+- GitCode：<https://gitcode.com/z1677930848/lingcdn>
+
+配置好两个 push URL 后，`git push origin main` 会自动推到两边。
+
 ## License
 
-本仓库为内部 / 商业项目源码，未附带开源 License。如需重新发布，请先与作者协商授权。
+本仓库尚未附带开源 License。如需重新发布，请先与作者协商授权，或等待作者在后续提交中补入正式的 LICENSE 文件。
