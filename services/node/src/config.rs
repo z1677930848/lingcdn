@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -7,6 +8,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use parking_lot::RwLock;
+use tracing::warn;
 
 use ipnet::IpNet;
 
@@ -685,9 +687,8 @@ fn apply_env_overrides(config: &mut NodeConfig) {
 		config.hostname = v;
 	}
 	if let Ok(v) = env::var("NODE_VERSION") {
-		let trimmed = v.trim();
-		if !trimmed.is_empty() {
-			config.version = trimmed.to_string();
+		if let Some(override_version) = sanitize_node_version_override(&v, &config.version) {
+			config.version = override_version;
 		}
 	}
 	if let Ok(v) = env::var("NODE_CAPABILITIES") {
@@ -897,4 +898,42 @@ fn apply_env_overrides(config: &mut NodeConfig) {
 			config.xdp_syn_limit_pps = pps;
 		}
 	}
+}
+
+/// Decide whether the NODE_VERSION env value should override the compile-time
+/// CARGO_PKG_VERSION default. Returns Some(new_version) when the value is a
+/// real semver, None when it is empty / "latest" / garbled.
+///
+/// NODE_VERSION env is sourced from /etc/lingcdn/node.env, written by
+/// node_install.sh based on whatever value the portal returned at install
+/// time. When the portal could not produce a concrete version (network blip,
+/// build channel empty, etc.) the install script falls back to the literal
+/// string "latest", and that string ends up here unchanged.
+///
+/// If we let "latest" overwrite the compile-time CARGO_PKG_VERSION the node
+/// would heartbeat `version=latest` forever, which means:
+///   * the upgrade task on the control plane never sees the node "reach the
+///     target version" and stays in `running` until the 30-minute timeout,
+///     surfacing as "节点无法升级" in the UI even though the binary itself
+///     was replaced successfully;
+///   * the upgrade worker's `is_newer("1.0.8", "latest")` falls back to a
+///     string-equality check, which is non-deterministic.
+///
+/// Compile-time `env!("CARGO_PKG_VERSION")` is the source of truth: it
+/// always matches the actual ELF that's running.
+fn sanitize_node_version_override(raw: &str, current: &str) -> Option<String> {
+	let trimmed = raw.trim();
+	if trimmed.is_empty() {
+		// Empty override is a no-op; quietly fall through to the default.
+		return None;
+	}
+	if Version::parse(trimmed.trim_start_matches('v')).is_ok() {
+		return Some(trimmed.to_string());
+	}
+	warn!(
+		node_version_env = %trimmed,
+		cargo_pkg_version = current,
+		"NODE_VERSION env is not a valid semver (e.g. 'latest', empty, garbled) — ignoring and using compile-time version. Fix /etc/lingcdn/node.env to silence this warning."
+	);
+	None
 }

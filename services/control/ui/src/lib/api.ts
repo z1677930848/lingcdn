@@ -503,6 +503,11 @@ export interface BalanceRecharge {
   status: string
   payment_provider: string
   payment_method: string
+  payment_url?: string
+  qr_code?: string
+  notify_raw?: string
+  expires_at?: string
+  closed_at?: string
   out_trade_no: string
   trade_no: string
   paid_at?: string
@@ -1495,9 +1500,14 @@ class APIClient {
   async createBalanceRecharge(data: {
     amount_cents: number
     payment_method?: string
-  }): Promise<{ recharge: BalanceRecharge; pay_url?: string }> {
-    void data
-    return this.featureUnavailable("balance.recharges.create")
+  }): Promise<{ recharge: BalanceRecharge; pay_url?: string; qr_code?: string; form_html?: string }> {
+    return this.request<{ recharge: BalanceRecharge; pay_url?: string; qr_code?: string; form_html?: string }>(
+      '/api/balance/recharges',
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    )
   }
 
   async listBalanceRecharges(params?: {

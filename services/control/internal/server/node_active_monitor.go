@@ -147,10 +147,11 @@ func (s *Servers) probeNode(ctx context.Context, n *store.Node) {
 		if isDown {
 			log.Info().Str("node", n.Hostname).Str("ip", n.PublicIP).Int("fail_count", failCount).Msg("node monitor: node down, triggering DNS sync")
 			s.triggerDNSSync("", "monitor:node_down")
-			// Send notification when node goes down
-			if s.notifyNodeOffline != nil {
-				go s.notifyNodeOffline(n.Hostname)
-			}
+			// Send notification when node goes down. notifyNodeOffline is a
+			// method on *Servers (always bound, never nil), so we call it
+			// unconditionally — the previous `!= nil` guard was dead code
+			// that the Go 1.25 compiler now flags as a build error.
+			go s.notifyNodeOffline(n.Hostname)
 		} else {
 			log.Info().Str("node", n.Hostname).Str("ip", n.PublicIP).Msg("node monitor: node recovered, triggering DNS sync")
 			s.triggerDNSSync("", "monitor:node_recovered")

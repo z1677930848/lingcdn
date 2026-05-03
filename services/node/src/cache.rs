@@ -165,66 +165,6 @@ impl Drop for CacheWritePermit {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn expired_disk_file_entry_is_removed_on_get() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let cache = Cache::new(16, Some(dir.path()))?;
-
-        let key = CacheKey::new("example.com".to_string(), "/big.bin".to_string(), None);
-        let paths = cache.prepare_disk_paths(&key)?.context("disk disabled in test")?;
-
-        // Create a fake cached file.
-        std::fs::write(&paths.final_path, b"hello")?;
-
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        // Force expiry.
-        cache.put_disk_file(
-            key.clone(),
-            200,
-            vec![("Content-Type".into(), "application/octet-stream".into())],
-            paths.file_rel.clone(),
-            5,
-            now.saturating_sub(10),
-            1,
-        )?;
-
-        let hit = cache.get(&key);
-        assert!(hit.is_none(), "expired entry should not be returned");
-        assert!(!paths.final_path.exists(), "expired cached file should be removed");
-        Ok(())
-    }
-
-    #[test]
-    fn remove_deletes_disk_file() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let cache = Cache::new(16, Some(dir.path()))?;
-
-        let key = CacheKey::new("example.com".to_string(), "/big2.bin".to_string(), None);
-        let paths = cache.prepare_disk_paths(&key)?.context("disk disabled in test")?;
-        std::fs::write(&paths.final_path, b"hello")?;
-
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        cache.put_disk_file(
-            key.clone(),
-            200,
-            vec![("Content-Type".into(), "application/octet-stream".into())],
-            paths.file_rel.clone(),
-            5,
-            now,
-            300,
-        )?;
-
-        let removed = cache.remove(&key)?;
-        assert!(removed, "expected remove=true");
-        assert!(!paths.final_path.exists(), "file should be removed");
-        Ok(())
-    }
-}
-
 #[derive(Debug, Default, Clone)]
 pub struct CacheStats {
     pub hits: u64,

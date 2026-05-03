@@ -112,11 +112,11 @@
                   <div class="admin-mobile-card-title">{{ row.user_id }}</div>
                   <div class="admin-mobile-card-tags">
                     <t-tag
-                      :theme="row.status === 'paid' ? 'success' : row.status === 'pending' ? 'warning' : row.status === 'failed' ? 'danger' : 'default'"
+                      :theme="statusTheme(row.status)"
                       variant="light"
                       size="small"
                     >
-                      {{ row.status === 'paid' ? '已到账' : row.status === 'pending' ? '待处理' : row.status === 'failed' ? '失败' : row.status }}
+                      {{ statusText(row.status) }}
                     </t-tag>
                   </div>
                 </div>
@@ -129,6 +129,18 @@
                   <div class="admin-mobile-card-row">
                     <span class="admin-mobile-card-label">方式</span>
                     <span class="admin-mobile-card-value">{{ row.payment_method || '-' }}</span>
+                  </div>
+                  <div class="admin-mobile-card-row">
+                    <span class="admin-mobile-card-label">渠道</span>
+                    <span class="admin-mobile-card-value">{{ row.payment_provider || '-' }}</span>
+                  </div>
+                  <div class="admin-mobile-card-row">
+                    <span class="admin-mobile-card-label">交易号</span>
+                    <span class="admin-mobile-card-value">{{ row.trade_no || '-' }}</span>
+                  </div>
+                  <div v-if="row.payment_url" class="admin-mobile-card-row">
+                    <span class="admin-mobile-card-label">支付链接</span>
+                    <a class="admin-mobile-card-value pay-link" :href="row.payment_url" target="_blank">打开</a>
                   </div>
                   <div class="admin-mobile-card-row">
                     <span class="admin-mobile-card-label">创建时间</span>
@@ -286,7 +298,12 @@
       @confirm="handleRechargeUpdate"
       @close="closeRechargeDialog"
     >
-      <div class="admin-table-muted" style="margin-bottom:12px">充值单号：{{ editingRecharge?.out_trade_no || '-' }}</div>
+      <div class="admin-table-muted" style="margin-bottom:12px">
+        <div>充值单号：{{ editingRecharge?.out_trade_no || '-' }}</div>
+        <div>支付渠道：{{ editingRecharge?.payment_provider || '-' }}</div>
+        <div>支付方式：{{ editingRecharge?.payment_method || '-' }}</div>
+        <div v-if="editingRecharge?.payment_url">支付链接：<a :href="editingRecharge.payment_url" target="_blank">打开支付链接</a></div>
+      </div>
       <t-form layout="vertical" label-align="top">
         <t-form-item label="状态">
           <t-select v-model="rechargeDialogStatus" :options="rechargeDialogOptions" />
@@ -377,6 +394,8 @@ const rechargeStatusOptions = [
   { label: "待处理", value: "pending" },
   { label: "已到账", value: "paid" },
   { label: "失败", value: "failed" },
+  { label: "已关闭", value: "closed" },
+  { label: "已取消", value: "cancelled" },
 ]
 
 const withdrawalStatusOptions = [
@@ -395,6 +414,8 @@ const rechargeDialogOptions = [
   { label: "待处理", value: "pending" },
   { label: "已到账", value: "paid" },
   { label: "失败", value: "failed" },
+  { label: "已关闭", value: "closed" },
+  { label: "已取消", value: "cancelled" },
 ]
 
 const withdrawalDialogOptions = [
@@ -413,6 +434,22 @@ const formatDateTime = (value?: string) => {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return "-"
   return date.toLocaleString("zh-CN")
+}
+
+const statusText = (status?: string) => {
+  if (status === "paid") return "已到账"
+  if (status === "pending") return "待处理"
+  if (status === "failed") return "失败"
+  if (status === "closed") return "已关闭"
+  if (status === "cancelled") return "已取消"
+  return status || "-"
+}
+
+const statusTheme = (status?: string) => {
+  if (status === "paid") return "success"
+  if (status === "pending") return "warning"
+  if (status === "failed") return "danger"
+  return "default"
 }
 
 const loadAccounts = async () => {
@@ -578,15 +615,21 @@ const rechargeColumns = computed(() => [
   { colKey: "user_id", title: "用户", minWidth: 140 },
   { colKey: "amount_cents", title: "金额", width: 120, cell: (_h: any, { row }: { row: BalanceRecharge }) => formatMoney(row.amount_cents, row.currency || "CNY") },
   { colKey: "payment_method", title: "方式", width: 120 },
+  { colKey: "payment_provider", title: "渠道", width: 120 },
+  { colKey: "trade_no", title: "交易号", minWidth: 160, cell: (_h: any, { row }: { row: BalanceRecharge }) => row.trade_no || "-" },
+  {
+    colKey: "payment_url",
+    title: "支付链接",
+    width: 100,
+    cell: (_h: any, { row }: { row: BalanceRecharge }) =>
+      row.payment_url ? h("a", { href: row.payment_url, target: "_blank", class: "pay-link" }, "打开") : "-",
+  },
   {
     colKey: "status",
     title: "状态",
     width: 120,
     cell: (_h: any, { row }: { row: BalanceRecharge }) => {
-      const status = row.status || "pending"
-      const theme = status === "paid" ? "success" : status === "pending" ? "warning" : status === "failed" ? "danger" : "default"
-      const text = status === "paid" ? "已到账" : status === "pending" ? "待处理" : status === "failed" ? "失败" : status
-      return h(Tag, { theme }, () => text)
+      return h(Tag, { theme: statusTheme(row.status) }, () => statusText(row.status))
     },
   },
   { colKey: "created_at", title: "创建时间", width: 170, cell: (_h: any, { row }: { row: BalanceRecharge }) => formatDateTime(row.created_at) },
@@ -689,6 +732,11 @@ watch(activeTab, () => {
 <style scoped>
 .admin-balance-adjust-form {
   max-width: 420px;
+}
+
+.pay-link {
+  color: #2563eb;
+  font-weight: 600;
 }
 
 @media (max-width: 768px) {

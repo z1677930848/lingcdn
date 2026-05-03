@@ -141,9 +141,11 @@ type Store interface {
 
 	GetBalanceAccount(ctx context.Context, userID string) (*BalanceAccount, error)
 	ListBalanceTransactions(ctx context.Context, userID string, page, pageSize int) ([]*BalanceTransaction, int64, error)
+	CreateBalanceRecharge(ctx context.Context, r *BalanceRecharge) error
+	GetBalanceRechargeByOutTradeNo(ctx context.Context, outTradeNo string) (*BalanceRecharge, error)
 	AdminListBalanceAccounts(ctx context.Context, userID string, page, pageSize int) ([]*BalanceAccount, int64, error)
 	AdminListBalanceRecharges(ctx context.Context, userID, status string, page, pageSize int) ([]*BalanceRecharge, int64, error)
-	AdminUpdateBalanceRecharge(ctx context.Context, id, status, tradeNo string, paidAt time.Time) error
+	AdminUpdateBalanceRecharge(ctx context.Context, id, status, tradeNo, notifyRaw string, paidAt time.Time) error
 	AdminListBalanceWithdrawals(ctx context.Context, userID, status string, page, pageSize int) ([]*BalanceWithdrawal, int64, error)
 	AdminUpdateBalanceWithdrawal(ctx context.Context, id, status, note string, reviewedAt time.Time) error
 	AdminAdjustBalance(ctx context.Context, userID string, amountCents int64, note string) error
@@ -340,17 +342,23 @@ type BalanceTransaction struct {
 }
 
 type BalanceRecharge struct {
-	ID            string    `json:"id"`
-	UserID        string    `json:"user_id"`
-	OutTradeNo    string    `json:"out_trade_no"`
-	AmountCents   int64     `json:"amount_cents"`
-	Currency      string    `json:"currency"`
-	PaymentMethod string    `json:"payment_method"`
-	Status        string    `json:"status"`
-	TradeNo       string    `json:"trade_no"`
-	PaidAt        time.Time `json:"paid_at"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	UserID          string    `json:"user_id"`
+	OutTradeNo      string    `json:"out_trade_no"`
+	AmountCents     int64     `json:"amount_cents"`
+	Currency        string    `json:"currency"`
+	PaymentMethod   string    `json:"payment_method"`
+	PaymentProvider string    `json:"payment_provider"`
+	PaymentURL      string    `json:"payment_url"`
+	QRCode          string    `json:"qr_code"`
+	NotifyRaw       string    `json:"notify_raw"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	ClosedAt        time.Time `json:"closed_at"`
+	Status          string    `json:"status"`
+	TradeNo         string    `json:"trade_no"`
+	PaidAt          time.Time `json:"paid_at"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type BalanceWithdrawal struct {

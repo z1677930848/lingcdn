@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // Admin settings: the single /api/settings endpoint (admin-only) plus the
 // helpers that layer default values / env-sourced config over whatever is
@@ -138,7 +138,25 @@ func (s *Servers) handleSettings(w http.ResponseWriter, r *http.Request) {
 			next.SMTPFromName = strings.TrimSpace(*req.SMTPFromName)
 		}
 		if req.ElasticsearchURL != nil {
-			next.ElasticsearchURL = strings.TrimSpace(*req.ElasticsearchURL)
+			trimmed := strings.TrimSpace(*req.ElasticsearchURL)
+			// Empty string disables ES integration; only validate non-empty values.
+			// Reject early when the URL is syntactically malformed or points at
+			// an unspecified address (0.0.0.0 / ::), because those values cause
+			// the node-install Filebeat tail to ship a useless `--es_host
+			// 0.0.0.0` flag, which silently breaks log delivery on every node
+			// installed from that point on. We intentionally allow loopback
+			// (127.0.0.1 / localhost) here so single-host installs keep working
+			// for control-plane → ES queries; buildNodeInstallFilebeatTail
+			// separately refuses to forward loopback to remote nodes.
+			if trimmed != "" {
+				if _, _, _, perr := parseESEndpoint(trimmed); perr != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]any{
+						"error": "无效的 Elasticsearch URL：" + perr.Error() + "（请填写如 http://es.example.com:9200 或 https://1.2.3.4:9200 的真实可拨号地址；请勿使用 0.0.0.0/:: 这类绑定占位符）",
+					})
+					return
+				}
+			}
+			next.ElasticsearchURL = trimmed
 		}
 		if req.ElasticsearchUser != nil {
 			next.ElasticsearchUser = strings.TrimSpace(*req.ElasticsearchUser)

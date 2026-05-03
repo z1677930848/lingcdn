@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/lingcdn/control/internal/buildinfo"
@@ -187,6 +188,14 @@ func shellQuote(v string) string {
 // to the generated install command. Triggered whenever
 // settings.ElasticsearchURL is configured — node-side Filebeat is now
 // the only delivery path for access/error logs to Elasticsearch.
+//
+// We refuse to emit Filebeat flags when the configured ES host is
+// unreachable from a remote node (wildcard / loopback). Otherwise the
+// node would happily install Filebeat with a bogus output.elasticsearch
+// address and silently drop every log line — which is exactly the
+// failure mode that prompted this guard (operator filled in
+// http://0.0.0.0:9200 in the ES settings page; nodes generated from
+// that point on shipped to themselves).
 func (s *Servers) buildNodeInstallFilebeatTail(ctx context.Context) string {
 	if s == nil || s.store == nil {
 		return ""
@@ -201,6 +210,17 @@ func (s *Servers) buildNodeInstallFilebeatTail(ctx context.Context) string {
 	}
 	host, port, protocol, perr := parseESEndpoint(esURL)
 	if perr != nil || host == "" {
+		log.Ctx(ctx).Warn().
+			Err(perr).
+			Str("elasticsearch_url", esURL).
+			Msg("ES URL invalid — skipping Filebeat install flags in node install command; fix Settings → Elasticsearch URL first")
+		return ""
+	}
+	if isLoopbackESHost(host) {
+		log.Ctx(ctx).Warn().
+			Str("elasticsearch_url", esURL).
+			Str("host", host).
+			Msg("ES URL points at loopback (127.0.0.1 / localhost) which is not reachable from remote nodes — skipping Filebeat install flags; configure a publicly reachable ES address to enable node log shipping")
 		return ""
 	}
 
@@ -234,6 +254,15 @@ func (s *Servers) buildNodeInstallFilebeatTail(ctx context.Context) string {
 // Default port is supplied (443 for https, 9200 otherwise) so the install
 // script does not have to guess. Returns empty host on parse failure so
 // the caller can fall through and emit no Filebeat flags.
+//
+// The host must be a real client-dialable target. Wildcard / "any-address"
+// placeholders like 0.0.0.0 or :: are rejected here — those values mean
+// "bind on every interface" to a server, but make no sense as a dial
+// target for a remote Filebeat. Without this guard the value would be
+// transparently shipped via `node_install.sh --es_host 0.0.0.0`, ending
+// up in the node's filebeat.yml as `output.elasticsearch.hosts:
+// ["http://0.0.0.0:9200"]`, where `dial tcp 0.0.0.0:9200: connection
+// refused` permanently breaks log delivery.
 func parseESEndpoint(raw string) (host, port, protocol string, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -254,6 +283,9 @@ func parseESEndpoint(raw string) (host, port, protocol string, err error) {
 	if host == "" {
 		return "", "", "", errors.New("missing host")
 	}
+	if isUnroutableESHost(host) {
+		return "", "", "", fmt.Errorf("ES host %q is not a dialable target (wildcard / unspecified address)", host)
+	}
 	port = strings.TrimSpace(u.Port())
 	if port == "" {
 		if protocol == "https" {
@@ -263,6 +295,47 @@ func parseESEndpoint(raw string) (host, port, protocol string, err error) {
 		}
 	}
 	return host, port, protocol, nil
+}
+
+// isUnroutableESHost flags hostnames that are syntactically valid but cannot
+// be used as a client connection target. These are the "any-address"
+// wildcards (IPv4 0.0.0.0, IPv6 :: / 0:0:0:0:0:0:0:0) which servers bind to
+// when they want to listen on every interface — connecting to them as a
+// client always fails with "connection refused" on the loopback path. We
+// also catch the literal IPv6 wildcard "[::]" form just in case the URL
+// parser left brackets in.
+func isUnroutableESHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return true
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsUnspecified()
+}
+
+// isLoopbackESHost reports whether the host points at the local machine.
+// A loopback target is fine for the control plane (which queries ES from
+// the same box) but useless for an edge node halfway across the planet —
+// a remote Filebeat dialing 127.0.0.1:9200 would resolve to the *node's*
+// own loopback, never to the operator's ES cluster.
+func isLoopbackESHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	host = strings.Trim(host, "[]")
+	switch strings.ToLower(host) {
+	case "localhost", "localhost.localdomain", "ip6-localhost":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func defaultNodeInstallVersion() string {

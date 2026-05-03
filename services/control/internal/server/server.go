@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 import (
 	"bytes"
@@ -32,6 +32,7 @@ import (
 	"github.com/lingcdn/control/internal/ddos"
 	"github.com/lingcdn/control/internal/metrics"
 	"github.com/lingcdn/control/internal/nodehub"
+	"github.com/lingcdn/control/internal/payment"
 	"github.com/lingcdn/control/internal/publisher"
 	"github.com/lingcdn/control/internal/purge"
 	"github.com/lingcdn/control/internal/store"
@@ -77,7 +78,8 @@ type Servers struct {
 	cachedPublicIP   string
 	cachedPublicIPAt time.Time
 
-	geoip *GeoIPManager
+	geoip       *GeoIPManager
+	payProvider payment.Provider
 
 	// IP-based rate limiters for sensitive auth endpoints. Protects against
 	// credential brute-forcing and verification-code spam. Initialized in
@@ -257,6 +259,16 @@ func New(cfg config.Config, hub *nodehub.Hub, compiler *compiler.Compiler, publi
 		},
 		licenseFile: cfg.LicenseFile,
 		geoip:       NewGeoIPManager(cfg),
+		payProvider: payment.NewProvider(payment.Config{
+			Enabled:          cfg.PaymentEnabled,
+			Provider:         cfg.PaymentProvider,
+			EPayURL:          cfg.PaymentEPayURL,
+			EPayPID:          cfg.PaymentEPayPID,
+			EPayKey:          cfg.PaymentEPayKey,
+			EPayNotifyURL:    cfg.PaymentEPayNotifyURL,
+			EPayReturnURL:    cfg.PaymentEPayReturnURL,
+			MinRechargeCents: cfg.PaymentMinRechargeCents,
+		}),
 	}
 }
 

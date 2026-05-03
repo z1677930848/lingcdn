@@ -28,20 +28,26 @@
         <t-tabs v-model="activeTab">
           <t-tab-panel value="recharge" label="余额充值">
             <div class="form-grid">
-              <div class="feature-tip">{{ rechargeNotice }}</div>
               <div>
                 <div class="form-label">充值方式</div>
-                <t-radio-group v-model="rechargeMethod" disabled>
+                <t-radio-group v-model="rechargeMethod">
                   <t-radio v-for="item in rechargeMethods" :key="item.value" :value="item.value">
                     {{ item.label }}
                   </t-radio>
                 </t-radio-group>
               </div>
               <div class="form-field">
-                <div class="form-label">充值金额</div>
-                <t-input v-model="rechargeAmount" disabled />
+                <div class="form-label">充值金额（元）</div>
+                <t-input v-model="rechargeAmount" type="number" placeholder="请输入充值金额" />
               </div>
-              <t-button theme="primary" :loading="false" :disabled="true" @click="handleRecharge">确认充值</t-button>
+              <t-button theme="primary" :loading="rechargeLoading" @click="handleRecharge">确认充值</t-button>
+
+              <div v-if="rechargePayUrl" class="pay-box">
+                <div class="form-label">支付链接</div>
+                <a :href="rechargePayUrl" target="_blank" class="pay-link">{{ rechargePayUrl }}</a>
+                <p class="feature-tip">若未自动跳转，请点击上方链接完成支付。支付成功后余额将自动到账。</p>
+              </div>
+              <div v-if="rechargeError" class="error-box">{{ rechargeError }}</div>
             </div>
           </t-tab-panel>
 
@@ -190,7 +196,7 @@ import {
 const rechargeMethods = [
   { label: "微信支付", value: "wxpay" },
   { label: "支付宝", value: "alipay" },
-  { label: "转账汇款", value: "transfer" },
+  { label: "QQ 钱包", value: "qqpay" },
 ]
 
 const withdrawMethods = [
@@ -205,11 +211,13 @@ const recharges = ref<BalanceRecharge[]>([])
 const withdrawals = ref<BalanceWithdrawal[]>([])
 const loading = ref(true)
 const error = ref("")
-const rechargeNotice = "在线充值暂未开放，请联系管理员入账。"
 const withdrawNotice = "在线提现暂未开放，请联系管理员处理。"
 
 const rechargeMethod = ref("alipay")
 const rechargeAmount = ref("")
+const rechargeLoading = ref(false)
+const rechargePayUrl = ref("")
+const rechargeError = ref("")
 
 const withdrawMethod = ref("alipay")
 const withdrawAmount = ref("")
@@ -260,9 +268,31 @@ const formatTime = (value?: string) => {
 const balanceAmount = computed(() => account.value?.balance_cents ?? 0)
 
 const handleRecharge = async () => {
-  void rechargeAmount
-  void rechargeMethod
-  MessagePlugin.warning(rechargeNotice)
+  rechargeError.value = ""
+  rechargePayUrl.value = ""
+  const yuan = Number.parseFloat(rechargeAmount.value || "0")
+  if (!Number.isFinite(yuan) || yuan <= 0) {
+    rechargeError.value = "请输入有效的充值金额"
+    return
+  }
+  const cents = Math.round(yuan * 100)
+  rechargeLoading.value = true
+  try {
+    const res = await api.createBalanceRecharge({
+      amount_cents: cents,
+      payment_method: rechargeMethod.value,
+    })
+    rechargePayUrl.value = res.pay_url || res.recharge?.payment_url || ""
+    if (rechargePayUrl.value) {
+      window.open(rechargePayUrl.value, "_blank")
+    }
+    MessagePlugin.success("充值订单已创建，请完成支付")
+    await loadData()
+  } catch (err: any) {
+    rechargeError.value = err.message || "创建充值订单失败"
+  } finally {
+    rechargeLoading.value = false
+  }
 }
 
 const handleWithdraw = async () => {
@@ -380,6 +410,27 @@ onMounted(() => {
 .feature-tip {
   font-size: 13px;
   color: #94a3b8;
+}
+
+.pay-box {
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  padding: 14px;
+  background: #eff6ff;
+}
+
+.pay-link {
+  color: #2563eb;
+  word-break: break-all;
+  font-weight: 600;
+}
+
+.error-box {
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  padding: 12px;
+  color: #b91c1c;
+  background: #fef2f2;
 }
 
 .inline-grid {

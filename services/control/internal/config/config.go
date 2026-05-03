@@ -90,6 +90,15 @@ type Config struct {
 	GeoIPEdition               string
 	GeoIPUpdateInterval        time.Duration
 	CnameSuffix                string
+
+	PaymentEnabled          bool   `json:"payment_enabled"`
+	PaymentProvider         string `json:"payment_provider"`
+	PaymentEPayURL          string `json:"payment_epay_url"`
+	PaymentEPayPID          string `json:"payment_epay_pid"`
+	PaymentEPayKey          string `json:"payment_epay_key"`
+	PaymentEPayNotifyURL    string `json:"payment_epay_notify_url"`
+	PaymentEPayReturnURL    string `json:"payment_epay_return_url"`
+	PaymentMinRechargeCents int64  `json:"payment_min_recharge_cents"`
 }
 
 // LoadOptions controls how runtime config is loaded.
@@ -256,6 +265,15 @@ func defaultConfig() Config {
 		GeoIPStorageDir:            "data/geoip",
 		GeoIPEdition:               "GeoLite2-City",
 		GeoIPUpdateInterval:        168 * time.Hour,
+
+		PaymentEnabled:          false,
+		PaymentProvider:         "mock",
+		PaymentEPayURL:          "",
+		PaymentEPayPID:          "",
+		PaymentEPayKey:          "",
+		PaymentEPayNotifyURL:    "",
+		PaymentEPayReturnURL:    "",
+		PaymentMinRechargeCents: 100,
 	}
 }
 
@@ -322,6 +340,15 @@ func applyOverrides(cfg *Config, src valueSource, locked bool) {
 	cfg.GeoIPEdition = lookupString(src, "GEOIP_EDITION", cfg.GeoIPEdition)
 	cfg.GeoIPUpdateInterval = lookupDuration(src, "GEOIP_UPDATE_INTERVAL", cfg.GeoIPUpdateInterval)
 	cfg.CnameSuffix = lookupString(src, "CNAME_SUFFIX", cfg.CnameSuffix)
+
+	cfg.PaymentEnabled = lookupBool(src, "PAYMENT_ENABLED", cfg.PaymentEnabled)
+	cfg.PaymentProvider = lookupString(src, "PAYMENT_PROVIDER", cfg.PaymentProvider)
+	cfg.PaymentEPayURL = lookupString(src, "PAYMENT_EPAY_URL", cfg.PaymentEPayURL)
+	cfg.PaymentEPayPID = lookupString(src, "PAYMENT_EPAY_PID", cfg.PaymentEPayPID)
+	cfg.PaymentEPayKey = lookupString(src, "PAYMENT_EPAY_KEY", cfg.PaymentEPayKey)
+	cfg.PaymentEPayNotifyURL = lookupString(src, "PAYMENT_EPAY_NOTIFY_URL", cfg.PaymentEPayNotifyURL)
+	cfg.PaymentEPayReturnURL = lookupString(src, "PAYMENT_EPAY_RETURN_URL", cfg.PaymentEPayReturnURL)
+	cfg.PaymentMinRechargeCents = lookupInt64(src, "PAYMENT_MIN_RECHARGE_CENTS", cfg.PaymentMinRechargeCents)
 
 	cfg.PortalReportSecret = lookupString(src, "PORTAL_REPORT_SECRET", cfg.WebhookSecret)
 	cfg.PortalBase = DefaultPortalBase
@@ -722,6 +749,17 @@ func lookupBool(src valueSource, key string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+func lookupInt64(src valueSource, key string, def int64) int64 {
+	v, ok := src.Lookup(key)
+	if !ok {
+		return def
+	}
+	if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+		return n
+	}
+	return def
 }
 
 func lookupInt(src valueSource, key string, def int) int {

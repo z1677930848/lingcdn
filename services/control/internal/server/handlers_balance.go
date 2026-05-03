@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // Balance account handlers: user-facing read endpoints for their own account,
 // transactions, recharges, withdrawals, and the admin counterparts for
@@ -8,11 +8,14 @@
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lingcdn/control/internal/store"
+	"github.com/rs/zerolog/log"
 )
 
 func (s *Servers) handleBalanceAccount(w http.ResponseWriter, r *http.Request) {
@@ -67,30 +70,92 @@ func (s *Servers) handleBalanceTransactions(w http.ResponseWriter, r *http.Reque
 func (s *Servers) handleBalanceRecharges(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := store.WithTimeout(r.Context())
 	defer cancel()
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
-		return
-	}
 	userID, _ := ctx.Value(ctxKeyUserID).(string)
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "未登录或登录已过期"})
 		return
 	}
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	page := parseIntQuery(r, "page", 1)
-	pageSize := parseIntQuery(r, "page_size", parseIntQuery(r, "pageSize", 20))
-	recharges, total, err := s.store.AdminListBalanceRecharges(ctx, userID, status, page, pageSize)
-	if err != nil {
-		writeInternalError(w, "list balance recharges", err)
-		return
+
+	switch r.Method {
+	case http.MethodGet:
+		status := strings.TrimSpace(r.URL.Query().Get("status"))
+		page := parseIntQuery(r, "page", 1)
+		pageSize := parseIntQuery(r, "page_size", parseIntQuery(r, "pageSize", 20))
+		recharges, total, err := s.store.AdminListBalanceRecharges(ctx, userID, status, page, pageSize)
+		if err != nil {
+			writeInternalError(w, "list balance recharges", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"recharges": recharges,
+			"total":     total,
+			"page":      page,
+			"page_size": pageSize,
+		})
+
+	case http.MethodPost:
+		if !s.cfg.PaymentEnabled {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "充值功能未启用"})
+			return
+		}
+		var req struct {
+			AmountCents   int64  `json:"amount_cents"`
+			PaymentMethod string `json:"payment_method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		if req.AmountCents <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "充值金额必须大于0"})
+			return
+		}
+		if req.AmountCents < s.cfg.PaymentMinRechargeCents {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("最低充值金额 %d 分", s.cfg.PaymentMinRechargeCents)})
+			return
+		}
+		if !s.payProvider.SupportsMethod(req.PaymentMethod) {
+			req.PaymentMethod = "alipay" // default
+		}
+
+		id := uuid.NewString()
+		outTradeNo := strings.ReplaceAll(uuid.NewString(), "-", "")
+		payResult, err := s.payProvider.CreateRecharge(ctx, outTradeNo, userID, req.AmountCents, req.PaymentMethod, "余额充值")
+		if err != nil {
+			writeInternalError(w, "create payment", err)
+			return
+		}
+		recharge := &store.BalanceRecharge{
+			ID:              id,
+			UserID:          userID,
+			OutTradeNo:      outTradeNo,
+			AmountCents:     req.AmountCents,
+			Currency:        "CNY",
+			PaymentMethod:   req.PaymentMethod,
+			PaymentProvider: s.payProvider.Name(),
+			PaymentURL:      payResult.PayURL,
+			QRCode:          payResult.QRCode,
+			ExpiresAt:       time.Now().Add(30 * time.Minute),
+			Status:          "pending",
+			CreatedAt:       time.Now(),
+			UpdatedAt:       time.Now(),
+		}
+		if err := s.store.CreateBalanceRecharge(ctx, recharge); err != nil {
+			writeInternalError(w, "create recharge", err)
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"recharge":  recharge,
+			"pay_url":   payResult.PayURL,
+			"qr_code":   payResult.QRCode,
+			"form_html": payResult.FormHTML,
+		})
+
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"recharges": recharges,
-		"total":     total,
-		"page":      page,
-		"page_size": pageSize,
-	})
 }
 
 func (s *Servers) handleBalanceWithdrawals(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +269,7 @@ func (s *Servers) handleAdminBalanceRechargeByID(w http.ResponseWriter, r *http.
 			paidAt = t
 		}
 	}
-	if err := s.store.AdminUpdateBalanceRecharge(ctx, id, strings.TrimSpace(req.Status), strings.TrimSpace(req.TradeNo), paidAt); err != nil {
+	if err := s.store.AdminUpdateBalanceRecharge(ctx, id, strings.TrimSpace(req.Status), strings.TrimSpace(req.TradeNo), "", paidAt); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -375,4 +440,77 @@ func (s *Servers) handleAdminBalanceStats(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"stats": stats})
+}
+
+// handlePaymentNotify receives async payment provider callbacks and confirms recharges.
+func (s *Servers) handlePaymentNotify(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := store.WithTimeout(r.Context())
+	defer cancel()
+
+	cb, err := s.payProvider.VerifyCallback(r)
+	if err != nil {
+		log.Warn().Err(err).Str("provider", s.payProvider.Name()).Msg("payment callback verify failed")
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "sign verify failed"})
+		return
+	}
+
+	recharge, err := s.store.GetBalanceRechargeByOutTradeNo(ctx, cb.OutTradeNo)
+	if err != nil {
+		writeInternalError(w, "get recharge by trade no", err)
+		return
+	}
+	if recharge == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "recharge not found"})
+		return
+	}
+	if cb.AmountCents > 0 && cb.AmountCents != recharge.AmountCents {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "支付金额不匹配"})
+		return
+	}
+
+	if cb.Status == "paid" {
+		if err := s.store.AdminUpdateBalanceRecharge(ctx, recharge.ID, "paid", cb.TradeNo, cb.RawBody, cb.PaidAt); err != nil {
+			writeInternalError(w, "update recharge paid", err)
+			return
+		}
+	} else {
+		_ = s.store.AdminUpdateBalanceRecharge(ctx, recharge.ID, cb.Status, cb.TradeNo, cb.RawBody, cb.PaidAt)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+func (s *Servers) handlePaymentMock(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := store.WithTimeout(r.Context())
+	defer cancel()
+	if s.payProvider.Name() != "mock" {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "未找到"})
+		return
+	}
+	outTradeNo := strings.TrimPrefix(r.URL.Path, "/api/payments/mock/")
+	outTradeNo = strings.Trim(strings.TrimSpace(outTradeNo), "/")
+	if outTradeNo == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "缺少充值单号"})
+		return
+	}
+	recharge, err := s.store.GetBalanceRechargeByOutTradeNo(ctx, outTradeNo)
+	if err != nil {
+		writeInternalError(w, "get mock recharge", err)
+		return
+	}
+	if recharge == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "充值单不存在"})
+		return
+	}
+	if r.Method == http.MethodPost || strings.TrimSpace(r.URL.Query().Get("confirm")) == "1" {
+		if err := s.store.AdminUpdateBalanceRecharge(ctx, recharge.ID, "paid", "mock-"+outTradeNo, "mock", time.Now()); err != nil {
+			writeInternalError(w, "confirm mock recharge", err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<!doctype html><html><head><meta charset=\"utf-8\"><title>支付成功</title></head><body><h2>支付成功，余额已到账</h2><p>请返回控制台刷新余额。</p></body></html>"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(fmt.Sprintf("<!doctype html><html><head><meta charset=\"utf-8\"><title>模拟支付</title></head><body><h2>模拟支付</h2><p>订单号：%s</p><p>金额：%.2f CNY</p><form method=\"post\"><button type=\"submit\">确认支付</button></form></body></html>", recharge.OutTradeNo, float64(recharge.AmountCents)/100)))
 }

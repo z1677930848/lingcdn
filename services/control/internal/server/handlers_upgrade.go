@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // Upgrade control/node orchestration: UI stubs for surfacing current vs
 // latest version, admin-triggered control-plane upgrade, per-node node
@@ -253,20 +253,58 @@ func (s *Servers) handleUpgradeNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	channel := controlBuildChannel()
 
-	// If caller requests "latest", try to resolve a concrete version from portal (best-effort).
+	// If caller requests "latest", try to resolve a concrete version from
+	// the portal (best-effort). We deliberately keep the resolution
+	// permissive: even if only a single arch resolves, we adopt that
+	// version. The previous code required both amd64 and arm64 to resolve
+	// AND match exactly — when the portal only had one arch (or returned
+	// inconsistent values during a rolling release), the literal string
+	// "latest" leaked into task.TargetVersion. That string then defeated
+	// `checkNodeUpgradeTaskCompletion`, which short-circuits on
+	// `target == "latest"` and never ACKs the task, leaving every upgrade
+	// stuck in `running` until the 30-minute timeout — exactly the "节点
+	// 无法升级" symptom users have been reporting.
+	//
+	// Resolution outcomes and their handling:
+	//   * both archs resolve to the same version → use it
+	//   * archs disagree → use amd64 if present, else arm64; warn so the
+	//     operator can investigate the asymmetric portal state but the
+	//     upgrade still moves forward
+	//   * only one arch resolves → use it
+	//   * neither resolves → leave as "latest" but explicitly log to the
+	//     task so the operator can see why ACK never landed
+	resolveDiagnostic := ""
 	if strings.EqualFold(targetVersion, "latest") {
 		portal := s.upgradePortalBase()
-		if portal != "" {
+		if portal == "" {
+			resolveDiagnostic = "portal base URL is empty; target stays as 'latest' (task will not auto-ACK on completion)"
+		} else {
 			verAMD64 := ""
 			verARM64 := ""
+			amdErr := ""
+			armErr := ""
 			if up, err := fetchPortalLatest(ctx, portal, "node", channel, "linux", "amd64", "latest"); err == nil {
 				verAMD64 = strings.TrimSpace(up.Version)
+			} else {
+				amdErr = err.Error()
 			}
 			if up, err := fetchPortalLatest(ctx, portal, "node", channel, "linux", "arm64", "latest"); err == nil {
 				verARM64 = strings.TrimSpace(up.Version)
+			} else {
+				armErr = err.Error()
 			}
-			if verAMD64 != "" && verARM64 != "" && verAMD64 == verARM64 {
+			switch {
+			case verAMD64 != "" && verARM64 != "" && verAMD64 == verARM64:
 				targetVersion = verAMD64
+			case verAMD64 != "" && verARM64 != "" && verAMD64 != verARM64:
+				targetVersion = verAMD64
+				resolveDiagnostic = fmt.Sprintf("portal version mismatch: amd64=%s arm64=%s; using amd64 — investigate why archs disagree", verAMD64, verARM64)
+			case verAMD64 != "":
+				targetVersion = verAMD64
+			case verARM64 != "":
+				targetVersion = verARM64
+			default:
+				resolveDiagnostic = fmt.Sprintf("portal returned no usable build for channel=%s (amd64_err=%q arm64_err=%q); target stays as 'latest' (task will not auto-ACK on completion)", channel, amdErr, armErr)
 			}
 		}
 	}
@@ -334,6 +372,13 @@ func (s *Servers) handleUpgradeNodes(w http.ResponseWriter, r *http.Request) {
 	s.appendUpgradeLog(ctx, task.ID, "INFO", "node upgrade task started (heartbeat-dispatched)", "")
 	s.appendUpgradeLog(ctx, task.ID, "INFO", fmt.Sprintf("target version: %s", targetVersion), "")
 	s.appendUpgradeLog(ctx, task.ID, "INFO", fmt.Sprintf("portal: %s (channel=%s)", s.upgradePortalBase(), channel), "")
+	// Surface portal-resolution problems so the operator does not have to
+	// guess why a task ended up with target="latest" (which the completion
+	// checker can never ACK). Logged at WARNING so it stands out in the
+	// per-task log view, but the task itself still proceeds.
+	if resolveDiagnostic != "" {
+		s.appendUpgradeLog(ctx, task.ID, "WARNING", "target resolution: "+resolveDiagnostic, "")
+	}
 
 	// Log skipped nodes.
 	for _, skip := range skippedNodes {
@@ -512,9 +557,9 @@ func (s *Servers) handleUpgradePrecheck(w http.ResponseWriter, r *http.Request) 
 
 	priv := choosePrivilegeEscalation()
 	resp := map[string]any{
-		"os":              runtime.GOOS,
-		"euid":            os.Geteuid(),
-		"privilege_mode":  priv.mode, // "root" | "sudo" | "none"
+		"os":               runtime.GOOS,
+		"euid":             os.Geteuid(),
+		"privilege_mode":   priv.mode, // "root" | "sudo" | "none"
 		"can_auto_elevate": priv.mode == "root" || priv.mode == "sudo",
 	}
 	switch priv.mode {
@@ -534,4 +579,3 @@ func (s *Servers) handleUpgradePrecheck(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
-

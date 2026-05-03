@@ -480,6 +480,12 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_balance_recharges_user ON balance_recharges(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_balance_recharges_status ON balance_recharges(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_balance_recharges_created ON balance_recharges(created_at)`,
+		`ALTER TABLE balance_recharges ADD COLUMN IF NOT EXISTS payment_provider TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE balance_recharges ADD COLUMN IF NOT EXISTS payment_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE balance_recharges ADD COLUMN IF NOT EXISTS qr_code TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE balance_recharges ADD COLUMN IF NOT EXISTS notify_raw TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE balance_recharges ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`,
+		`ALTER TABLE balance_recharges ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ`,
 		`CREATE TABLE IF NOT EXISTS balance_withdrawals (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -2372,6 +2378,35 @@ func (p *Postgres) AdminListBalanceAccounts(ctx context.Context, userID string, 
 	return res, total, rows.Err()
 }
 
+func (p *Postgres) CreateBalanceRecharge(ctx context.Context, r *BalanceRecharge) error {
+	if r == nil || r.ID == "" || r.UserID == "" || r.OutTradeNo == "" {
+		return fmt.Errorf("invalid recharge")
+	}
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO balance_recharges (id, user_id, out_trade_no, amount_cents, currency, payment_method, payment_provider, payment_url, qr_code, notify_raw, expires_at, closed_at, status, trade_no, paid_at, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		r.ID, r.UserID, r.OutTradeNo, r.AmountCents, r.Currency, r.PaymentMethod, r.PaymentProvider, r.PaymentURL, r.QRCode, r.NotifyRaw, nullTime(r.ExpiresAt), nullTime(r.ClosedAt), r.Status, r.TradeNo, nullTime(r.PaidAt), r.CreatedAt, r.UpdatedAt)
+	return err
+}
+
+func (p *Postgres) GetBalanceRechargeByOutTradeNo(ctx context.Context, outTradeNo string) (*BalanceRecharge, error) {
+	outTradeNo = strings.TrimSpace(outTradeNo)
+	if outTradeNo == "" {
+		return nil, nil
+	}
+	row := p.pool.QueryRow(ctx,
+		`SELECT id, user_id, out_trade_no, amount_cents, currency, payment_method, payment_provider, payment_url, qr_code, notify_raw, COALESCE(expires_at, '0001-01-01'::timestamptz), COALESCE(closed_at, '0001-01-01'::timestamptz), status, trade_no, COALESCE(paid_at, '0001-01-01'::timestamptz), created_at, updated_at
+		 FROM balance_recharges WHERE out_trade_no=$1 LIMIT 1`, outTradeNo)
+	var r BalanceRecharge
+	if err := row.Scan(&r.ID, &r.UserID, &r.OutTradeNo, &r.AmountCents, &r.Currency, &r.PaymentMethod, &r.PaymentProvider, &r.PaymentURL, &r.QRCode, &r.NotifyRaw, &r.ExpiresAt, &r.ClosedAt, &r.Status, &r.TradeNo, &r.PaidAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &r, nil
+}
+
 func (p *Postgres) AdminListBalanceRecharges(ctx context.Context, userID, status string, page, pageSize int) ([]*BalanceRecharge, int64, error) {
 	userID = strings.TrimSpace(userID)
 	status = strings.TrimSpace(status)
@@ -2383,7 +2418,7 @@ func (p *Postgres) AdminListBalanceRecharges(ctx context.Context, userID, status
 	}
 	offset := (page - 1) * pageSize
 	qCount := `SELECT COUNT(1) FROM balance_recharges WHERE 1=1`
-	q := `SELECT id, user_id, out_trade_no, amount_cents, currency, payment_method, status, trade_no, COALESCE(paid_at, '0001-01-01'::timestamptz), created_at, updated_at FROM balance_recharges WHERE 1=1`
+	q := `SELECT id, user_id, out_trade_no, amount_cents, currency, payment_method, payment_provider, payment_url, qr_code, notify_raw, COALESCE(expires_at, '0001-01-01'::timestamptz), COALESCE(closed_at, '0001-01-01'::timestamptz), status, trade_no, COALESCE(paid_at, '0001-01-01'::timestamptz), created_at, updated_at FROM balance_recharges WHERE 1=1`
 	args := make([]any, 0, 2)
 	if userID != "" {
 		args = append(args, userID)
@@ -2407,7 +2442,7 @@ func (p *Postgres) AdminListBalanceRecharges(ctx context.Context, userID, status
 	var res []*BalanceRecharge
 	for rows.Next() {
 		var r BalanceRecharge
-		if err := rows.Scan(&r.ID, &r.UserID, &r.OutTradeNo, &r.AmountCents, &r.Currency, &r.PaymentMethod, &r.Status, &r.TradeNo, &r.PaidAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.OutTradeNo, &r.AmountCents, &r.Currency, &r.PaymentMethod, &r.PaymentProvider, &r.PaymentURL, &r.QRCode, &r.NotifyRaw, &r.ExpiresAt, &r.ClosedAt, &r.Status, &r.TradeNo, &r.PaidAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		if strings.TrimSpace(r.Currency) == "" {
@@ -2418,13 +2453,13 @@ func (p *Postgres) AdminListBalanceRecharges(ctx context.Context, userID, status
 	return res, total, rows.Err()
 }
 
-func (p *Postgres) AdminUpdateBalanceRecharge(ctx context.Context, id, status, tradeNo string, paidAt time.Time) error {
+func (p *Postgres) AdminUpdateBalanceRecharge(ctx context.Context, id, status, tradeNo, notifyRaw string, paidAt time.Time) error {
 	id = strings.TrimSpace(id)
 	status = strings.TrimSpace(status)
 	if id == "" || status == "" {
 		return nil
 	}
-	if paidAt.IsZero() {
+	if status == "paid" && paidAt.IsZero() {
 		paidAt = time.Now()
 	}
 	tx, err := p.pool.Begin(ctx)
@@ -2471,7 +2506,15 @@ func (p *Postgres) AdminUpdateBalanceRecharge(ctx context.Context, id, status, t
 			return err
 		}
 	}
-	if _, err := tx.Exec(ctx, `UPDATE balance_recharges SET status=$1, trade_no=$2, paid_at=$3, updated_at=NOW() WHERE id=$4`, status, tradeNo, nullTime(paidAt), id); err != nil {
+	closedAt := sql.NullTime{}
+	if status == "closed" || status == "cancelled" {
+		closedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	}
+	paidAtArg := sql.NullTime{}
+	if status == "paid" {
+		paidAtArg = nullTime(paidAt)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE balance_recharges SET status=$1, trade_no=$2, paid_at=COALESCE($3, paid_at), notify_raw=COALESCE(NULLIF($4, ''), notify_raw), closed_at=COALESCE($5, closed_at), updated_at=NOW() WHERE id=$6`, status, tradeNo, paidAtArg, notifyRaw, closedAt, id); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

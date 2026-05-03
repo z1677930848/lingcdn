@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+﻿use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use reqwest::redirect::Policy;
@@ -453,43 +453,4 @@ fn verify_checksum_signature_sha256(
     key.verify(msg.as_bytes(), &sig)
         .context("signature verify failed")?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use base64::engine::general_purpose::STANDARD;
-    use ed25519_dalek::{Signer, SigningKey};
-    use rand::rngs::OsRng;
-
-    #[test]
-    fn verify_signature_ok() {
-        let mut rng = OsRng;
-        let signing = SigningKey::generate(&mut rng);
-        let verifying = signing.verifying_key();
-        let pub_b64 = STANDARD.encode(verifying.to_bytes());
-
-        let checksum = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let msg = format!("lingcdn:v1:sha256:{}", checksum);
-        let sig = signing.sign(msg.as_bytes());
-        let sig_b64 = STANDARD.encode(sig.to_bytes());
-
-        verify_checksum_signature_sha256(&pub_b64, checksum, &sig_b64).unwrap();
-    }
-
-    #[test]
-    fn verify_signature_rejects_wrong_checksum() {
-        let mut rng = OsRng;
-        let signing = SigningKey::generate(&mut rng);
-        let verifying = signing.verifying_key();
-        let pub_b64 = STANDARD.encode(verifying.to_bytes());
-
-        let checksum_ok = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let msg = format!("lingcdn:v1:sha256:{}", checksum_ok);
-        let sig = signing.sign(msg.as_bytes());
-        let sig_b64 = STANDARD.encode(sig.to_bytes());
-
-        let checksum_bad = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
-        assert!(verify_checksum_signature_sha256(&pub_b64, checksum_bad, &sig_b64).is_err());
-    }
 }

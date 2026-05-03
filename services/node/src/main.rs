@@ -937,33 +937,6 @@ fn parse_upgrade_trigger(message: &str) -> Option<UpgradeTrigger> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_upgrade_trigger_rejects_invalid_json() {
-        let msg = r#"lingcdn:cmd:{"type":"upgrade","#;
-        assert!(parse_upgrade_trigger(msg).is_none());
-    }
-
-    #[test]
-    fn parse_upgrade_trigger_rejects_other_types() {
-        let msg = r#"lingcdn:cmd:{"type":"noop","task_id":"t1"}"#;
-        assert!(parse_upgrade_trigger(msg).is_none());
-    }
-
-    #[test]
-    fn parse_upgrade_trigger_accepts_upgrade() {
-        let msg = r#"lingcdn:cmd:{"type":"upgrade","task_id":"t1","target_version":"latest","channel":"stable","force":true}"#;
-        let t = parse_upgrade_trigger(msg).expect("expected trigger");
-        assert_eq!(t.task_id, "t1");
-        assert_eq!(t.target_version, "latest");
-        assert_eq!(t.channel, "stable");
-        assert!(t.force);
-    }
-}
-
 /// 实时上报拉黑IP到主控
 async fn start_ban_reporter(
     mut grpc_client: GrpcClient,

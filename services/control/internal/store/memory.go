@@ -1378,6 +1378,34 @@ func (m *Memory) AdminListBalanceAccounts(ctx context.Context, userID string, pa
 	return all[start:end], total, nil
 }
 
+func (m *Memory) CreateBalanceRecharge(ctx context.Context, r *BalanceRecharge) error {
+	_ = ctx
+	if r == nil || r.ID == "" || r.UserID == "" || r.OutTradeNo == "" {
+		return fmt.Errorf("invalid recharge")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.balanceRecharges[r.ID] = r
+	return nil
+}
+
+func (m *Memory) GetBalanceRechargeByOutTradeNo(ctx context.Context, outTradeNo string) (*BalanceRecharge, error) {
+	_ = ctx
+	outTradeNo = strings.TrimSpace(outTradeNo)
+	if outTradeNo == "" {
+		return nil, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, r := range m.balanceRecharges {
+		if r != nil && r.OutTradeNo == outTradeNo {
+			cp := *r
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *Memory) AdminListBalanceRecharges(ctx context.Context, userID, status string, page, pageSize int) ([]*BalanceRecharge, int64, error) {
 	_ = ctx
 	userID = strings.TrimSpace(userID)
@@ -1417,7 +1445,7 @@ func (m *Memory) AdminListBalanceRecharges(ctx context.Context, userID, status s
 	return all[start:end], total, nil
 }
 
-func (m *Memory) AdminUpdateBalanceRecharge(ctx context.Context, id, status, tradeNo string, paidAt time.Time) error {
+func (m *Memory) AdminUpdateBalanceRecharge(ctx context.Context, id, status, tradeNo, notifyRaw string, paidAt time.Time) error {
 	_ = ctx
 	id = strings.TrimSpace(id)
 	status = strings.TrimSpace(status)
@@ -1430,7 +1458,7 @@ func (m *Memory) AdminUpdateBalanceRecharge(ctx context.Context, id, status, tra
 	if r == nil {
 		return nil
 	}
-	if paidAt.IsZero() {
+	if status == "paid" && paidAt.IsZero() {
 		paidAt = time.Now()
 	}
 	if r.Status == "pending" && status == "paid" {
@@ -1458,8 +1486,14 @@ func (m *Memory) AdminUpdateBalanceRecharge(ctx context.Context, id, status, tra
 	if tradeNo != "" {
 		r.TradeNo = tradeNo
 	}
+	if notifyRaw != "" {
+		r.NotifyRaw = notifyRaw
+	}
 	if status == "paid" {
 		r.PaidAt = paidAt
+	}
+	if status == "closed" || status == "cancelled" {
+		r.ClosedAt = time.Now()
 	}
 	r.UpdatedAt = time.Now()
 	return nil

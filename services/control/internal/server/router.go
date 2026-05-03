@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // HTTP route registration for the admin/UI API. All routes land on a
 // single net/http ServeMux behind withMetrics + withBodyLimit; per-route
@@ -61,8 +61,12 @@ func (s *Servers) adminMux() http.Handler {
 	// User balance API
 	mux.HandleFunc("/api/balance/account", s.withAuth(s.handleBalanceAccount))
 	mux.HandleFunc("/api/balance/transactions", s.withAuth(s.handleBalanceTransactions))
-	mux.HandleFunc("/api/balance/recharges", s.withAuth(s.handleBalanceRecharges))
+	mux.HandleFunc("/api/balance/recharges", s.withAuth(s.handleBalanceRecharges)) // GET list / POST create
 	mux.HandleFunc("/api/balance/withdrawals", s.withAuth(s.handleBalanceWithdrawals))
+
+	// Payment callbacks (no auth, signature verified by provider)
+	mux.HandleFunc("/api/payments/notify/", s.handlePaymentNotify)
+	mux.HandleFunc("/api/payments/mock/", s.handlePaymentMock)
 
 	// User orders API
 	mux.HandleFunc("/api/user/orders", s.withAuth(s.handleUserOrders))
