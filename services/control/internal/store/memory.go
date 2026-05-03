@@ -600,6 +600,22 @@ func (m *Memory) DeleteNode(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.nodes, id)
+	// Mirror the Postgres ON DELETE CASCADE on cluster_nodes(node_id):
+	// remove this node from every cluster/line it is a member of so
+	// memory-backed tests observe the same behavior as production.
+	for clusterID, lineMap := range m.clusterNodes {
+		for line, nodes := range lineMap {
+			if _, ok := nodes[id]; ok {
+				delete(nodes, id)
+				if len(nodes) == 0 {
+					delete(lineMap, line)
+				}
+			}
+		}
+		if len(lineMap) == 0 {
+			delete(m.clusterNodes, clusterID)
+		}
+	}
 	return nil
 }
 

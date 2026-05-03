@@ -296,6 +296,10 @@ func (s *Servers) Serve(ctx context.Context) error {
 	go s.sseBroker.run()
 	go s.dataRetentionLoop(ctx)
 	go s.upgradeTaskSweeper(ctx)
+	// Evicts nodehub sessions for hosts that are genuinely gone. Paired
+	// with nodehub.ClearConfigStream, which preserves sessions across
+	// transient stream drops so reconnects don't lose their hub binding.
+	go s.hubSessionSweeper(ctx)
 	// Daily sweep to auto-renew ACME certs nearing expiry. Without this,
 	// Let's Encrypt certs issued through the UI silently expire at day 90
 	// and users find out when TLS starts failing in production.

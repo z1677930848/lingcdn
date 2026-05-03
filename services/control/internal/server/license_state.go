@@ -35,6 +35,12 @@ type licenseState struct {
 	Reason      string    `json:"reason"`       // invalid reason
 	UpdatedAt   time.Time `json:"updated_at"`
 	PubKey      string    `json:"pubkey,omitempty"`
+	// ReportSecret is the HMAC key the portal expects on /api/control/report.
+	// It is delivered by the portal in the license verify response (only when
+	// the request IP matches license.bind_ip), then cached here so subsequent
+	// system reports can sign successfully without manual key sync between
+	// portal config.yaml and control plane config.yaml.
+	ReportSecret string `json:"report_secret,omitempty"`
 }
 
 // staticLicenseRegistry is the schema for an offline license registry hosted
@@ -75,6 +81,11 @@ type portalLicenseVerifyResponse struct {
 	SigAlg    string `json:"sig_alg"`
 	SigTarget string `json:"sig_target"`
 	PubKey    string `json:"pubkey"`
+	// ReportSecret is the top-level (unsigned) fallback channel for the
+	// system-report HMAC key. New portals also embed it inside Payload so
+	// signed responses carry it tamper-evidently; this field exists for
+	// portals that have not yet enabled PORTAL_SIGNING_PRIVKEY.
+	ReportSecret string `json:"report_secret"`
 }
 
 func (s *Servers) licenseMode() string {
@@ -247,29 +258,31 @@ func mustJSON(v any) []byte {
 
 func toStoreLicense(st licenseState) *store.LicenseState {
 	return &store.LicenseState{
-		Status:      st.Status,
-		LicenseKey:  st.LicenseKey,
-		ExpiresAt:   st.ExpiresAt,
-		MaxNodes:    st.MaxNodes,
-		LastChecked: st.LastChecked,
-		GraceUntil:  st.GraceUntil,
-		Reason:      st.Reason,
-		UpdatedAt:   st.UpdatedAt,
-		PubKey:      st.PubKey,
+		Status:       st.Status,
+		LicenseKey:   st.LicenseKey,
+		ExpiresAt:    st.ExpiresAt,
+		MaxNodes:     st.MaxNodes,
+		LastChecked:  st.LastChecked,
+		GraceUntil:   st.GraceUntil,
+		Reason:       st.Reason,
+		UpdatedAt:    st.UpdatedAt,
+		PubKey:       st.PubKey,
+		ReportSecret: st.ReportSecret,
 	}
 }
 
 func fromStoreLicense(st store.LicenseState) licenseState {
 	return licenseState{
-		Status:      st.Status,
-		LicenseKey:  st.LicenseKey,
-		ExpiresAt:   st.ExpiresAt,
-		MaxNodes:    st.MaxNodes,
-		LastChecked: st.LastChecked,
-		GraceUntil:  st.GraceUntil,
-		Reason:      st.Reason,
-		UpdatedAt:   st.UpdatedAt,
-		PubKey:      st.PubKey,
+		Status:       st.Status,
+		LicenseKey:   st.LicenseKey,
+		ExpiresAt:    st.ExpiresAt,
+		MaxNodes:     st.MaxNodes,
+		LastChecked:  st.LastChecked,
+		GraceUntil:   st.GraceUntil,
+		Reason:       st.Reason,
+		UpdatedAt:    st.UpdatedAt,
+		PubKey:       st.PubKey,
+		ReportSecret: st.ReportSecret,
 	}
 }
 
@@ -390,6 +403,17 @@ func (s *Servers) buildVerifiedLicenseState(current licenseState, data portalLic
 		}
 		newState = parsed
 		newState.LicenseKey = current.LicenseKey
+		// Don't drop a previously-cached report_secret if the portal omitted
+		// it from this round-trip (e.g. running on an older portal that
+		// signs the payload but doesn't yet embed report_secret in it).
+		// The unsigned top-level field is the second-chance source.
+		if strings.TrimSpace(newState.ReportSecret) == "" {
+			if v := strings.TrimSpace(data.ReportSecret); v != "" {
+				newState.ReportSecret = v
+			} else {
+				newState.ReportSecret = current.ReportSecret
+			}
+		}
 		return newState, nil
 	}
 
@@ -403,6 +427,12 @@ func (s *Servers) buildVerifiedLicenseState(current licenseState, data portalLic
 		if t, err := time.Parse(time.RFC3339, data.ExpireAt); err == nil {
 			newState.ExpiresAt = t
 		}
+	}
+	// Prefer a freshly-delivered report_secret; if the portal didn't send
+	// one this round (legacy portal, or IP no longer matches bind_ip), keep
+	// whatever we cached previously rather than clearing it.
+	if v := strings.TrimSpace(data.ReportSecret); v != "" {
+		newState.ReportSecret = v
 	}
 	return newState, nil
 }

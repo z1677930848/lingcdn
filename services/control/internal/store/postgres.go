@@ -3010,7 +3010,6 @@ func scanDomain(row pgx.Row) (*Domain, error) {
 	if len(securityBytes) > 0 && string(securityBytes) != "{}" {
 		var sec DomainSecurity
 		if err := json.Unmarshal(securityBytes, &sec); err == nil {
-			applyLegacyDomainSecurityDefaults(&sec, securityBytes)
 			d.Security = &sec
 		}
 	}
@@ -3062,7 +3061,6 @@ func scanDomainRows(rows pgx.Rows) (*Domain, error) {
 	if len(securityBytes) > 0 && string(securityBytes) != "{}" {
 		var sec DomainSecurity
 		if err := json.Unmarshal(securityBytes, &sec); err == nil {
-			applyLegacyDomainSecurityDefaults(&sec, securityBytes)
 			d.Security = &sec
 		}
 	}
@@ -3235,25 +3233,6 @@ func defaultLoadBalanceMethod(s string) string {
 		return "ip_hash"
 	default:
 		return "round_robin"
-	}
-}
-
-// applyLegacyDomainSecurityDefaults patches a freshly-decoded DomainSecurity
-// so records written before the `enabled` master switch existed behave the
-// same way they did before the migration. Previously any non-nil Security
-// row was synthesized into a WAF policy by the compiler; to preserve that
-// behaviour we default Enabled=true when the JSON blob does not contain
-// an explicit `enabled` key. New records always include the field.
-func applyLegacyDomainSecurityDefaults(sec *DomainSecurity, raw []byte) {
-	if sec == nil {
-		return
-	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		return
-	}
-	if _, ok := probe["enabled"]; !ok {
-		sec.Enabled = true
 	}
 }
 

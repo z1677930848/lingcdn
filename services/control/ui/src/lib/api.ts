@@ -714,11 +714,13 @@ export interface DomainCCRule {
 
 // DomainSecurity mirrors store.DomainSecurity: the full per-domain CC
 // protection + IP black/white list configuration the detail page edits.
+//
+// There is no master `enabled` toggle: each sub-field is its own switch
+// (default_mode === "off", empty ip_blacklist, per-custom-rule enabled,
+// empty blocked_regions). A blank DomainSecurity therefore produces no
+// edge policy at all, which matches the previous "disabled" behaviour
+// without forcing operators to remember a top-level switch.
 export interface DomainSecurity {
-  // Master switch — when false the backend compiler skips this domain
-  // entirely regardless of default_mode/custom_rules contents, so users
-  // can pause protection without clearing configuration.
-  enabled?: boolean
   default_mode?: string
   auto_switch?: boolean
   search_bot?: string

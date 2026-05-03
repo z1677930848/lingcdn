@@ -139,7 +139,16 @@ func (s *Servers) reportSystemOnce(ctx context.Context) (string, error) {
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
-	if secret := strings.TrimSpace(s.cfg.PortalReportSecret); secret != "" {
+	// Prefer the per-license HMAC secret the portal delivers via license
+	// verify (auto-synced, no operator key sharing required). Fall back to
+	// the legacy operator-managed PORTAL_REPORT_SECRET in cfg, which is
+	// what older portals — those that do not yet embed report_secret in
+	// their license verify response — still expect.
+	secret := strings.TrimSpace(st.ReportSecret)
+	if secret == "" {
+		secret = strings.TrimSpace(s.cfg.PortalReportSecret)
+	}
+	if secret != "" {
 		mac := hmac.New(sha256.New, []byte(secret))
 		mac.Write(bytes.TrimSpace(payload))
 		req.Header.Set("X-Report-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))

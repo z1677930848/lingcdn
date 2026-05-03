@@ -598,13 +598,11 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 			continue
 		}
 		sec := d.Security
-		// Master switch: if the operator has explicitly disabled the
-		// per-domain security block, skip policy synthesis even if
-		// sub-fields (blacklist, custom rules, etc.) still carry data
-		// — they might be staged for a future re-enable.
-		if !sec.Enabled {
-			continue
-		}
+		// No master enabled toggle anymore: each sub-field is its own
+		// switch (DefaultMode, IPBlacklist length, per-rule Enabled,
+		// BlockedRegions length). A DomainSecurity with all sub-fields
+		// at their zero values produces an empty policy below, which is
+		// equivalent to the old "disabled" state at the edge.
 		pol := WAFPolicyConfig{
 			ID:      "domain-sec-" + d.ID,
 			Name:    "domain:" + d.Name,

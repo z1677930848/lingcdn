@@ -29,6 +29,11 @@ SERVICE_TOKEN: REPLACE_WITH_RANDOM_SECRET
 ADMIN_BOOTSTRAP_TOKEN: REPLACE_WITH_RANDOM_SECRET
 AUTH_SECRET: REPLACE_WITH_RANDOM_SECRET
 WEBHOOK_SECRET: REPLACE_WITH_RANDOM_SECRET
+# PORTAL_REPORT_SECRET 用于给 portal 的 /api/control/report 上报签名 HMAC。
+# 1.0.23+ 起，主控会优先使用 portal 在 license verify 中下发的 report_secret
+# （要求 license.bind_ip 与本机出口 IP 一致），无需运维手工与 portal config.yaml
+# 同步密钥；这里的值仅作为 fallback——当 license 还没 verify 通过、或对接的是
+# 旧版本 portal（不下发 report_secret）时使用。
 PORTAL_REPORT_SECRET: REPLACE_WITH_RANDOM_SECRET
 
 # ---------- 管理员引导账号 ----------

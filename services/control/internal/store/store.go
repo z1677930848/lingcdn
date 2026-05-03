@@ -536,15 +536,14 @@ type OriginHealthCheck struct {
 // "Security" tab in the UI edits. The compiler translates this struct
 // into a scope=domain WAFPolicyConfig delivered to edge nodes — nodes
 // don't need to know about this shape, they just consume WAF policies.
+//
+// Note: there is no master "enabled" toggle. Each sub-field is its own
+// switch (DefaultMode="off", empty IP lists, per-rule Enabled flag,
+// empty BlockedRegions, etc.) so the policy materialises only as much
+// behaviour as the operator actually configured. The previous master
+// switch caused frequent "I configured everything but nothing happens
+// at the edge" support tickets and was removed.
 type DomainSecurity struct {
-	// Enabled is the master switch for the whole per-domain security block.
-	// When false, the compiler skips this domain entirely regardless of
-	// default_mode / custom_rules / blacklist contents — so users can
-	// disable protection without having to clear every sub-setting.
-	// Defaults to true for backward compatibility with records created
-	// before this field existed (see storage layer upgrades).
-	Enabled bool `json:"enabled"`
-
 	// DefaultMode is the single-preset fallback when no custom rule
 	// matches and auto-switch is not in effect. Valid values:
 	//   off | loose | js | shield5s | click | slide | captcha | rotate |
@@ -846,15 +845,16 @@ type Redis interface {
 
 // LicenseState represents cached license info.
 type LicenseState struct {
-	Status      string    `json:"status"`
-	LicenseKey  string    `json:"license_key"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	MaxNodes    int       `json:"max_nodes"`
-	LastChecked time.Time `json:"last_checked"`
-	GraceUntil  time.Time `json:"grace_until"`
-	Reason      string    `json:"reason"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	PubKey      string    `json:"pubkey,omitempty"`
+	Status       string    `json:"status"`
+	LicenseKey   string    `json:"license_key"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	MaxNodes     int       `json:"max_nodes"`
+	LastChecked  time.Time `json:"last_checked"`
+	GraceUntil   time.Time `json:"grace_until"`
+	Reason       string    `json:"reason"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	PubKey       string    `json:"pubkey,omitempty"`
+	ReportSecret string    `json:"report_secret,omitempty"`
 }
 
 // Settings stores system configuration.

@@ -657,23 +657,9 @@
               <span class="tab-label"><Shield :size="14" /><span>安全设置</span></span>
             </template>
             <div class="tab-body security-tab">
-              <!-- Master switch: gates the whole block at compile time.
-                   Lives outside the individual "CC 防护" section because
-                   it controls blacklist + whitelist + custom rules too. -->
-              <section class="config-section sec-master">
-                <div class="sec-row">
-                  <label class="sec-label">启用安全策略</label>
-                  <div class="sec-value">
-                    <div class="sec-switch">
-                      <t-switch v-model="secForm.enabled" />
-                      <span class="switch-text">{{ secForm.enabled ? '已启用' : '已关闭' }}</span>
-                    </div>
-                    <div class="sec-hint">
-                      总开关。关闭后，以下 CC 防护、自定义规则、IP 黑白名单在节点层面整体失效（配置不会被清除，可随时重新开启）。
-                    </div>
-                  </div>
-                </div>
-              </section>
+              <!-- No master switch: each sub-field below is its own
+                   independent toggle, so an empty form means no edge
+                   policy. The compiler's behaviour matches that exactly. -->
 
               <!-- Section 1: CC 防护 -->
               <section class="config-section">
@@ -1161,7 +1147,6 @@ const ccDefaultModes = [
 ] as const
 
 const secForm = reactive<{
-  enabled: boolean
   default_mode: string
   auto_switch: boolean
   search_bot: "off" | "allow" | "deny"
@@ -1174,7 +1159,6 @@ const secForm = reactive<{
   region_block_mode: string
   custom_blocked_regions: string
 }>({
-  enabled: false,
   default_mode: "off",
   auto_switch: false,
   search_bot: "off",
@@ -1584,10 +1568,6 @@ const loadSecondary = async (domainId: string) => {
     // cdnfly-style 安全设置 tab reflects what's actually stored on the
     // domain (not just the legacy global CC policy).
     const sec = await api.getDomainSecurity(domainId)
-    // Backend returns an explicit `enabled` bool for records that have it,
-    // and keeps legacy rows (written before the master switch existed)
-    // at enabled=true for back-compat.
-    secForm.enabled = typeof sec.enabled === "boolean" ? sec.enabled : false
     secForm.default_mode = sec.default_mode || "off"
     secForm.auto_switch = Boolean(sec.auto_switch)
     secForm.search_bot = (sec.search_bot as any) || "off"
@@ -2023,7 +2003,6 @@ const saveCC = async () => {
         .map(x => x.trim())
         .filter(x => x !== "" && !x.startsWith("#"))
     await api.updateDomainSecurity(id, {
-      enabled: secForm.enabled,
       default_mode: secForm.default_mode,
       auto_switch: secForm.auto_switch,
       search_bot: secForm.search_bot,
@@ -2262,10 +2241,26 @@ const isAdmin = computed(() => auth.user?.role === "admin")
 // Hero 健康摘要：把 4 个最关键的开关（HTTPS / 缓存 / 安全策略 / WS）
 // 聚合成一组只读 chip，让用户进入页面就能扫到当前接入网站的整体健康度，
 // 不必再点开每个 tab 才知道。
+// `security` chip considers the policy effective when at least one
+// sub-field is configured: a non-"off" CC mode, any custom rule, any
+// black/white-list IP, or a region block. Mirrors the compiler's view
+// of "is anything actually being applied at the edge".
+const securityActive = computed(
+  () =>
+    (secForm.default_mode && secForm.default_mode !== "off") ||
+    secForm.auto_switch ||
+    (secForm.search_bot && secForm.search_bot !== "off") ||
+    secForm.custom_rules.length > 0 ||
+    secForm.ip_blacklist.trim() !== "" ||
+    secForm.ip_whitelist.trim() !== "" ||
+    secForm.block_transparent_proxy ||
+    (secForm.region_block_mode && secForm.region_block_mode !== "off") ||
+    secForm.custom_blocked_regions.trim() !== "",
+)
 const healthChips = computed(() => [
   { key: "https", label: "HTTPS", on: !!form.https_enabled, icon: ShieldCheck },
   { key: "cache", label: "缓存", on: !!form.cache_enabled, icon: HardDrive },
-  { key: "security", label: "安全策略", on: !!secForm.enabled, icon: Shield },
+  { key: "security", label: "安全策略", on: !!securityActive.value, icon: Shield },
   { key: "ws", label: "WebSocket", on: !!form.websocket_enabled, icon: Plug },
 ])
 
@@ -2952,13 +2947,6 @@ onMounted(load)
   font-size: 13px;
   text-align: right;
 }
-.sec-master {
-  background: var(--td-bg-color-container-hover, #f9f9fa);
-  border-radius: 6px;
-  padding: 12px 8px;
-  margin-bottom: 8px;
-}
-
 /* Origin auth header editor */
 .origin-auth-headers {
   display: flex;

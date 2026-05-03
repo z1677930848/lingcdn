@@ -133,7 +133,8 @@
               <div class="admin-mobile-card-header">
                 <div class="admin-mobile-card-title">{{ row.node?.hostname || row.node_id }}</div>
                 <div class="admin-mobile-card-tags">
-                  <t-tag :theme="row.enabled ? 'success' : 'default'" variant="light" size="small">{{ row.enabled ? '启用' : '停用' }}</t-tag>
+                  <t-tag :theme="(nodeStatusTagInfo(row.node).theme as any)" variant="light" size="small">{{ nodeStatusTagInfo(row.node).label }}</t-tag>
+                  <t-tag :theme="row.enabled ? 'success' : 'default'" variant="light" size="small">{{ row.enabled ? '已绑定' : '已解绑' }}</t-tag>
                   <t-tag v-if="row.backup" theme="warning" variant="light" size="small">备用</t-tag>
                 </div>
               </div>
@@ -424,6 +425,22 @@ const loadNodes = async () => {
 
 watch(nodeLineFilter, () => { if (nodeDrawerVisible.value) loadNodes() })
 
+// Same precedence rules as AdminNodesView: explicit disabled/pending first,
+// then transport/report health flags, then the raw status string. We read the
+// node's own state here, NOT the cluster-binding "enabled" flag.
+const nodeStatusTagInfo = (node?: CDNNode | null): { theme: string; label: string } => {
+  const s = (node?.status || "").trim().toLowerCase()
+  if (s === "disabled") return { theme: "danger", label: "已禁用" }
+  if (s === "pending") return { theme: "default", label: "待激活" }
+  if (node?.comm_ok === false) return { theme: "danger", label: "通信异常" }
+  if (node?.report_ok === false) return { theme: "warning", label: "上报异常" }
+  if (!s) return { theme: "default", label: "未知" }
+  if (s === "online" || s === "running") return { theme: "success", label: "在线" }
+  if (s === "offline") return { theme: "warning", label: "离线" }
+  if (s === "stopped") return { theme: "warning", label: "已停止" }
+  return { theme: "default", label: node?.status || "未知" }
+}
+
 const nodeColumns = [
   {
     colKey: "hostname", title: "节点", minWidth: 140,
@@ -432,6 +449,13 @@ const nodeColumns = [
         h("div", { style: "font-weight:600" }, row.node?.hostname || row.node_id),
         row.node?.public_ip ? h("div", { class: "table-muted" }, row.node.public_ip) : null,
       ]),
+  },
+  {
+    colKey: "node_status", title: "节点状态", width: 100,
+    cell: (_h: any, { row }: { row: ClusterNodeMeta }) => {
+      const info = nodeStatusTagInfo(row.node)
+      return h(Tag, { theme: info.theme, variant: "light", size: "small" } as any, () => info.label)
+    },
   },
   {
     colKey: "line", title: "线路", width: 100,
@@ -443,9 +467,9 @@ const nodeColumns = [
     cell: (_h: any, { row }: { row: ClusterNodeMeta }) => row.weight ?? 0,
   },
   {
-    colKey: "enabled", title: "状态", width: 80,
+    colKey: "enabled", title: "绑定", width: 80,
     cell: (_h: any, { row }: { row: ClusterNodeMeta }) =>
-      h(Tag, { theme: row.enabled ? "success" : "default", variant: "light", size: "small" } as any, () => (row.enabled ? "启用" : "停用")),
+      h(Tag, { theme: row.enabled ? "success" : "default", variant: "light", size: "small" } as any, () => (row.enabled ? "已绑定" : "已解绑")),
   },
   {
     colKey: "backup", title: "备用", width: 70,

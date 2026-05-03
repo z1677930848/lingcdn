@@ -420,9 +420,43 @@ func (s *nodeControlServer) StreamConfig(stream controlpb.NodeControl_StreamConf
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	s.hub.SetConfigStream(nodeID, stream, cancel)
+	// Bind the stream to the hub session. If the session is missing — which
+	// happens whenever this is a reconnect of a previously-ended stream
+	// (the old defer used to hub.Remove on every disconnect, and the node
+	// agent never re-calls RegisterNode on its own) — rebuild it from the
+	// persisted node row so downstream Publisher.Publish can reach us.
+	// Without this self-heal, subsequent site-config changes silently fail
+	// to deliver to the node even though the agent is happily reconnected.
+	if !s.hub.SetConfigStream(nodeID, stream, cancel) {
+		n, err := s.store.GetNode(ctx, nodeID)
+		if err != nil {
+			log.Ctx(ctx).Error().Err(err).Str("node_id", nodeID).Msg("stream-config: failed to load node for session rehydrate")
+			return status.Errorf(codes.Internal, "load node for session rehydrate: %v", err)
+		}
+		if n == nil {
+			return status.Error(codes.NotFound, "node not found; please re-register")
+		}
+		log.Ctx(ctx).Warn().Str("node_id", nodeID).Msg("stream-config: session missing, rebuilding from store (likely stream reconnect)")
+		s.hub.Add(ctx, &nodehub.Session{
+			NodeID:       nodeID,
+			Hostname:     n.Hostname,
+			Version:      n.Version,
+			Capabilities: n.Capabilities,
+			Status:       "online",
+		})
+		if !s.hub.SetConfigStream(nodeID, stream, cancel) {
+			// Should not happen: Add either inserted or replaced the entry.
+			return status.Error(codes.Internal, "failed to bind config stream after session rebuild")
+		}
+	}
 	defer func() {
-		s.hub.Remove(nodeID)
+		// Only clear the stream binding (not the whole session) so that
+		// Publisher.Publish continues to see this node as a live target
+		// until it's explicitly removed (node delete / disable / cleanup).
+		// This makes transient reconnects — network blips, control-plane
+		// restarts, brief stream terminations — idempotent from the hub's
+		// point of view.
+		s.hub.ClearConfigStream(nodeID, stream)
 		log.Ctx(ctx).Info().Str("node_id", nodeID).Msg("config stream ended")
 	}()
 

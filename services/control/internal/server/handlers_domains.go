@@ -717,10 +717,11 @@ func (s *Servers) handleDomainSecurity(w http.ResponseWriter, r *http.Request, i
 	case http.MethodGet:
 		sec := domain.Security
 		if sec == nil {
-			// No record yet — default the master switch to off so the UI
-			// doesn't silently activate protection the moment the user
-			// opens the tab. The operator must explicitly turn it on.
-			sec = &store.DomainSecurity{Enabled: false}
+			// No record yet — return a zero-valued struct so the UI form
+			// can bind deterministically. Each sub-field is its own
+			// switch, so an all-zero security struct produces no edge
+			// policy until the operator configures something.
+			sec = &store.DomainSecurity{}
 		}
 		writeJSON(w, http.StatusOK, sec)
 

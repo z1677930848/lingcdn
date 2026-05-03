@@ -1,14 +1,12 @@
 ﻿package server
 
 // Node management handlers: admin-only CRUD over edge nodes, monitor config
-// subresource, legacy install command builder, and bootstrap token handout.
-// The legacy install handler is retained because older operator runbooks
-// curl it directly; new installs use node_install.go.
+// subresource, and bootstrap token handout. The install-command builder
+// lives in node_install.go.
 
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/lingcdn/control/internal/buildinfo"
 	"github.com/lingcdn/control/internal/store"
 )
 
@@ -131,6 +128,16 @@ func (s *Servers) handleNodeByID(w http.ResponseWriter, r *http.Request) {
 			s.triggerDNSSync("", "node:disable")
 		} else if strings.EqualFold(req.Status, "online") {
 			s.triggerDNSSync("", "node:enable")
+			// Proactively fan out the latest config to this node so the UI
+			// surfaces a visible sync task and the node picks up any changes
+			// made while it was disabled. If the node's agent hasn't
+			// reconnected yet, hub.SendConfig returns ErrNodeNotConnected and
+			// the task records a failure — that's fine: the subsequent
+			// StreamConfig first-frame (BuildConfigEnvelope) delivers the
+			// same envelope when the agent does come back, so this serves as
+			// an immediate push for already-reconnected nodes plus a
+			// best-effort nudge for the rest.
+			_ = s.startPublishTask(ctx, "auto", "node:"+id, "node:enable:"+id, "", []string{id})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": req.Token})
 
@@ -140,6 +147,7 @@ func (s *Servers) handleNodeByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.hub.Remove(id)
+		s.triggerDNSSync("", "node:delete")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 
 	default:
@@ -267,147 +275,20 @@ func validateNodeMonitorConfig(cfg store.NodeMonitorConfig) error {
 	return nil
 }
 
-// handleNodeInstallCommand returns a ready-to-copy install command (curl + bash) using portal install script.
-func (s *Servers) handleNodeInstallCommandLegacy(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if getUserRole(ctx) != "admin" {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "仅管理员可操作"})
-		return
-	}
-
-	shellQuote := func(v string) string {
-		return "'" + strings.ReplaceAll(v, "'", "'\"'\"'") + "'"
-	}
-
-	portal := strings.TrimRight(r.URL.Query().Get("portal_base"), "/")
-	if portal == "" {
-		portal = s.portalBase()
-	}
-	scriptURL := r.URL.Query().Get("script_url")
-	if scriptURL == "" {
-		scriptURL = portal + "/node_install.sh"
-	}
-	masterHost := r.URL.Query().Get("master_host")
-	grpcHost, grpcPort, err := net.SplitHostPort(s.cfg.GRPCAddr)
-	if err != nil || grpcPort == "" {
-		grpcHost = ""
-		grpcPort = "9443"
-	}
-	_ = grpcHost
-
-	resolveIPHostPort := func(hostPort string) (string, bool) {
-		host := hostPort
-		port := grpcPort
-		if h, p, e := net.SplitHostPort(hostPort); e == nil {
-			host = h
-			port = p
-		} else if strings.Contains(hostPort, ":") {
-			// likely host:port without brackets for ipv6; keep as-is and validate below
-			host = hostPort
-		}
-		host = strings.TrimSpace(host)
-		if ip := net.ParseIP(host); ip == nil {
-			return "", false
-		}
-		if port == "" {
-			port = grpcPort
-		}
-		return net.JoinHostPort(host, port), true
-	}
-
-	if masterHost == "" {
-		// Prefer explicit public gRPC endpoint, then public IP, then request host.
-		if s.cfg.PublicGRPCEndpoint != "" {
-			if v, ok := resolveIPHostPort(s.cfg.PublicGRPCEndpoint); ok {
-				masterHost = v
-			} else {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "PUBLIC_GRPC_ENDPOINT必须为公网IP或IP:端口格式"})
-				return
-			}
-		} else if s.cfg.PublicIP != "" {
-			if v, ok := resolveIPHostPort(s.cfg.PublicIP); ok {
-				masterHost = v
-			} else {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "PUBLIC_IP必须为公网IP"})
-				return
-			}
-		} else {
-			hostOnly := r.Host
-			if h, _, e := net.SplitHostPort(r.Host); e == nil {
-				hostOnly = h
-			}
-			if v, ok := resolveIPHostPort(hostOnly); ok {
-				masterHost = v
-			} else {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请配置PUBLIC_IP或PUBLIC_GRPC_ENDPOINT为公网IP"})
-				return
-			}
-		}
-	} else {
-		// Require master_host to resolve to a public IP address.
-		if v, ok := resolveIPHostPort(masterHost); ok {
-			masterHost = v
-		} else {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "master_host必须为公网IP或IP:端口格式"})
-			return
-		}
-	}
-	version := r.URL.Query().Get("master_version")
-	if version == "" {
-		// The install handler stamps the master version into the generated
-		// install script so the new node knows which master it's talking to.
-		// Pull from buildinfo — never from os.Getenv, which used to be
-		// clobberable by a stale /etc/lingcdn/lingcdn.env.
-		version = buildinfo.Version()
-	}
-
-	ttlMinutes := 60
-	if v := r.URL.Query().Get("ttl_minutes"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			ttlMinutes = n
-		}
-	}
-
-	token, exp, err := s.store.CreateBootstrapToken(ctx, "install generated", time.Duration(ttlMinutes)*time.Minute)
-	if err != nil {
-		writeInternalError(w, "create bootstrap token", err)
-		return
-	}
-
-	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	if strings.Contains(scriptURL, "?") {
-		scriptURL = scriptURL + "&t=" + ts
-	} else {
-		scriptURL = scriptURL + "?t=" + ts
-	}
-
-	cmd := fmt.Sprintf(
-		"curl -fsSL -o node_install.sh %s && bash node_install.sh --master_host %s --master_token %s --master_version %s --portal_base %s%s",
-		shellQuote(scriptURL), shellQuote(masterHost), shellQuote(token), shellQuote(version), shellQuote(portal),
-		func() string {
-			if strings.TrimSpace(s.cfg.UpgradePubKey) == "" {
-				return ""
-			}
-			return " --upgrade_pubkey " + shellQuote(s.cfg.UpgradePubKey)
-		}(),
-	)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"command":        cmd,
-		"master_host":    masterHost,
-		"master_token":   token,
-		"master_version": version,
-		"expires_at":     exp,
-		"portal_base":    portal,
-		"script_url":     scriptURL,
-		"style":          "master",
-	})
-}
-
 // handleNodeBootstrapToken returns a short-lived bootstrap token for node installation.
+//
+// 与 install-command / install-ssh / POST /api/nodes 对齐的 license 预检：
+// 如果当前授权已达节点数上限或整体处于非 active 状态，直接拒绝铸 token，
+// 否则管理员仍能拿到一个 60 分钟的 bootstrap token，然后节点安装跑到
+// gRPC RegisterNode 那一步才被拒 —— 目标主机已经装了一半（审计 #P1-3）。
 func (s *Servers) handleNodeBootstrapToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if getUserRole(ctx) != "admin" {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "仅管理员可操作"})
+		return
+	}
+	if err := s.preInstallNodeLicenseCheck(ctx); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
 		return
 	}
 	var req struct {
