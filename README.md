@@ -28,7 +28,8 @@ LingCDN 是一套自研的 CDN/边缘加速 + WAF 平台，本仓库收录 **主
 │       ├── src/                   # 业务实现：proxy / cache / waf / xdp …
 │       ├── xdp-ebpf/              # eBPF 程序（Linux 专用，需 nightly）
 │       └── node.example.toml      # 节点配置模板
-├── deployment/                # 部署清单（systemd / docker-compose 等，按需补充）
+├── deployment/                # 部署清单（systemd / Filebeat 等）
+├── PRODUCTION.md              # 生产环境检查清单
 ├── tools/                     # 辅助脚本与工具（cross-bin 不入库）
 └── build_control.sh           # 主控端打包脚本（输出 tar.gz）
 ```

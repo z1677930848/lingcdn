@@ -6,7 +6,7 @@ import "strings"
 const authPortalBase = "https://auth.lingcdn.cloud"
 
 // hardcodedUpgradePortalBase remains overrideable for tests.
-var hardcodedUpgradePortalBase = authPortalBase
+var hardcodedUpgradePortalBase = ""
 
 func normalizePortalBase(raw string) string {
 	raw = strings.TrimSpace(raw)
@@ -22,6 +22,11 @@ func normalizePortalBase(raw string) string {
 func (s *Servers) portalBase() string {
 	if base := normalizePortalBase(hardcodedUpgradePortalBase); base != "" {
 		return base
+	}
+	if s != nil {
+		if base := normalizePortalBase(s.cfg.PortalBase); base != "" {
+			return base
+		}
 	}
 	return authPortalBase
 }

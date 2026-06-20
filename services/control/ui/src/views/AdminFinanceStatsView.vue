@@ -1,51 +1,48 @@
 <template>
   <div class="admin-page finance-stats-page">
-    <t-card bordered class="admin-list-card">
+    <el-card class="admin-list-card">
       <div class="admin-toolbar">
         <div class="admin-toolbar-left">
-          <t-date-range-picker v-model="dateRange" @change="loadStats" />
+          <el-date-picker v-model="dateRange" @change="loadStats" />
         </div>
         <div class="admin-toolbar-right">
-          <t-button variant="outline" @click="resetDateRange">重置</t-button>
-          <t-button theme="primary" :loading="loading" @click="loadStats">刷新</t-button>
+          <el-button plain @click="resetDateRange">重置</el-button>
+          <el-button type="primary" :loading="loading" @click="loadStats">刷新</el-button>
         </div>
       </div>
 
       <div class="stats-cards">
-        <t-card class="stat-card" bordered>
+        <el-card class="stat-card">
           <div class="stat-title">充值总额</div>
           <div class="stat-value">{{ formatMoney(totalRechargeCents) }}</div>
           <div class="stat-sub">充值笔数 {{ totalRechargeCount }}</div>
-        </t-card>
-        <t-card class="stat-card" bordered>
+        </el-card>
+        <el-card class="stat-card">
           <div class="stat-title">管理员调整净额</div>
           <div class="stat-value">{{ formatMoney(totalAdjustCents) }}</div>
           <div class="stat-sub">调整笔数 {{ totalAdjustCount }}</div>
-        </t-card>
-        <t-card class="stat-card" bordered>
+        </el-card>
+        <el-card class="stat-card">
           <div class="stat-title">综合净额</div>
           <div class="stat-value">{{ formatMoney(totalCents) }}</div>
           <div class="stat-sub">总笔数 {{ totalCount }}</div>
-        </t-card>
+        </el-card>
       </div>
 
-      <div v-if="error" class="admin-error-box" style="margin-top: 12px">
-        {{ error }}
-      </div>
+      <ErrorState v-if="error" :message="error" @retry="loadStats" />
 
       <div class="admin-desktop-only" style="margin-top: 12px">
-        <t-table
+        <EpDataTable
           :data="stats"
           :columns="columns"
           row-key="day"
-          bordered
           hover
           stripe
           :loading="loading"
         />
       </div>
       <div class="admin-mobile-only" style="margin-top: 12px">
-        <div v-if="loading" style="text-align:center;padding:32px 0"><t-loading /></div>
+        <div v-if="loading" style="text-align:center;padding:32px 0"><div v-loading="true" style="min-height:48px" /></div>
         <div v-else-if="stats.length === 0" class="admin-mobile-card-empty">暂无数据</div>
         <div v-else class="admin-mobile-cards">
           <div v-for="item in stats" :key="item.day" class="admin-mobile-card">
@@ -81,14 +78,16 @@
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpDataTable from "@/components/ep/EpDataTable.vue"
 import { computed, h, onMounted, ref } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
 import { api, type BalanceStatsDay } from "@/lib/api"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const loading = ref(false)
 const error = ref("")
@@ -189,61 +188,3 @@ onMounted(async () => {
 })
 </script>
 
-<style scoped>
-.finance-stats-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.stats-cards {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.stat-card {
-  border-radius: 8px;
-}
-
-.stat-title {
-  color: #94a3b8;
-  font-size: 13px;
-}
-
-.stat-value {
-  margin-top: 8px;
-  color: #0f172a;
-  font-size: 24px;
-  font-weight: 700;
-}
-
-.stat-sub {
-  margin-top: 6px;
-  color: #475569;
-  font-size: 12px;
-}
-
-@media (max-width: 960px) {
-  .stats-cards {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 768px) {
-  .admin-toolbar {
-    flex-direction: column;
-    gap: 8px;
-  }
-  .admin-toolbar-left,
-  .admin-toolbar-right {
-    width: 100%;
-  }
-  .admin-toolbar-left :deep(.t-date-range-picker) {
-    width: 100%;
-  }
-  .stat-value {
-    font-size: 20px;
-  }
-}
-</style>

@@ -31,7 +31,17 @@ type Store interface {
 	UpdateUserStatus(ctx context.Context, id string, status string) error
 	UpdateUserRole(ctx context.Context, id string, role string) error
 	UpdateUserPasswordHash(ctx context.Context, id string, passwordHash string) error
+	UpdateUserGroupID(ctx context.Context, id, groupID string) error
+	UpdateUserEmail(ctx context.Context, id, email string) error
+	UpdateUserUsername(ctx context.Context, id, username string) error
 	DeleteUser(ctx context.Context, id string) error
+
+	// User group operations (admin catalog for grouping users)
+	ListUserGroups(ctx context.Context) ([]*UserGroup, error)
+	GetUserGroup(ctx context.Context, id string) (*UserGroup, error)
+	CreateUserGroup(ctx context.Context, g *UserGroup) error
+	UpdateUserGroup(ctx context.Context, g *UserGroup) error
+	DeleteUserGroup(ctx context.Context, id string) error
 
 	// Node operations
 	CreateNode(ctx context.Context, node *Node) error
@@ -56,6 +66,9 @@ type Store interface {
 	UpdateNodeMonitorConfig(ctx context.Context, id string, cfg NodeMonitorConfig) error
 	UpdateNodeMonitorResult(ctx context.Context, id string, res NodeMonitorResult) error
 	UpdateNodeTelemetry(ctx context.Context, id string, t NodeTelemetry) error
+	InsertNodeMetricSample(ctx context.Context, nodeID string, sampledAt time.Time, requestsTotal, bytesSent int64) error
+	SumNodeRequestsInWindow(ctx context.Context, start, end time.Time) (int64, error)
+	NodeRequestsInWindowByNode(ctx context.Context, start, end time.Time) (map[string]int64, error)
 	DeleteNode(ctx context.Context, id string) error
 
 	// Cluster operations
@@ -91,6 +104,16 @@ type Store interface {
 	ListAllDomainOrigins(ctx context.Context) ([]*DomainOrigin, error)
 	ReplaceDomainOrigins(ctx context.Context, domainID string, entries []*DomainOrigin) error
 	DeleteDomainOrigins(ctx context.Context, domainID string) error
+
+	// StreamForward operations (L4 TCP/UDP forwarding)
+	ListStreamForwards(ctx context.Context, userID string) ([]*StreamForward, error)
+	ListStreamForwardsByDomain(ctx context.Context, domainID string) ([]*StreamForward, error)
+	ListAllStreamForwards(ctx context.Context) ([]*StreamForward, error)
+	GetStreamForward(ctx context.Context, id string) (*StreamForward, error)
+	CreateStreamForward(ctx context.Context, sf *StreamForward) error
+	UpdateStreamForward(ctx context.Context, sf *StreamForward) error
+	DeleteStreamForward(ctx context.Context, id string) error
+	CountEnabledStreamForwardsByUser(ctx context.Context, userID string) (int, error)
 
 	// Certificate operations
 	CreateCertificate(ctx context.Context, cert *Certificate) error
@@ -142,10 +165,12 @@ type Store interface {
 	GetBalanceAccount(ctx context.Context, userID string) (*BalanceAccount, error)
 	ListBalanceTransactions(ctx context.Context, userID string, page, pageSize int) ([]*BalanceTransaction, int64, error)
 	CreateBalanceRecharge(ctx context.Context, r *BalanceRecharge) error
+	CreateBalanceWithdrawal(ctx context.Context, w *BalanceWithdrawal) error
 	GetBalanceRechargeByOutTradeNo(ctx context.Context, outTradeNo string) (*BalanceRecharge, error)
 	AdminListBalanceAccounts(ctx context.Context, userID string, page, pageSize int) ([]*BalanceAccount, int64, error)
 	AdminListBalanceRecharges(ctx context.Context, userID, status string, page, pageSize int) ([]*BalanceRecharge, int64, error)
 	AdminUpdateBalanceRecharge(ctx context.Context, id, status, tradeNo, notifyRaw string, paidAt time.Time) error
+	UpdateBalanceRechargePayment(ctx context.Context, id, payURL, qrCode, formHTML string) error
 	AdminListBalanceWithdrawals(ctx context.Context, userID, status string, page, pageSize int) ([]*BalanceWithdrawal, int64, error)
 	AdminUpdateBalanceWithdrawal(ctx context.Context, id, status, note string, reviewedAt time.Time) error
 	AdminAdjustBalance(ctx context.Context, userID string, amountCents int64, note string) error
@@ -180,6 +205,15 @@ type Store interface {
 	UpdateAnnouncement(ctx context.Context, a *Announcement) error
 	DeleteAnnouncement(ctx context.Context, id string) error
 
+	// Support tickets
+	CreateTicket(ctx context.Context, t *Ticket, initialBody string) error
+	GetTicket(ctx context.Context, id string) (*Ticket, error)
+	ListTicketsByUser(ctx context.Context, userID, status string, page, pageSize int) ([]*Ticket, int64, error)
+	ListTicketsAdmin(ctx context.Context, userID, status string, page, pageSize int) ([]*Ticket, int64, error)
+	UpdateTicket(ctx context.Context, t *Ticket) error
+	AddTicketReply(ctx context.Context, reply *TicketReply) error
+	ListTicketReplies(ctx context.Context, ticketID string) ([]*TicketReply, error)
+
 	// System logs (audit)
 	CreateSystemLog(ctx context.Context, log *SystemLog) error
 	ListSystemLogs(ctx context.Context, logType, status, q string, page, pageSize int) ([]*SystemLog, int64, error)
@@ -208,6 +242,13 @@ type Store interface {
 	CreateWAFWhitelist(ctx context.Context, w *WAFWhitelist) error
 	DeleteWAFWhitelist(ctx context.Context, id string) error
 	IsIPWhitelisted(ctx context.Context, ip string) (bool, error)
+
+	// Alert rules
+	ListAlertRules(ctx context.Context) ([]*AlertRule, error)
+	GetAlertRule(ctx context.Context, id string) (*AlertRule, error)
+	CreateAlertRule(ctx context.Context, r *AlertRule) error
+	UpdateAlertRule(ctx context.Context, r *AlertRule) error
+	DeleteAlertRule(ctx context.Context, id string) error
 
 	// Email verifications
 	CreateEmailVerification(ctx context.Context, v *EmailVerification) error
@@ -271,6 +312,9 @@ type Node struct {
 	TCPTimeWait          int32     `json:"tcp_time_wait,omitempty"`
 	NginxRunning         bool      `json:"nginx_running,omitempty"`
 	MonthBytesSent       int64     `json:"month_bytes_sent,omitempty"`
+	RequestsTotal        int64     `json:"requests_total,omitempty"`
+	CacheHits            int64     `json:"cache_hits,omitempty"`
+	CacheMisses          int64     `json:"cache_misses,omitempty"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
@@ -304,6 +348,9 @@ type NodeTelemetry struct {
 	TCPSynRecv     int32
 	TCPTimeWait    int32
 	NginxRunning   bool
+	RequestsTotal  int64
+	CacheHits      int64
+	CacheMisses    int64
 }
 
 // User represents an operator or tenant user.
@@ -320,6 +367,17 @@ type User struct {
 	LastLoginAt       *time.Time `json:"last_login_at,omitempty"`
 	LastLoginIP       string     `json:"last_login_ip,omitempty"`
 	LastLoginLocation string     `json:"last_login_location,omitempty"`
+	GroupID           string     `json:"group_id,omitempty"`
+}
+
+// UserGroup is an admin-defined label bucket for organizing users.
+type UserGroup struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Permissions []string  `json:"permissions,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type BalanceAccount struct {
@@ -486,19 +544,20 @@ type Domain struct {
 	LineGroupID string `json:"line_group_id,omitempty"`
 	OriginID    string `json:"origin_id,omitempty"`
 	CertID      string `json:"cert_id,omitempty"`
+	ListenPort  int32  `json:"listen_port,omitempty"`
 	// HTTPSEnabled is the explicit on/off switch for 443 listening. Previously
 	// the system derived this from `CertID != ""`, which meant the UI's HTTPS
 	// toggle was effectively cosmetic (it could not represent "have a cert
 	// but don't use it" and could not turn HTTPS off without also unbinding
 	// the certificate). Persisting the flag directly fixes that.
-	HTTPSEnabled           bool            `json:"https_enabled"`
-	HTTP2Enabled           bool            `json:"http2_enabled"`
-	OriginScheme           string          `json:"origin_scheme,omitempty"` // http | https | follow_protocol | follow_port | follow_both
-	OriginPort             int32           `json:"origin_port,omitempty"`
-	OriginHostMode         string          `json:"origin_host_mode,omitempty"` // request_host | request_host_port | custom
-	OriginHost             string          `json:"origin_host,omitempty"`
-	OriginTimeoutMs        int64           `json:"origin_timeout_ms,omitempty"`         // total timeout
-	OriginConnectTimeoutMs int64           `json:"origin_connect_timeout_ms,omitempty"` // dial timeout
+	HTTPSEnabled           bool   `json:"https_enabled"`
+	HTTP2Enabled           bool   `json:"http2_enabled"`
+	OriginScheme           string `json:"origin_scheme,omitempty"` // http | https | follow_protocol | follow_port | follow_both
+	OriginPort             int32  `json:"origin_port,omitempty"`
+	OriginHostMode         string `json:"origin_host_mode,omitempty"` // request_host | request_host_port | custom
+	OriginHost             string `json:"origin_host,omitempty"`
+	OriginTimeoutMs        int64  `json:"origin_timeout_ms,omitempty"`         // total timeout
+	OriginConnectTimeoutMs int64  `json:"origin_connect_timeout_ms,omitempty"` // dial timeout
 	// OriginAuth configures authentication that the CDN node presents to the
 	// origin on every back-to-origin request. Supported modes:
 	//   - "header": node injects one or more custom HTTP headers (e.g.
@@ -507,25 +566,25 @@ type Domain struct {
 	//   - "basic": node uses HTTP Basic Authentication (username + password).
 	// When Enabled is false (or the struct is nil/zero), no auth headers
 	// are added and the origin fetch is plain.
-	OriginAuth *OriginAuth `json:"origin_auth,omitempty"`
-	ErrorPages []ErrorPage `json:"error_pages,omitempty"`
-	WebsocketEnabled       bool            `json:"websocket_enabled"`
-	Enabled                bool            `json:"enabled"`
-	CacheEnabled           bool            `json:"cache_enabled"`
+	OriginAuth       *OriginAuth `json:"origin_auth,omitempty"`
+	ErrorPages       []ErrorPage `json:"error_pages,omitempty"`
+	WebsocketEnabled bool        `json:"websocket_enabled"`
+	Enabled          bool        `json:"enabled"`
+	CacheEnabled     bool        `json:"cache_enabled"`
 	// LoadBalanceMethod 控制节点上多个 origin 地址之间的请求分配策略：
 	//   - "round_robin"：按权重随机选择（默认，等权时为均匀随机）
 	//   - "ip_hash"：按客户端 IP 的一致性哈希固定到某个 origin，常用于会话保持
 	// 空字符串视为 "round_robin"，与历史行为兼容。
-	LoadBalanceMethod      string          `json:"load_balance_method,omitempty"`
+	LoadBalanceMethod string `json:"load_balance_method,omitempty"`
 	// OriginHealthCheck 控制节点对每个 origin 地址的主动健康检查。
 	// 启用后，节点周期性发送 HTTP 探测请求，连续失败次数达到阈值时
 	// 自动将该 origin 从可选池中摘除（请求会落到其他 origin），探测
 	// 恢复成功达到阈值后再重新上线。当所有 origin 都不健康时，节点
 	// 会降级回全量列表以避免出现"无源站可选"的故障。
-	OriginHealthCheck      *OriginHealthCheck `json:"origin_health_check,omitempty"`
-	Security               *DomainSecurity `json:"security,omitempty"`
-	CreatedAt              time.Time       `json:"created_at"`
-	UpdatedAt              time.Time       `json:"updated_at"`
+	OriginHealthCheck *OriginHealthCheck `json:"origin_health_check,omitempty"`
+	Security          *DomainSecurity    `json:"security,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
 // OriginHealthCheck 是单个域名级别的源站健康检查配置。
@@ -534,7 +593,7 @@ type OriginHealthCheck struct {
 	Enabled        bool   `json:"enabled"`
 	IntervalSec    int32  `json:"interval_sec,omitempty"`    // 探测间隔，默认 30 秒，最小 5 秒
 	TimeoutMs      int64  `json:"timeout_ms,omitempty"`      // 单次探测超时，默认 5000 毫秒
-	Path           string `json:"path,omitempty"`             // 探测路径，默认 "/"
+	Path           string `json:"path,omitempty"`            // 探测路径，默认 "/"
 	ExpectedStatus int32  `json:"expected_status,omitempty"` // 期望状态码，默认 0 表示 2xx/3xx 均视为成功
 	FailThreshold  int32  `json:"fail_threshold,omitempty"`  // 连续失败 N 次判定下线，默认 3
 	PassThreshold  int32  `json:"pass_threshold,omitempty"`  // 连续成功 N 次恢复，默认 2
@@ -594,6 +653,18 @@ type DomainSecurity struct {
 	// BlockTransparentProxy when true denies requests that carry
 	// x-forwarded-for headers (transparent / open proxies).
 	BlockTransparentProxy bool `json:"block_transparent_proxy,omitempty"`
+
+	// SignedURLSecret enables HMAC-signed URL access. When non-empty, requests
+	// must carry valid ?expires=&sign= query parameters.
+	SignedURLSecret string `json:"signed_url_secret,omitempty"`
+
+	// Edge enhancements compiled to node DomainConfig.
+	BotScoreEnabled            bool   `json:"bot_score_enabled,omitempty"`
+	ResponseCompressEnabled    bool   `json:"response_compress_enabled,omitempty"`
+	EdgeScriptEnabled          bool   `json:"edge_script_enabled,omitempty"`
+	EdgeScriptRules            string `json:"edge_script_rules,omitempty"`
+	ImageTransformEnabled      bool   `json:"image_transform_enabled,omitempty"`
+	VideoSegmentCacheEnabled   bool   `json:"video_segment_cache_enabled,omitempty"`
 }
 
 // OriginAuth configures per-domain back-to-origin authentication.
@@ -678,6 +749,22 @@ type DomainOrigin struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// StreamForward represents an L4 TCP/UDP port forwarding rule.
+type StreamForward struct {
+	ID                  string    `json:"id"`
+	UserID              string    `json:"user_id"`
+	DomainID            string    `json:"domain_id,omitempty"`
+	Name                string    `json:"name"`
+	Protocol            string    `json:"protocol"` // tcp | udp
+	ListenPort          int32     `json:"listen_port"`
+	OriginHost          string    `json:"origin_host"`
+	OriginPort          int32     `json:"origin_port"`
+	Enabled             bool      `json:"enabled"`
+	HealthCheckEnabled  bool      `json:"health_check_enabled"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
 // Certificate represents a TLS certificate.
 type Certificate struct {
 	ID         int64     `json:"id"`
@@ -712,9 +799,11 @@ type CacheRule struct {
 	PathPattern      string    `json:"path_pattern"`
 	Methods          []string  `json:"methods"`
 	TTLSeconds       int64     `json:"ttl_seconds"`
-	CacheQueryParams bool      `json:"cache_query_params"`
-	Priority         int32     `json:"priority"`
-	Enabled          bool      `json:"enabled"`
+	CacheQueryParams            bool  `json:"cache_query_params"`
+	StaleWhileRevalidateSeconds int64 `json:"stale_while_revalidate_seconds,omitempty"`
+	StaleIfErrorSeconds         int64 `json:"stale_if_error_seconds,omitempty"`
+	Priority                    int32 `json:"priority"`
+	Enabled                     bool  `json:"enabled"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -809,6 +898,20 @@ type WAFBan struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// AlertRule defines a threshold-based monitoring alert.
+type AlertRule struct {
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Metric          string    `json:"metric"` // cpu_usage | mem_usage | bandwidth_up | requests | cache_hit_rate
+	Threshold       float64   `json:"threshold"`
+	WindowSeconds   int32     `json:"window_seconds"`
+	Severity        string    `json:"severity"` // info | warning | critical
+	Enabled         bool      `json:"enabled"`
+	NotifyChannels  []string  `json:"notify_channels,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
 // WAFWhitelist represents a whitelisted IP or CIDR.
 type WAFWhitelist struct {
 	ID        string    `json:"id"`
@@ -839,7 +942,7 @@ type UpgradeLog struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// Redis abstracts cache/coordination (placeholder).
+// Redis abstracts cache/coordination.
 type RedisLock interface {
 	Release(ctx context.Context) error
 }
@@ -867,31 +970,33 @@ type LicenseState struct {
 
 // Settings stores system configuration.
 type Settings struct {
-	ID                       string `json:"id"`
-	SystemName               string `json:"system_name"`
-	FooterLinks              string `json:"footer_links"`
-	FooterCopyright          string `json:"footer_copyright"`
-	Favicon                  string `json:"favicon"`
-	Logo                     string `json:"logo"`
-	SMTPHost                 string `json:"smtp_host"`
-	SMTPPort                 int    `json:"smtp_port"`
-	SMTPUsername             string `json:"smtp_username"`
-	SMTPPassword             string `json:"smtp_password"`
-	SMTPFrom                 string `json:"smtp_from"`
-	SMTPFromName             string `json:"smtp_from_name"`
-	ElasticsearchURL         string `json:"elasticsearch_url"`
-	ElasticsearchUser        string `json:"elasticsearch_user"`
-	ElasticsearchPass        string `json:"elasticsearch_pass"`
-	ElasticsearchIndex       string `json:"elasticsearch_index"`
-	ElasticsearchTSField     string `json:"elasticsearch_ts_field"`
-	ElasticsearchDomainField string `json:"elasticsearch_domain_field"`
-	ElasticsearchBytesField  string `json:"elasticsearch_bytes_field"`
+	ID                        string    `json:"id"`
+	SystemName                string    `json:"system_name"`
+	FooterLinks               string    `json:"footer_links"`
+	FooterCopyright           string    `json:"footer_copyright"`
+	Favicon                   string    `json:"favicon"`
+	Logo                      string    `json:"logo"`
+	SidebarBrandMode          string    `json:"sidebar_brand_mode"` // "name" | "logo"
+	SMTPHost                  string    `json:"smtp_host"`
+	SMTPPort                  int       `json:"smtp_port"`
+	SMTPUsername              string    `json:"smtp_username"`
+	SMTPPassword              string    `json:"smtp_password"`
+	SMTPFrom                  string    `json:"smtp_from"`
+	SMTPFromName              string    `json:"smtp_from_name"`
+	ElasticsearchURL          string    `json:"elasticsearch_url"`
+	ElasticsearchUser         string    `json:"elasticsearch_user"`
+	ElasticsearchPass         string    `json:"elasticsearch_pass"`
+	ElasticsearchIndex        string    `json:"elasticsearch_index"`
+	ElasticsearchTSField      string    `json:"elasticsearch_ts_field"`
+	ElasticsearchDomainField  string    `json:"elasticsearch_domain_field"`
+	ElasticsearchBytesField   string    `json:"elasticsearch_bytes_field"`
 	SalesEmail                string    `json:"sales_email"`
 	SupportEmail              string    `json:"support_email"`
 	RegisterEnabled           bool      `json:"register_enabled"`
 	UpgradeChannel            string    `json:"upgrade_channel"`
 	NotifyNewBuild            bool      `json:"notify_new_build"`
 	RegisterEmailVerification bool      `json:"register_email_verification"`
+	RenewalBeforeExpiryDays   int       `json:"renewal_before_expiry_days"`
 	EmailEnabled              bool      `json:"email_enabled"`
 	DingtalkEnabled           bool      `json:"dingtalk_enabled"`
 	DingtalkWebhook           string    `json:"dingtalk_webhook"`
@@ -912,6 +1017,9 @@ type Settings struct {
 	RetentionESLogs           int       `json:"retention_es_logs"`
 	RetentionWafBans          int       `json:"retention_waf_bans"`
 	RetentionUpgradeLogs      int       `json:"retention_upgrade_logs"`
+	ControlDomain             string    `json:"control_domain"`
+	ControlPublicHTTPS        bool      `json:"control_public_https"`
+	ControlRedirectIP         bool      `json:"control_redirect_ip"`
 	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
@@ -932,6 +1040,35 @@ type APIToken struct {
 	TokenPrefix string     `json:"token_prefix"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// Ticket is a user support ticket.
+type Ticket struct {
+	ID          string     `json:"id"`
+	UserID      string     `json:"user_id"`
+	Subject     string     `json:"subject"`
+	Category    string     `json:"category"`
+	Status      string     `json:"status"`
+	Priority    string     `json:"priority"`
+	LastReplyBy string     `json:"last_reply_by,omitempty"`
+	ReplyCount  int        `json:"reply_count"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	ClosedAt    *time.Time `json:"closed_at,omitempty"`
+	// Join fields for admin list
+	Username string `json:"username,omitempty"`
+	Email    string `json:"email,omitempty"`
+}
+
+// TicketReply is a message on a ticket thread.
+type TicketReply struct {
+	ID         string    `json:"id"`
+	TicketID   string    `json:"ticket_id"`
+	AuthorID   string    `json:"author_id"`
+	AuthorRole string    `json:"author_role"`
+	AuthorName string    `json:"author_name"`
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // DomainBlacklist represents a blacklisted domain.

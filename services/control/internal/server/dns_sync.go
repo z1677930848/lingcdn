@@ -18,7 +18,7 @@ import (
 )
 
 const dnsSyncDebounce = 10 * time.Second
-const maxNodeStaleness = 5 * time.Minute
+const maxNodeStaleness = NodeDNSStaleWindow
 
 func dnsAutoSyncEnabled() bool {
 	v := strings.TrimSpace(os.Getenv("DNS_AUTO_SYNC"))
@@ -120,6 +120,10 @@ func (s *Servers) handleDNSSync(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "DNS 提供商未配置，跳过同步"})
 		return
 	}
+	if err := ensureDNSSyncReady(cfg); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
 
 	client, err := dnsprovider.NewClient(cfg)
 	if err != nil {
@@ -199,6 +203,66 @@ func (s *Servers) runDNSSyncNow(subject, reason string) *dnsTask {
 		lastTask = s.runDNSSyncTask(zone, subject, reason, "manual")
 	}
 	return lastTask
+}
+
+// runDNSCleanupNow prunes orphan DNS records across all configured zones.
+func (s *Servers) runDNSCleanupNow(subject, reason string) *dnsTask {
+	if s == nil || s.store == nil {
+		return &dnsTask{
+			ID:        "",
+			Type:      "cleanup",
+			Subject:   subject,
+			Provider:  "manual",
+			Status:    "failed",
+			Message:   "存储未初始化",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+	}
+	zones := s.collectDNSZones()
+	if len(zones) == 0 {
+		return s.runDNSTask("cleanup", subject, "manual", func() (string, error) {
+			return "未配置 DNS 域名区域", nil
+		})
+	}
+	return s.runDNSTask("cleanup", subject, "manual", func() (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		cfg, err := s.store.GetDNSConfig(ctx)
+		if err != nil {
+			return "", err
+		}
+		if cfg == nil || strings.TrimSpace(cfg.Provider) == "" {
+			return "DNS 提供商未配置", nil
+		}
+		client, err := dnsprovider.NewClient(cfg)
+		if err != nil {
+			return "", err
+		}
+		ttl := cfg.TTL
+		if ttl <= 0 {
+			ttl = 600
+		}
+
+		var messages []string
+		for _, zone := range zones {
+			// syncDNSRecords builds desired set and prunes orphans when enabled
+			msg, err := s.syncDNSRecords(ctx, client, cfg, zone)
+			if err != nil {
+				return "", fmt.Errorf("zone %s: %w", zone, err)
+			}
+			if dnsPruneOrphans() {
+				messages = append(messages, fmt.Sprintf("%s: 已清理孤立记录", zone))
+			} else {
+				messages = append(messages, fmt.Sprintf("%s: %s (孤立记录清理已禁用)", zone, msg))
+			}
+		}
+		if len(messages) == 0 {
+			return "DNS 清理完成", nil
+		}
+		return strings.Join(messages, "; "), nil
+	})
 }
 
 func (s *Servers) runDNSSyncTask(zone, subject, reason, provider string) *dnsTask {

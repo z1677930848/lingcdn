@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // Certificate management handlers: admin + per-user CRUD over TLS certs,
 // plus ACME provisioning for managed domains. Private keys are stripped
@@ -16,12 +16,32 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/lingcdn/control/internal/store"
 )
+
+// acmeIssueLocks serialises ACME issuance per (owner, host) tuple. Without
+// this, two rapid clicks on "申请证书" race through the failed-record
+// cleanup → CreateCertificate(pending) → issueCertViaACME path and can
+// burn the upstream rate limit (Let's Encrypt: 5 duplicate certs per week).
+// Locks are cheap — keyed entries are kept resident for the lifetime of
+// the process, which matters only for workloads issuing into millions of
+// distinct hostnames.
+var acmeIssueLocks sync.Map // key: "owner|host", value: *sync.Mutex
+
+func acmeIssueLock(ownerID, host string) *sync.Mutex {
+	key := strings.ToLower(strings.TrimSpace(ownerID)) + "|" + strings.ToLower(strings.TrimSpace(host))
+	if mu, ok := acmeIssueLocks.Load(key); ok {
+		return mu.(*sync.Mutex)
+	}
+	mu := &sync.Mutex{}
+	existing, _ := acmeIssueLocks.LoadOrStore(key, mu)
+	return existing.(*sync.Mutex)
+}
 
 // certSafeView returns a map with private keys stripped for API responses.
 func certSafeView(c *store.Certificate) map[string]any {
@@ -65,6 +85,9 @@ func (s *Servers) handleCertificates(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"certificates": safeCerts})
 
 	case http.MethodPost:
+		if role != "admin" && !s.requireUserPermission(w, ctx, PermCertificatesWrite) {
+			return
+		}
 		// Upload a certificate (PEM).
 		var body struct {
 			Name    string `json:"name"`
@@ -89,14 +112,33 @@ func (s *Servers) handleCertificates(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Parse PEM to extract expiry
-		var expiresAt time.Time
-		block, _ := pem.Decode([]byte(certPEM))
-		if block != nil {
-			if leaf, err := x509.ParseCertificate(block.Bytes); err == nil {
-				expiresAt = leaf.NotAfter
-			}
+		// Verify the cert/key pair actually matches, and that the leaf
+		// cert covers the claimed domain. Without these two checks any
+		// authenticated user could upload a mismatched blob (triggering
+		// TLS handshake failures downstream) or attach an unrelated
+		// certificate to a domain, polluting the cert table and ACME
+		// renewal paths.
+		keyPair, kpErr := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+		if kpErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "证书与私钥不匹配: " + kpErr.Error()})
+			return
 		}
+		if len(keyPair.Certificate) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "证书链为空"})
+			return
+		}
+		leaf, leafErr := x509.ParseCertificate(keyPair.Certificate[0])
+		if leafErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "证书解析失败: " + leafErr.Error()})
+			return
+		}
+		if !certCoversDomain(leaf, domain) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "证书未覆盖该域名，请确认 SAN/CN 包含 " + domain,
+			})
+			return
+		}
+		expiresAt := leaf.NotAfter
 
 		ownerID := userID
 		if role == "admin" && strings.TrimSpace(body.UserID) != "" {
@@ -111,6 +153,15 @@ func (s *Servers) handleCertificates(w http.ResponseWriter, r *http.Request) {
 			}
 			if product == nil {
 				writeJSON(w, http.StatusForbidden, map[string]any{"error": "无有效套餐，请先购买套餐"})
+				return
+			}
+			dom, err := s.store.GetDomainByName(ctx, domain)
+			if err != nil {
+				writeInternalError(w, "get domain for cert upload", err)
+				return
+			}
+			if dom == nil || dom.UserID != userID {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权为该域名上传证书"})
 				return
 			}
 		}
@@ -234,6 +285,16 @@ func (s *Servers) handleACMECertificate(w http.ResponseWriter, r *http.Request) 
 		ownerID = strings.TrimSpace(req.UserID)
 	}
 
+	// Serialise issuance for this (owner, host). Prevents the duplicate
+	// ACME burn described on acmeIssueLocks: without the lock, two
+	// concurrent requests both pass the "failed-record cleanup" gate,
+	// both create pending rows, and both call the ACME backend — which
+	// counts as two duplicate issuances against Let's Encrypt's weekly
+	// quota per hostname.
+	mu := acmeIssueLock(ownerID, host)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Ensure domain is managed by this control server.
 	domainCfg, err := s.store.GetDomainByName(ctx, host)
 	if err != nil {
@@ -242,6 +303,10 @@ func (s *Servers) handleACMECertificate(w http.ResponseWriter, r *http.Request) 
 	}
 	if domainCfg == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "域名不在管理范围内"})
+		return
+	}
+	if role != "admin" && domainCfg.UserID != userID {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权为该域名申请证书"})
 		return
 	}
 
@@ -326,13 +391,14 @@ func (s *Servers) handleACMECertificate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Bind to domain + publish
-	s.bindCertAndPublish(ctx, record, domainCfg)
+	syncIDs := s.bindCertAndPublish(ctx, record, domainCfg)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"id":         record.ID,
-		"domain":     host,
-		"expires_at": notAfter,
+		"ok":            true,
+		"id":            record.ID,
+		"domain":        host,
+		"expires_at":    notAfter,
+		"sync_task_ids": syncIDs,
 	})
 }
 
@@ -369,18 +435,14 @@ func (s *Servers) tryBindCertToDomain(ctx context.Context, cert *store.Certifica
 		log.Ctx(ctx).Warn().Err(err).Str("domain", dom.Name).Msg("auto-bind uploaded cert failed")
 		return
 	}
-	if s.publisher != nil {
-		if perr := s.publisher.Publish(ctx, "", nil); perr != nil {
-			log.Ctx(ctx).Warn().Err(perr).Msg("publish after cert upload failed")
-		}
-	}
+	_ = s.startPublishTask(ctx, "auto", "domain:"+dom.ID, "domain:cert:upload:"+dom.Name, "", nil)
 }
 
 // bindCertAndPublish binds a certificate to a domain and publishes config.
 // Used after ACME issuance.
-func (s *Servers) bindCertAndPublish(ctx context.Context, cert *store.Certificate, domainCfg *store.Domain) {
+func (s *Servers) bindCertAndPublish(ctx context.Context, cert *store.Certificate, domainCfg *store.Domain) []string {
 	if domainCfg == nil {
-		return
+		return nil
 	}
 	certIDStr := fmt.Sprintf("%d", cert.ID)
 	if domainCfg.CertID != certIDStr || !domainCfg.HTTPSEnabled {
@@ -391,13 +453,12 @@ func (s *Servers) bindCertAndPublish(ctx context.Context, cert *store.Certificat
 			log.Ctx(ctx).Warn().Err(err).Str("domain", domainCfg.Name).Msg("bind certificate to domain failed")
 		}
 	}
-	if s.publisher != nil {
-		if err := s.publisher.Publish(ctx, "", nil); err != nil {
-			log.Ctx(ctx).Warn().Err(err).Str("domain", domainCfg.Name).Msg("publish after acme cert failed")
-		} else {
-			log.Ctx(ctx).Info().Str("domain", domainCfg.Name).Msg("acme cert issued and config published")
-		}
+	task := s.startPublishTask(ctx, "auto", "domain:"+domainCfg.ID, "domain:cert:acme:"+domainCfg.Name, "", nil)
+	if task != nil && task.ID != "" {
+		log.Ctx(ctx).Info().Str("domain", domainCfg.Name).Str("task_id", task.ID).Msg("acme cert issued and config publish queued")
+		return []string{task.ID}
 	}
+	return nil
 }
 
 // persistACMECertificate is used by the renewal loop to update an existing
@@ -405,17 +466,21 @@ func (s *Servers) bindCertAndPublish(ctx context.Context, cert *store.Certificat
 // PEM/expiry/status, binds the domain, and publishes.
 func (s *Servers) persistACMECertificate(
 	ctx context.Context,
+	certID int64,
 	host string,
 	certPEM, keyPEM []byte,
 	expiresAt time.Time,
 	domainCfg *store.Domain,
 ) error {
-	existing, err := s.store.GetCertificateByDomain(ctx, host)
+	existing, err := s.store.GetCertificate(ctx, certID)
 	if err != nil {
-		return fmt.Errorf("get certificate by domain: %w", err)
+		return fmt.Errorf("get certificate: %w", err)
 	}
 	if existing == nil {
-		return fmt.Errorf("no existing certificate record for domain %s", host)
+		return fmt.Errorf("no existing certificate record id=%d for domain %s", certID, host)
+	}
+	if domainCfg != nil && strings.TrimSpace(domainCfg.UserID) != "" && existing.UserID != domainCfg.UserID {
+		return fmt.Errorf("certificate owner mismatch for domain %s", host)
 	}
 
 	existing.CertPEM = certPEM
@@ -432,9 +497,90 @@ func (s *Servers) persistACMECertificate(
 	return nil
 }
 
+// validateDomainCertBinding ensures the cert exists, belongs to the domain
+// owner (unless admin), and covers the target hostname.
+func (s *Servers) validateDomainCertBinding(ctx context.Context, role, ownerID, domainName, certID string) error {
+	certID = strings.TrimSpace(certID)
+	if certID == "" {
+		return nil
+	}
+	id, err := strconv.ParseInt(certID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("无效的证书ID")
+	}
+	cert, err := s.store.GetCertificate(ctx, id)
+	if err != nil {
+		return err
+	}
+	if cert == nil {
+		return fmt.Errorf("证书不存在")
+	}
+	if role != "admin" && cert.UserID != ownerID {
+		return fmt.Errorf("无权使用该证书")
+	}
+	host := strings.ToLower(strings.TrimSpace(domainName))
+	if host == "" {
+		return fmt.Errorf("域名不能为空")
+	}
+	certDomain := strings.ToLower(strings.TrimSpace(cert.Domain))
+	if certDomain == host {
+		return nil
+	}
+	if len(cert.CertPEM) > 0 {
+		if block, _ := pem.Decode(cert.CertPEM); block != nil {
+			if leaf, perr := x509.ParseCertificate(block.Bytes); perr == nil && certCoversDomain(leaf, host) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("证书与域名不匹配")
+}
+
 // tlsClientHelloFor builds the minimal ClientHelloInfo autocert needs.
 func tlsClientHelloFor(host string) tls.ClientHelloInfo {
 	return tls.ClientHelloInfo{ServerName: host}
+}
+
+// certCoversDomain reports whether the leaf cert's SAN list (or CN as a
+// legacy fallback) authorises it to present itself for `host`. Both exact
+// DNS names and single-label wildcards (RFC 6125 §6.4.3) are accepted.
+// Case-insensitive; empty SAN + empty CN returns false.
+func certCoversDomain(leaf *x509.Certificate, host string) bool {
+	if leaf == nil || host == "" {
+		return false
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	names := make([]string, 0, len(leaf.DNSNames)+1)
+	for _, n := range leaf.DNSNames {
+		names = append(names, strings.ToLower(strings.TrimSpace(n)))
+	}
+	if cn := strings.ToLower(strings.TrimSpace(leaf.Subject.CommonName)); cn != "" {
+		names = append(names, cn)
+	}
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		if n == host {
+			return true
+		}
+		if strings.HasPrefix(n, "*.") {
+			// Wildcard: matches exactly one subdomain label, i.e.
+			// "*.example.com" matches "a.example.com" but not
+			// "a.b.example.com" or "example.com" itself. This mirrors
+			// RFC 6125 and what mainstream TLS clients enforce.
+			suffix := n[1:] // ".example.com"
+			if !strings.HasSuffix(host, suffix) {
+				continue
+			}
+			prefix := strings.TrimSuffix(host, suffix)
+			if prefix == "" || strings.Contains(prefix, ".") {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // encodeTLSCert turns the in-memory *tls.Certificate returned by autocert

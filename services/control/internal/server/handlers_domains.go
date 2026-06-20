@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // Domain management handlers: admin + per-user CRUD. The GET paths run in
 // two scopes (admin = all domains, user = own domains) and join with the
@@ -45,19 +45,44 @@ func (s *Servers) handleDomains(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, "list clusters", err)
 			return
 		}
-		origins, err := s.store.ListOrigins(ctx)
-		if err != nil {
-			writeInternalError(w, "list origins", err)
-			return
+		if role != "admin" {
+			neededClusters := make(map[string]bool)
+			for _, d := range domains {
+				if strings.TrimSpace(d.LineGroupID) != "" {
+					neededClusters[d.LineGroupID] = true
+				}
+			}
+			filtered := make([]*store.Cluster, 0, len(neededClusters))
+			for _, cl := range clusterList {
+				if neededClusters[cl.ID] {
+					filtered = append(filtered, cl)
+				}
+			}
+			clusterList = filtered
+		}
+		var origins []*store.Origin
+		var certs []*store.Certificate
+		if role == "admin" {
+			origins, err = s.store.ListOrigins(ctx)
+			if err != nil {
+				writeInternalError(w, "list origins", err)
+				return
+			}
+			certs, err = s.store.ListCertificates(ctx)
+			if err != nil {
+				writeInternalError(w, "list certificates", err)
+				return
+			}
+		} else {
+			certs, err = s.store.ListCertificatesByUser(ctx, userID)
+			if err != nil {
+				writeInternalError(w, "list certificates", err)
+				return
+			}
 		}
 		allDomainOrigins, err := s.store.ListAllDomainOrigins(ctx)
 		if err != nil {
 			writeInternalError(w, "list domain origins", err)
-			return
-		}
-		certs, err := s.store.ListCertificates(ctx)
-		if err != nil {
-			writeInternalError(w, "list certificates", err)
 			return
 		}
 
@@ -130,18 +155,23 @@ func (s *Servers) handleDomains(w http.ResponseWriter, r *http.Request) {
 				for _, e := range list {
 					originAddresses = append(originAddresses, e.Address)
 				}
-			} else if o := originMap[d.OriginID]; o != nil {
-				originName = o.Name
-				originAddresses = o.Addresses
+			} else if role == "admin" {
+				if o := originMap[d.OriginID]; o != nil {
+					originName = o.Name
+					originAddresses = o.Addresses
+				}
 			}
 			var certName, certDomain string
 			if c := certMap[d.CertID]; c != nil {
 				certName = c.Name
 				certDomain = c.Domain
 			}
-			listenPort := 80
-			if httpsEnabled {
-				listenPort = 443
+			listenPort := int(normalizeListenPort(d.ListenPort))
+			if listenPort == 0 {
+				listenPort = 80
+				if httpsEnabled {
+					listenPort = 443
+				}
 			}
 			cname := strings.TrimSpace(d.CNAME)
 			// Heal legacy/invalid data where CNAME was stored equal to the
@@ -190,6 +220,9 @@ func (s *Servers) handleDomains(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodPost:
+		if role != "admin" && !s.requireUserPermission(w, ctx, PermDomainsWrite) {
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求内容格式错误"})
@@ -225,6 +258,7 @@ func (s *Servers) handleDomains(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的HTTPS启用值"})
 			return
 		}
+		domain.ListenPort = normalizeListenPort(domain.ListenPort)
 		domain.Name = strings.TrimSpace(domain.Name)
 		domain.CNAME = strings.TrimSpace(domain.CNAME)
 		domain.LineGroupID = strings.TrimSpace(domain.LineGroupID)
@@ -394,6 +428,14 @@ func (s *Servers) handleDomains(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 			return
 		}
+		certOwner := domain.UserID
+		if role != "admin" {
+			certOwner = userID
+		}
+		if err := s.validateDomainCertBinding(ctx, role, certOwner, domain.Name, domain.CertID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 		if cacheProvided {
 			domain.CacheEnabled = cacheEnabled
 		} else {
@@ -475,6 +517,10 @@ func (s *Servers) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 		s.handleDomainOrigins(w, r, id)
 		return
 	}
+	if subResource == "sla" {
+		s.handleDomainSLA(w, r)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -490,6 +536,9 @@ func (s *Servers) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, domain)
 
 	case http.MethodPut:
+		if role != "admin" && !s.requireUserPermission(w, ctx, PermDomainsWrite) {
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求内容格式错误"})
@@ -525,6 +574,18 @@ func (s *Servers) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的HTTPS启用值"})
 			return
 		}
+		listenPortProvided, listenPort, err := parseOptionalInt32Field(payload, "listen_port")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的监听端口"})
+			return
+		}
+		enabledProvided, enabledVal, err := parseOptionalBoolField(payload, "enabled")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的启用状态"})
+			return
+		}
+		_, lineGroupProvided := payload["line_group_id"]
+		_, nameProvided := payload["name"]
 		domain.ID = id
 		// Preserve user_id: non-admin users can't change ownership
 		if role != "admin" {
@@ -587,6 +648,29 @@ func (s *Servers) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 		} else {
 			domain.ErrorPages = pages
 		}
+
+		var existing *store.Domain
+		if !nameProvided || !lineGroupProvided || !cacheProvided || !http2Provided || !wsProvided || !httpsProvided || !listenPortProvided || !enabledProvided {
+			var err error
+			existing, err = s.store.GetDomain(ctx, id)
+			if err != nil {
+				writeInternalError(w, "get domain", err)
+				return
+			}
+			if existing == nil {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": "域名不存在"})
+				return
+			}
+		}
+		if !nameProvided && existing != nil {
+			domain.Name = existing.Name
+		}
+		if !lineGroupProvided && existing != nil {
+			domain.LineGroupID = existing.LineGroupID
+		}
+		domain.Name = strings.TrimSpace(domain.Name)
+		domain.LineGroupID = strings.TrimSpace(domain.LineGroupID)
+
 		if domain.Name == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "名称不能为空"})
 			return
@@ -612,14 +696,21 @@ func (s *Servers) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 			return
 		}
+		certOwner := domain.UserID
+		if role != "admin" {
+			certOwner = userID
+		}
+		if err := s.validateDomainCertBinding(ctx, role, certOwner, domain.Name, domain.CertID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 		_, securityProvided := payload["security"]
 		_, originAuthProvided := payload["origin_auth"]
 		_, loadBalanceProvided := payload["load_balance_method"]
 		_, healthCheckProvided := payload["origin_health_check"]
 
-		var existing *store.Domain
-		if !cacheProvided || !http2Provided || !wsProvided || !httpsProvided || !securityProvided || !originAuthProvided ||
-			!loadBalanceProvided || !healthCheckProvided {
+		if existing == nil && (!cacheProvided || !http2Provided || !wsProvided || !httpsProvided || !listenPortProvided || !enabledProvided || !securityProvided || !originAuthProvided ||
+			!loadBalanceProvided || !healthCheckProvided) {
 			var err error
 			existing, err = s.store.GetDomain(ctx, id)
 			if err != nil {
@@ -658,6 +749,24 @@ func (s *Servers) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 			// for requests that omit the new flag.
 			domain.HTTPSEnabled = strings.TrimSpace(domain.CertID) != ""
 		}
+		if listenPortProvided {
+			if listenPort == nil {
+				domain.ListenPort = 0
+			} else {
+				domain.ListenPort = normalizeListenPort(*listenPort)
+			}
+		} else if existing != nil {
+			domain.ListenPort = existing.ListenPort
+		} else {
+			domain.ListenPort = normalizeListenPort(domain.ListenPort)
+		}
+		if enabledProvided {
+			domain.Enabled = enabledVal
+		} else if existing != nil {
+			domain.Enabled = existing.Enabled
+		} else {
+			domain.Enabled = true
+		}
 		if !securityProvided && existing != nil {
 			domain.Security = existing.Security
 		}
@@ -669,6 +778,22 @@ func (s *Servers) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if !healthCheckProvided && existing != nil {
 			domain.OriginHealthCheck = existing.OriginHealthCheck
+		}
+		if role != "admin" && strings.TrimSpace(domain.CertID) != "" {
+			certID, err := strconv.ParseInt(domain.CertID, 10, 64)
+			if err != nil || certID <= 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的证书ID"})
+				return
+			}
+			cert, err := s.store.GetCertificate(ctx, certID)
+			if err != nil {
+				writeInternalError(w, "get certificate", err)
+				return
+			}
+			if cert == nil || (cert.UserID != "" && cert.UserID != userID) {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权使用该证书"})
+				return
+			}
 		}
 		domain.UpdatedAt = time.Now()
 
@@ -684,6 +809,9 @@ func (s *Servers) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 		}{Domain: &domain, DNSWarnings: s.evaluateDomainDNSHealth(ctx, &domain), SyncTaskIDs: syncIDs})
 
 	case http.MethodDelete:
+		if role != "admin" && !s.requireUserPermission(w, ctx, PermDomainsWrite) {
+			return
+		}
 		if err := s.store.DeleteDomain(ctx, id); err != nil {
 			writeInternalError(w, "delete domain", err)
 			return
@@ -697,10 +825,11 @@ func (s *Servers) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDomainSecurity serves /api/domains/{id}/security:
-//   GET  → returns Domain.Security (or an empty, zero-valued object if unset
-//          so the UI form can bind deterministically).
-//   PUT  → replaces Domain.Security and re-saves the domain; an auto-publish
-//          delivers the synthesised WAF policy to nodes.
+//
+//	GET  → returns Domain.Security (or an empty, zero-valued object if unset
+//	       so the UI form can bind deterministically).
+//	PUT  → replaces Domain.Security and re-saves the domain; an auto-publish
+//	       delivers the synthesised WAF policy to nodes.
 func (s *Servers) handleDomainSecurity(w http.ResponseWriter, r *http.Request, id string) {
 	ctx := r.Context()
 	domain, err := s.store.GetDomain(ctx, id)
@@ -726,6 +855,9 @@ func (s *Servers) handleDomainSecurity(w http.ResponseWriter, r *http.Request, i
 		writeJSON(w, http.StatusOK, sec)
 
 	case http.MethodPut:
+		if getUserRole(ctx) != "admin" && !s.requireUserPermission(w, ctx, PermWAFEdit) {
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求内容格式错误"})
@@ -736,6 +868,7 @@ func (s *Servers) handleDomainSecurity(w http.ResponseWriter, r *http.Request, i
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
 			return
 		}
+		before := domain.Security
 		// Normalise: strip empties, assign IDs to new custom rules so the
 		// compiler can generate stable per-rule keys on nodes.
 		cleanList := func(xs []string) []string {
@@ -768,6 +901,11 @@ func (s *Servers) handleDomainSecurity(w http.ResponseWriter, r *http.Request, i
 			writeInternalError(w, "update domain security", err)
 			return
 		}
+		actor, _ := ctx.Value(ctxKeyUserID).(string)
+		if actor == "" {
+			actor = "system"
+		}
+		s.auditConfigChange(ctx, actor, "update", "domain:"+domain.ID+"/security", before, domain.Security)
 		_ = s.startPublishTask(ctx, "auto", "domain:"+domain.ID, "domain:security:"+domain.Name, "", nil)
 		writeJSON(w, http.StatusOK, domain.Security)
 

@@ -4,6 +4,57 @@
   gap: var(--app-page-gap);
 }
 
+.console-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.console-head-main {
+  min-width: 0;
+}
+
+.console-head-title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--app-text-strong);
+}
+
+.console-head-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--app-text-muted);
+}
+
+.console-head-action {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--td-brand-color);
+  text-decoration: none;
+  padding-top: 4px;
+}
+
+.console-head-action:hover {
+  text-decoration: underline;
+}
+
+.console-head :deep(.t-button) {
+  flex-shrink: 0;
+}
+
+.console-head .spin {
+  animation: console-spin 0.8s linear infinite;
+}
+
+@keyframes console-spin {
+  to { transform: rotate(360deg); }
+}
+
 .overview-cards {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -55,7 +106,7 @@
 
 .overview-stat-value {
   font-size: 28px;
-  font-weight: 800;
+  font-weight: 600;
   color: var(--app-text-strong);
   letter-spacing: -0.02em;
 }
@@ -81,7 +132,7 @@
 }
 
 .overview-primary-card:hover {
-  box-shadow: 0 10px 32px rgba(99, 91, 255, 0.32);
+  box-shadow: 0 4px 14px rgba(64, 158, 255, 0.22);
 }
 
 .overview-primary-title {
@@ -93,7 +144,7 @@
 
 .overview-primary-value {
   font-size: 28px;
-  font-weight: 800;
+  font-weight: 600;
   color: #fff;
   letter-spacing: -0.02em;
 }
@@ -203,7 +254,7 @@
 
 .overview-chart-title {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--app-text-strong);
 }
 
@@ -265,7 +316,7 @@
 
 .overview-profile-title {
   font-size: 20px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--app-text-strong);
 }
 
@@ -315,7 +366,7 @@
 
 .overview-profile-value {
   font-size: 20px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--app-text-strong);
 }
 
@@ -326,7 +377,7 @@
 
 .overview-notice-title {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--app-text-strong);
   margin-bottom: 10px;
 }
@@ -425,7 +476,7 @@
 
 .overview-section-title {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--app-text-strong);
 }
 
@@ -596,7 +647,7 @@
 
 .overview-network-value {
   font-size: 22px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--app-text-strong);
 }
 
@@ -736,7 +787,7 @@
 
 .overview-usage-value {
   font-size: 22px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--app-text-strong);
 }
 

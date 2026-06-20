@@ -52,7 +52,7 @@ func (s *Servers) performControlUpgradeInProcess(ctx context.Context, task *upgr
 
 	s.appendUpgradeLog(ctx, task.ID, "INFO",
 		fmt.Sprintf("查询 portal 升级元数据: channel=%s arch=%s", channel, arch), "")
-	latest, err := fetchPortalLatest(ctx, portal, "control", channel, "linux", arch, "latest")
+	latest, err := s.fetchPortalLatestCached(ctx, portal, "control", channel, "linux", arch, "latest")
 	if err != nil {
 		return fmt.Errorf("query portal latest: %w", err)
 	}

@@ -418,8 +418,13 @@ func (s *Servers) runCertificateRenewal(window time.Duration) (string, error) {
 			continue
 		}
 		scanned++
-		// Only renew ACME certs with auto_renew enabled
+		// Only renew active ACME certs with auto_renew enabled.
 		if c.Type != "acme" || !c.AutoRenew {
+			skipped++
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(c.Status)) {
+		case "failed", "pending":
 			skipped++
 			continue
 		}
@@ -433,19 +438,26 @@ func (s *Servers) runCertificateRenewal(window time.Duration) (string, error) {
 			skipped++
 			continue
 		}
-		if err := s.renewSingleCertificate(host); err != nil {
+		if err := s.renewSingleCertificate(c); err != nil {
 			failed++
-			log.Warn().Err(err).Str("domain", host).Msg("cert.renew: renewal failed")
+			log.Warn().Err(err).Int64("cert_id", c.ID).Str("domain", host).Msg("cert.renew: renewal failed")
 			continue
 		}
 		renewed++
-		log.Info().Str("domain", host).Msg("cert.renew: renewed")
+		log.Info().Int64("cert_id", c.ID).Str("domain", host).Msg("cert.renew: renewed")
 	}
 	return fmt.Sprintf("scanned=%d renewed=%d skipped=%d failed=%d", scanned, renewed, skipped, failed), nil
 }
 
 // renewSingleCertificate drives one ACME renewal with a bounded ctx.
-func (s *Servers) renewSingleCertificate(host string) error {
+func (s *Servers) renewSingleCertificate(cert *store.Certificate) error {
+	if cert == nil {
+		return fmt.Errorf("certificate missing")
+	}
+	host := strings.ToLower(strings.TrimSpace(cert.Domain))
+	if host == "" {
+		return fmt.Errorf("certificate domain empty")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -467,5 +479,5 @@ func (s *Servers) renewSingleCertificate(host string) error {
 	if issueErr != nil {
 		return fmt.Errorf("acquire certificate: %w", issueErr)
 	}
-	return s.persistACMECertificate(ctx, host, certPEM, keyPEM, notAfter, domainCfg)
+	return s.persistACMECertificate(ctx, cert.ID, host, certPEM, keyPEM, notAfter, domainCfg)
 }

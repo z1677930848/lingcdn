@@ -17,6 +17,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +31,7 @@ import (
 	"github.com/lingcdn/control/internal/config"
 	"github.com/lingcdn/control/internal/ddos"
 	"github.com/lingcdn/control/internal/nodehub"
+	"github.com/lingcdn/control/internal/preload"
 	"github.com/lingcdn/control/internal/publisher"
 	"github.com/lingcdn/control/internal/purge"
 	"github.com/lingcdn/control/internal/store"
@@ -42,6 +44,7 @@ type nodeControlServer struct {
 	compiler          *compiler.Compiler
 	publisher         *publisher.Publisher
 	purge             *purge.Service
+	preload           *preload.Service
 	store             store.Store
 	xdpStore          *ddos.XdpStore
 	nodeMonitor       *nodeMonitorRecorder
@@ -55,14 +58,29 @@ type nodeControlServer struct {
 	wafBanQ *wafBanQueue
 	// Reference to parent Servers for notification methods
 	servers *Servers
+
+	// Process-wide cache for the node-issuance CA. Without this,
+	// every RequestCertificate call that runs without CACertFile/CAKeyFile
+	// configured used to mint a *new* CA on the spot (see loadOrCreateCA),
+	// and N nodes would end up trusting N different CAs — every leaf
+	// signed by a previous request would fail verification on a peer.
+	// Caching here keeps the trust chain stable for the lifetime of the
+	// process. Operators who want cross-restart stability still need to
+	// configure CACertFile/CAKeyFile.
+	caMu          sync.Mutex
+	cachedCACert  *x509.Certificate
+	cachedCAKey   *rsa.PrivateKey
+	cachedCAPEM   []byte
+	cachedCAUntil time.Time
 }
 
-func newNodeControlServer(hub *nodehub.Hub, compiler *compiler.Compiler, publisher *publisher.Publisher, purge *purge.Service, store store.Store, xdpStore *ddos.XdpStore, cfg config.Config, dnsTrigger func(subject, reason string), notifyNodeOffline func(string), licenseCheck func(ctx context.Context, existing bool) (licenseState, bool, error), nodeMonitor *nodeMonitorRecorder, notifyMonitor func(), servers *Servers) *nodeControlServer {
+func newNodeControlServer(hub *nodehub.Hub, compiler *compiler.Compiler, publisher *publisher.Publisher, purge *purge.Service, preload *preload.Service, store store.Store, xdpStore *ddos.XdpStore, cfg config.Config, dnsTrigger func(subject, reason string), notifyNodeOffline func(string), licenseCheck func(ctx context.Context, existing bool) (licenseState, bool, error), nodeMonitor *nodeMonitorRecorder, notifyMonitor func(), servers *Servers) *nodeControlServer {
 	return &nodeControlServer{
 		hub:               hub,
 		compiler:          compiler,
 		publisher:         publisher,
 		purge:             purge,
+		preload:           preload,
 		store:             store,
 		xdpStore:          xdpStore,
 		cfg:               cfg,
@@ -109,7 +127,11 @@ func (s *nodeControlServer) RegisterNode(ctx context.Context, req *controlpb.Reg
 	// new nodes we also allocate a UUID; for re-registrations the DB keeps the
 	// existing id via ON CONFLICT. We hash the token before persisting so the
 	// raw token only exists on the wire back to the node.
-	nodeToken := generateNodeToken()
+	nodeToken, err := generateNodeToken()
+	if err != nil {
+		log.Ctx(ctx).Error().Err(err).Msg("failed to generate node token")
+		return nil, status.Error(codes.Internal, "failed to generate node token")
+	}
 	candidateID := uuid.NewString()
 	if existing != nil {
 		candidateID = existing.ID
@@ -277,9 +299,7 @@ func (s *nodeControlServer) Heartbeat(ctx context.Context, req *controlpb.Heartb
 				CreatedAt: now,
 			}
 			if s.wafBanQ != nil {
-				if !s.wafBanQ.enqueue(wafBan) {
-					log.Ctx(ctx).Warn().Str("ip", ban.GetIp()).Msg("WAF ban queue full, dropping report")
-				}
+				s.wafBanQ.enqueue(wafBan)
 				continue
 			}
 			if err := s.store.CreateOrUpdateWAFBan(ctx, wafBan); err != nil {
@@ -483,6 +503,7 @@ func (s *nodeControlServer) StreamConfig(stream controlpb.NodeControl_StreamConf
 		}
 
 		s.hub.UpdateHeartbeat(nodeID, "online", ack.GetVersion())
+		s.hub.NotifyConfigAck(nodeID, ack)
 		if err := s.store.UpdateNodeStatus(ctx, nodeID, "online", ack.GetVersion()); err != nil {
 			log.Ctx(ctx).Warn().Err(err).Msg("failed to update node config version")
 		}
@@ -546,6 +567,54 @@ func (s *nodeControlServer) StreamPurge(stream controlpb.NodeControl_StreamPurge
 			Str("reason", res.GetReason()).
 			Msg("purge result received from node")
 		s.purge.ReportNodeResult(nodeID, res)
+	}
+}
+
+func (s *nodeControlServer) StreamPreload(stream controlpb.NodeControl_StreamPreloadServer) error {
+	ctx := stream.Context()
+	nodeID, err := s.getNodeIDFromMetadata(ctx)
+	if err != nil {
+		return err
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.InvalidArgument, "missing metadata")
+	}
+	nodeTokens := md.Get("node-token")
+	if len(nodeTokens) == 0 {
+		return status.Error(codes.InvalidArgument, "missing node-token in metadata")
+	}
+	if err := s.validateNodeToken(ctx, nodeID, nodeTokens[0]); err != nil {
+		return err
+	}
+	if node, _ := s.store.GetNode(ctx, nodeID); node != nil && strings.EqualFold(node.Status, "disabled") {
+		return status.Error(codes.PermissionDenied, "node disabled by control plane")
+	}
+
+	s.hub.SetPreloadStream(nodeID, stream)
+	defer func() {
+		s.hub.SetPreloadStream(nodeID, nil)
+		log.Ctx(ctx).Info().Str("node_id", nodeID).Msg("preload stream ended")
+	}()
+
+	for {
+		res, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		log.Ctx(ctx).Info().
+			Str("node_id", nodeID).
+			Str("request_id", res.GetRequestId()).
+			Bool("ok", res.GetOk()).
+			Int32("loaded", res.GetLoaded()).
+			Str("reason", res.GetReason()).
+			Msg("preload result received from node")
+		if s.preload != nil {
+			s.preload.ReportNodeResult(nodeID, res)
+		}
 	}
 }
 
@@ -629,6 +698,9 @@ func (s *nodeControlServer) ReportMetrics(ctx context.Context, req *controlpb.Me
 		TCPSynRecv:     int32(val("tcp_syn_recv")),
 		TCPTimeWait:    int32(val("tcp_time_wait")),
 		NginxRunning:   val("nginx_running") >= 0.5,
+		RequestsTotal:  int64(val("requests_total")),
+		CacheHits:      int64(val("cache_hits")),
+		CacheMisses:    int64(val("cache_misses")),
 	}
 	if err := s.store.UpdateNodeTelemetry(ctx, nodeID, tele); err != nil {
 		log.Ctx(ctx).Warn().Err(err).Str("node_id", nodeID).Msg("failed to update node telemetry")
@@ -643,7 +715,25 @@ func (s *nodeControlServer) ReportMetrics(ctx context.Context, req *controlpb.Me
 			MemUsage:       tele.MemUsage,
 			DiskUsage:      tele.DiskUsage,
 			TCPEstablished: tele.TCPEstablished,
+			RequestsTotal:  tele.RequestsTotal,
+			CacheHits:      tele.CacheHits,
+			CacheMisses:    tele.CacheMisses,
 		})
+	}
+	if s.servers != nil && s.servers.metrics != nil {
+		var totalHits, totalMisses int64
+		if nodes, err := s.store.ListNodes(ctx); err == nil {
+			for _, n := range nodes {
+				if n == nil {
+					continue
+				}
+				totalHits += n.CacheHits
+				totalMisses += n.CacheMisses
+			}
+		}
+		if totalHits+totalMisses > 0 {
+			s.servers.metrics.SetCacheHitRatio(float64(totalHits) / float64(totalHits+totalMisses))
+		}
 	}
 	if s.notifyMonitor != nil {
 		s.notifyMonitor()
@@ -673,16 +763,8 @@ func (s *nodeControlServer) ReportLogs(ctx context.Context, req *controlpb.LogsB
 }
 
 func (s *nodeControlServer) Purge(ctx context.Context, req *controlpb.PurgeCommand) (*controlpb.PurgeResult, error) {
-	log.Ctx(ctx).Info().
-		Str("request_id", req.GetRequestId()).
-		Int("urls", len(req.GetUrls())).
-		Msg("purge command received from node")
-
-	return &controlpb.PurgeResult{
-		RequestId: req.GetRequestId(),
-		Ok:        true,
-		Reason:    "acknowledged",
-	}, nil
+	_ = req
+	return nil, status.Error(codes.Unimplemented, "use StreamPurge for cache purge commands")
 }
 
 func (s *nodeControlServer) Ping(ctx context.Context, req *controlpb.NodePingRequest) (*controlpb.NodePingResponse, error) {
@@ -771,23 +853,28 @@ func (s *nodeControlServer) RequestCertificate(ctx context.Context, req *control
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
 
-	if s.store != nil {
-		record := &store.Certificate{
-			Name:      domain,
-			Domain:    domain,
-			Type:      "self-signed",
-			AutoRenew: false,
-			Status:    "active",
-			CertPEM:   certPEM,
-			KeyPEM:    nil,
-			ExpiresAt: leafTmpl.NotAfter,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-		if err := s.store.CreateCertificate(ctx, record); err != nil {
-			log.Ctx(ctx).Warn().Err(err).Str("domain", domain).Msg("create self-signed certificate record failed")
-		}
-	}
+	// Deliberately do NOT write this leaf into `certificates`. That table
+	// is the user/admin-facing asset list and is keyed only by (domain)
+	// via GetCertificateByDomain; inserting a node-issued self-signed
+	// leaf here:
+	//
+	//   * gives ListCertificates/admin UI a growing pile of rows with
+	//     empty user_id,
+	//   * makes GetCertificateByDomain ambiguous when the same host also
+	//     has a user-uploaded/ACME cert (the SELECT picks whichever comes
+	//     back first, not "the one the operator cares about"),
+	//   * stores the private key as NULL which breaks any code path that
+	//     later wants to use the stored material for TLS termination.
+	//
+	// The authoritative copy lives on the node (it holds the CSR key),
+	// and the caller already gets CertPem + ChainPem in the response.
+	// If an audit trail is ever needed, route it to a dedicated table
+	// rather than recycling the user-facing one.
+	log.Ctx(ctx).Info().
+		Str("domain", domain).
+		Str("node_id", nodeID).
+		Time("not_after", leafTmpl.NotAfter).
+		Msg("issued node self-signed leaf (not persisted to certificates table)")
 
 	return &controlpb.CertificateResponse{
 		Ok:       true,
@@ -830,6 +917,29 @@ func (s *nodeControlServer) GetCertificate(ctx context.Context, req *controlpb.G
 	if cert == nil {
 		return &controlpb.GetCertificateResponse{Ok: false, CertId: certID, Reason: "certificate not found"}, nil
 	}
+
+	// Authorization: only let the node fetch material for certificates it
+	// is actually expected to serve. Without this check any compromised /
+	// malicious edge node could iterate cert IDs and exfiltrate every
+	// tenant's TLS private key (`KeyPEM`). The rule is "the node must
+	// belong to the cluster of at least one domain that binds this cert"
+	// — which mirrors how the config-builder decides what to send the
+	// node in the first place.
+	if err := s.assertNodeCanAccessCert(ctx, nodeID, cert); err != nil {
+		log.Ctx(ctx).Warn().
+			Err(err).
+			Str("node_id", nodeID).
+			Int64("cert_id", cert.ID).
+			Str("cert_domain", cert.Domain).
+			Msg("denied GetCertificate (node not authorized for this cert)")
+		return &controlpb.GetCertificateResponse{
+			Ok:     false,
+			CertId: strconv.FormatInt(cert.ID, 10),
+			Domain: cert.Domain,
+			Reason: "not authorized for this certificate",
+		}, nil
+	}
+
 	certIDResp := strconv.FormatInt(cert.ID, 10)
 	if len(cert.CertPEM) == 0 {
 		return &controlpb.GetCertificateResponse{
@@ -852,7 +962,91 @@ func (s *nodeControlServer) GetCertificate(ctx context.Context, req *controlpb.G
 	}, nil
 }
 
+// assertNodeCanAccessCert returns nil iff `nodeID` is allowed to download
+// `cert` based on cluster membership. The node is allowed when at least one
+// domain that binds this cert is in a cluster the node belongs to (via
+// either Node.Cluster or the cluster_nodes association table).
+//
+// This is intentionally a positive check: "find at least one domain with
+// CertID == cert.ID AND (node.cluster matches domain.line_group_id OR
+// cluster_nodes(line_group_id, node) exists)". A node that hasn't been
+// joined to any cluster, or a cert that isn't bound to any domain, is
+// denied — that is safer than the historical behaviour of trusting any
+// authenticated node with any cert_id.
+func (s *nodeControlServer) assertNodeCanAccessCert(ctx context.Context, nodeID string, cert *store.Certificate) error {
+	if s == nil || s.store == nil || cert == nil {
+		return fmt.Errorf("authorization unavailable")
+	}
+	node, err := s.store.GetNode(ctx, nodeID)
+	if err != nil {
+		return fmt.Errorf("get node: %w", err)
+	}
+	if node == nil {
+		return fmt.Errorf("node %q not found", nodeID)
+	}
+
+	// Build the set of clusters this node is a member of. We accept both
+	// the legacy single-cluster column on `nodes` and the many-to-many
+	// `cluster_nodes` rows so that operators don't have to migrate before
+	// this check starts working.
+	nodeClusters := make(map[string]struct{})
+	if c := strings.TrimSpace(node.Cluster); c != "" {
+		nodeClusters[c] = struct{}{}
+	}
+	if clusters, err := s.store.ListClusters(ctx); err == nil {
+		for _, c := range clusters {
+			if c == nil || c.ID == "" {
+				continue
+			}
+			members, mErr := s.store.ListClusterNodes(ctx, c.ID, "all")
+			if mErr != nil {
+				continue
+			}
+			for _, m := range members {
+				if m != nil && m.NodeID == nodeID {
+					nodeClusters[c.ID] = struct{}{}
+					break
+				}
+			}
+		}
+	}
+	if len(nodeClusters) == 0 {
+		return fmt.Errorf("node %q has no cluster membership", nodeID)
+	}
+
+	certIDStr := strconv.FormatInt(cert.ID, 10)
+	domains, err := s.store.ListDomains(ctx)
+	if err != nil {
+		return fmt.Errorf("list domains: %w", err)
+	}
+	for _, d := range domains {
+		if d == nil {
+			continue
+		}
+		// Match by explicit cert_id binding OR by domain-name fallback
+		// (some legacy paths leave cert_id blank and rely on the cert's
+		// `domain` column instead).
+		boundByID := strings.TrimSpace(d.CertID) == certIDStr
+		boundByName := strings.TrimSpace(d.CertID) == "" &&
+			strings.EqualFold(strings.TrimSpace(d.Name), strings.TrimSpace(cert.Domain))
+		if !boundByID && !boundByName {
+			continue
+		}
+		if _, ok := nodeClusters[strings.TrimSpace(d.LineGroupID)]; ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("node %q is not in any cluster that serves cert %d", nodeID, cert.ID)
+}
+
 // loadOrCreateCA 尝试从配置指定文件加载 CA，不存在时生成并落盘（若配置了路径）。
+//
+// When CACertFile/CAKeyFile are configured we always go through them — the
+// files are the source of truth and cross-restart stability is guaranteed
+// by the operator. When they are NOT configured we fall back to a
+// process-wide cached CA (see nodeControlServer.cachedCA*). The previous
+// implementation re-generated a fresh CA every call, which broke trust
+// between any two leaf certs issued in the same control plane process.
 func (s *nodeControlServer) loadOrCreateCA(now time.Time) (*x509.Certificate, *rsa.PrivateKey, []byte, error) {
 	certPath := strings.TrimSpace(s.cfg.CACertFile)
 	keyPath := strings.TrimSpace(s.cfg.CAKeyFile)
@@ -862,14 +1056,27 @@ func (s *nodeControlServer) loadOrCreateCA(now time.Time) (*x509.Certificate, *r
 		if err == nil {
 			return caCert, caKey, caPEM, nil
 		}
-		log.Warn().Err(err).Msg("load CA failed, will regenerate")
+		log.Warn().Err(err).Msg("load CA failed, will regenerate (and persist to configured paths)")
+		// fall through to generate; we'll persist below.
 	}
+
+	// In-memory cache fast path: a valid, not-yet-expired CA is reused
+	// for every subsequent RequestCertificate call.
+	s.caMu.Lock()
+	if s.cachedCACert != nil && s.cachedCAKey != nil &&
+		now.Before(s.cachedCAUntil) && len(s.cachedCAPEM) > 0 {
+		caCert, caKey, caPEM := s.cachedCACert, s.cachedCAKey, s.cachedCAPEM
+		s.caMu.Unlock()
+		return caCert, caKey, caPEM, nil
+	}
+	s.caMu.Unlock()
 
 	// Generate new CA
 	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("generate ca key: %w", err)
 	}
+	notAfter := now.Add(365 * 24 * time.Hour)
 	caTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(now.UnixNano()),
 		Subject: pkix.Name{
@@ -877,7 +1084,7 @@ func (s *nodeControlServer) loadOrCreateCA(now time.Time) (*x509.Certificate, *r
 			Organization: []string{"LingCDN"},
 		},
 		NotBefore:             now.Add(-5 * time.Minute),
-		NotAfter:              now.Add(365 * 24 * time.Hour),
+		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -905,6 +1112,20 @@ func (s *nodeControlServer) loadOrCreateCA(now time.Time) (*x509.Certificate, *r
 			keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(caKey)})
 			_ = os.WriteFile(keyPath, keyPEM, 0o600)
 		}
+	} else {
+		// No on-disk persistence configured: at least keep a single
+		// CA alive for the lifetime of this process so subsequent
+		// leaf issuances chain back to the same root.
+		log.Warn().
+			Time("not_after", notAfter).
+			Msg("CACertFile/CAKeyFile not configured; using in-memory CA (cross-restart trust will break — set the paths in config)")
+		s.caMu.Lock()
+		s.cachedCACert = caCert
+		s.cachedCAKey = caKey
+		s.cachedCAPEM = caPEM
+		// Refresh slightly before expiry so leaves don't outlive root.
+		s.cachedCAUntil = notAfter.Add(-7 * 24 * time.Hour)
+		s.caMu.Unlock()
 	}
 
 	return caCert, caKey, caPEM, nil
@@ -978,7 +1199,14 @@ func (s *nodeControlServer) validateNodeToken(ctx context.Context, nodeID, token
 	}
 
 	if node.Token != hashToken(token) {
-		return status.Errorf(codes.Unauthenticated, "invalid node token for node %s", nodeID)
+		// Legacy rows created via admin HTTP stored plaintext tokens before
+		// hashing was enforced. Accept once and upgrade in place.
+		if node.Token != token {
+			return status.Errorf(codes.Unauthenticated, "invalid node token for node %s", nodeID)
+		}
+		if err := s.store.UpdateNodeToken(ctx, nodeID, hashToken(token)); err != nil {
+			log.Ctx(ctx).Warn().Err(err).Str("node_id", nodeID).Msg("failed to upgrade legacy node token hash")
+		}
 	}
 
 	return nil
@@ -998,12 +1226,12 @@ func (s *nodeControlServer) getNodeIDFromMetadata(ctx context.Context) (string, 
 	return nodeIDs[0], nil
 }
 
-func generateNodeToken() string {
+func generateNodeToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand failed: " + err.Error())
+		return "", err
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 func hashToken(token string) string {

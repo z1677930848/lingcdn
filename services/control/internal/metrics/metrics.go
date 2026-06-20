@@ -39,6 +39,10 @@ type Metrics struct {
 	StoreOperationsTotal   *prometheus.CounterVec
 	StoreOperationDuration *prometheus.HistogramVec
 	StoreErrors            *prometheus.CounterVec
+
+	// Fleet observability
+	WAFBlocksTotal      prometheus.Counter
+	CacheHitRatio       prometheus.Gauge
 }
 
 // New creates and registers all Prometheus metrics.
@@ -175,6 +179,19 @@ func New() *Metrics {
 			Name:      "store_errors_total",
 			Help:      "Total number of store errors",
 		}, []string{"operation", "entity"}),
+
+		WAFBlocksTotal: promauto.NewCounter(prometheus.CounterOpts{
+			Namespace: "lingcdn",
+			Subsystem: "control",
+			Name:      "waf_blocks_total",
+			Help:      "Total WAF blocks reported by edge nodes",
+		}),
+		CacheHitRatio: promauto.NewGauge(prometheus.GaugeOpts{
+			Namespace: "lingcdn",
+			Subsystem: "control",
+			Name:      "cache_hit_ratio",
+			Help:      "Aggregate cache hit ratio from node telemetry",
+		}),
 	}
 
 	// Set control up to 1
@@ -250,4 +267,18 @@ func (m *Metrics) IncGRPCStreams() {
 // DecGRPCStreams decrements the active gRPC streams count.
 func (m *Metrics) DecGRPCStreams() {
 	m.GRPCStreamActive.Dec()
+}
+
+// IncWAFBlocks increments WAF block counter.
+func (m *Metrics) IncWAFBlocks(n int) {
+	if n <= 0 {
+		m.WAFBlocksTotal.Inc()
+		return
+	}
+	m.WAFBlocksTotal.Add(float64(n))
+}
+
+// SetCacheHitRatio sets aggregate cache hit ratio (0..1).
+func (m *Metrics) SetCacheHitRatio(ratio float64) {
+	m.CacheHitRatio.Set(ratio)
 }

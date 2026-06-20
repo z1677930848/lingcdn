@@ -44,6 +44,14 @@ ADMIN_PASSWORD: CHANGE_ME_STRONG_PASSWORD
 # ---------- 网络身份 ----------
 PUBLIC_GRPC_ENDPOINT: ""
 PUBLIC_IP: ""
+# 主控面板对外域名（节点安装命令、公开链接等将优先使用此域名）
+CONTROL_DOMAIN: ""
+# 生成公开 URL 时使用 https（也可由 ACME_ENABLE 自动启用）
+CONTROL_PUBLIC_HTTPS: false
+# 将 IP 直连访问 301 重定向到 CONTROL_DOMAIN
+CONTROL_REDIRECT_TO_DOMAIN: false
+# Nginx 反代时填写可信代理 CIDR，主控才会读取 X-Forwarded-For / X-Real-IP
+TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
 PORTAL_BASE: ""
 UPGRADE_API: ""
 UPGRADE_PUBKEY: ""
@@ -61,7 +69,7 @@ CA_CERT_FILE: ""
 CA_KEY_FILE: ""
 ACME_ENABLE: false
 ACME_EMAIL: ""
-ACME_CACHE_DIR: /etc/lingcdn/acme
+ACME_CACHE_DIR: data/acme
 ACME_STAGING: false
 ACME_CERT_FILE: ""
 ACME_KEY_FILE: ""
@@ -69,8 +77,10 @@ ACME_KEY_FILE: ""
 # ---------- 授权 / License ----------
 LICENSE_FILE: data/license.json
 # online | offline ；离线模式下需要预先放置 license.json
+# offline 模式下主控可从 LOCAL_BUNDLE_DIR 分发节点安装包（无需授权站）
 LICENSE_MODE: online
 LICENSE_STATIC_INDEX_URL: ""
+LOCAL_BUNDLE_DIR: data/bundles
 LICENSE_GRACE_HOURS: 24
 LICENSE_VERIFY_INTERVAL: 5m0s
 LICENSE_PUBKEY: ""
@@ -97,5 +107,5 @@ ES_USER: ""
 ES_PASS: ""
 ES_INDEX_PREFIX: cdn-access
 ES_FIELD_TIMESTAMP: '@timestamp'
-ES_FIELD_DOMAIN: domain.keyword
+ES_FIELD_DOMAIN: domain
 ES_FIELD_BYTES: bytes

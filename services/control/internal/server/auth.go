@@ -2,24 +2,27 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/lingcdn/control/internal/config"
 	"github.com/lingcdn/control/internal/store"
 )
 
 type ctxKey string
 
 const (
-	ctxKeyUserID ctxKey = "user_id"
-	ctxKeyEmail  ctxKey = "email"
-	ctxKeyRole   ctxKey = "role"
+	ctxKeyUserID       ctxKey = "user_id"
+	ctxKeyEmail        ctxKey = "email"
+	ctxKeyRole         ctxKey = "role"
+	ctxKeyGroupID      ctxKey = "group_id"
+	ctxKeyPermissions  ctxKey = "permissions"
 )
 
 type authClaims struct {
@@ -35,6 +38,7 @@ func issueJWT(secret string, user *store.User, ttl time.Duration) (string, error
 		Email:  user.Email,
 		Role:   user.Role,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        uuid.NewString(),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Subject:   user.ID,
@@ -146,7 +150,12 @@ func isSafeMethod(method string) bool {
 	return false
 }
 
-func authenticateRequest(cfg config.Config, st store.Store, r *http.Request) (context.Context, bool) {
+func authenticateRequest(s *Servers, r *http.Request) (context.Context, bool) {
+	if s == nil {
+		return r.Context(), false
+	}
+	cfg := s.cfg
+	st := s.store
 	token := r.Header.Get("Authorization")
 	if token == "" {
 		token = r.Header.Get("X-Service-Token")
@@ -165,15 +174,42 @@ func authenticateRequest(cfg config.Config, st store.Store, r *http.Request) (co
 	token = strings.TrimPrefix(token, "Bearer ")
 	token = strings.TrimSpace(token)
 
-	// Service token path (for nodes or trusted callers)
-	if token != "" && cfg.ServiceToken != "" && token == cfg.ServiceToken {
+	// Service token path (for nodes or trusted callers).
+	// subtle.ConstantTimeCompare guards against remote timing attacks that
+	// could recover the service token byte-by-byte; the length prefix also
+	// prevents the early-exit leak of a plain string compare.
+	if token != "" && cfg.ServiceToken != "" &&
+		len(token) == len(cfg.ServiceToken) &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(cfg.ServiceToken)) == 1 {
 		return context.WithValue(r.Context(), ctxKeyRole, "service"), true
 	}
 
 	// JWT path
 	if token != "" {
 		if claims, err := parseJWT(cfg.AuthSecret, token); err == nil {
-			return withUserContext(r.Context(), claims), true
+			if claims.ID != "" && s.isTokenRevoked(claims.ID) {
+				return r.Context(), false
+			}
+			if st == nil {
+				return r.Context(), false
+			}
+			user, err := st.GetUserByID(r.Context(), claims.UserID)
+			if err != nil || user == nil {
+				return r.Context(), false
+			}
+			if strings.EqualFold(strings.TrimSpace(user.Status), "disabled") {
+				return r.Context(), false
+			}
+			claims.Email = user.Email
+			claims.Role = user.Role
+			ctx := withUserContext(r.Context(), claims)
+			if gid := strings.TrimSpace(user.GroupID); gid != "" {
+				ctx = context.WithValue(ctx, ctxKeyGroupID, gid)
+				if g, gerr := st.GetUserGroup(r.Context(), gid); gerr == nil && g != nil {
+					ctx = context.WithValue(ctx, ctxKeyPermissions, normalizeUserGroupPermissions(g.Permissions))
+				}
+			}
+			return ctx, true
 		}
 	}
 

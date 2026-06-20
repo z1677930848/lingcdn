@@ -1,0 +1,1288 @@
+﻿/*
+ * Dashboard home pages 鈥?user (dh-*) and admin (adh-*).
+ * Element Plus admin style: white cards, 4px radius, #409EFF accent.
+ */
+
+.overview-loading {
+  min-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.adh-demo-alert {
+  margin-bottom: 4px;
+}
+
+/* 鈹€鈹€鈹€ Admin overview layout 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.adh-overview {
+  gap: var(--app-page-gap, 16px);
+}
+
+.adh-console-head {
+  align-items: center;
+}
+
+.adh-head-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.adh-head-row .console-head-title {
+  margin: 0;
+}
+
+.adh-health-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--app-pill-radius, 999px);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  border: 1px solid transparent;
+}
+
+.adh-pulse--ok,
+.adh-health-badge.adh-pulse--ok {
+  background: var(--app-success-soft-bg);
+  color: var(--app-success-strong);
+  border-color: rgba(103, 194, 58, 0.25);
+}
+
+.adh-pulse--warn,
+.adh-health-badge.adh-pulse--warn {
+  background: var(--app-warning-soft-bg);
+  color: var(--app-warning-strong);
+  border-color: rgba(230, 162, 60, 0.25);
+}
+
+.adh-pulse--err,
+.adh-health-badge.adh-pulse--err {
+  background: var(--app-danger-soft-bg);
+  color: var(--app-danger-strong);
+  border-color: rgba(245, 108, 108, 0.22);
+}
+
+.adh-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.adh-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--app-pill-radius, 999px);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--app-text);
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+}
+
+.adh-meta-chip--ok {
+  color: var(--app-success-strong);
+  background: var(--app-success-soft-bg);
+  border-color: rgba(103, 194, 58, 0.22);
+}
+
+.adh-meta-chip--warn {
+  color: var(--app-warning-strong);
+  background: var(--app-warning-soft-bg);
+  border-color: rgba(230, 162, 60, 0.22);
+}
+
+.adh-meta-chip--err {
+  color: var(--app-danger-strong);
+  background: var(--app-danger-soft-bg);
+  border-color: rgba(245, 108, 108, 0.2);
+}
+
+.adh-meta-chip--muted {
+  color: var(--app-text-muted);
+}
+
+.console-head-refresh-icon {
+  margin-right: 4px;
+}
+
+.adh-status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--app-card-radius);
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+}
+
+.adh-dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(280px, 1fr);
+  gap: var(--app-page-gap, 16px);
+  align-items: start;
+}
+
+.adh-main-col,
+.adh-side-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-page-gap, 16px);
+  min-width: 0;
+}
+
+.adh-side-col {
+  position: sticky;
+  top: 12px;
+}
+
+.adh-quick-grid--compact {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.adh-quick-grid--compact .adh-quick-tile {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.adh-quick-grid--compact .adh-quick-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.adh-quick-text {
+  min-width: 0;
+}
+
+.adh-quick-grid--compact .adh-quick-title {
+  font-size: 13px;
+}
+
+.adh-quick-grid--compact .adh-quick-desc {
+  font-size: 11px;
+  margin-top: 1px;
+}
+
+.adh-region-list--compact {
+  max-height: 160px;
+}
+
+.adh-info-list--compact .adh-info-row {
+  padding: 8px 0;
+}
+
+.adh-install-wrap--compact {
+  gap: 8px;
+}
+
+.adh-install-wrap--compact .adh-install-row,
+.adh-install-wrap--compact .adh-install-script-row {
+  padding: 8px 10px;
+}
+
+.adh-install-wrap--compact .adh-install-script {
+  font-size: 11px;
+  max-height: 72px;
+  overflow-y: auto;
+}
+
+@media (max-width: 1180px) {
+  .adh-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .adh-side-col {
+    position: static;
+  }
+
+  .adh-quick-grid--compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .adh-quick-grid--compact {
+    grid-template-columns: 1fr;
+  }
+
+  .adh-head-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}
+
+/* 鈹€鈹€鈹€ Stat cards (shared) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.dh-stat-grid,
+.adh-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--app-page-gap-tight, 16px);
+}
+
+@media (max-width: 1200px) {
+  .dh-stat-grid,
+  .adh-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .dh-stat-grid,
+  .adh-stat-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dh-stat-card,
+.adh-stat-card {
+  transition: transform 0.18s var(--app-easing-standard), box-shadow 0.18s;
+}
+
+.dh-stat-card:hover,
+.adh-stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--app-shadow-card-hover);
+}
+
+.adh-stat-primary {
+  background: var(--app-brand-gradient) !important;
+  border: 0 !important;
+  color: #fff;
+  box-shadow: var(--app-brand-shadow-md);
+}
+
+.adh-stat-primary .t-card__body {
+  color: #fff;
+}
+
+.adh-stat-primary .adh-stat-title {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.adh-stat-primary .adh-stat-value {
+  color: #fff;
+}
+
+.adh-stat-primary .adh-stat-sub {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.adh-stat-primary .adh-stat-icon {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.dh-stat-row,
+.adh-stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dh-stat-info,
+.adh-stat-info {
+  min-width: 0;
+}
+
+.dh-stat-title,
+.adh-stat-title {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-bottom: 6px;
+}
+
+.dh-stat-value,
+.adh-stat-value {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.dh-stat-sub,
+.adh-stat-sub {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dh-stat-sub--muted,
+.adh-stat-sub {
+  color: var(--app-text-muted);
+}
+
+.dh-stat-sub--warn {
+  color: var(--app-warning-strong);
+}
+
+.dh-stat-icon,
+.adh-stat-icon {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--app-card-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--app-border);
+}
+
+.adh-stat-spark {
+  margin-top: 12px;
+  height: 32px;
+}
+
+/* 鈹€鈹€鈹€ Plan card (user dashboard) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.dh-plan-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.dh-plan-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--td-brand-color);
+}
+
+.dh-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.dh-plan-head-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.dh-plan-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--app-card-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--app-warning-soft-bg);
+  color: var(--app-warning-strong);
+  border: 1px solid rgba(230, 162, 60, 0.25);
+}
+
+.dh-plan-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  margin-bottom: 6px;
+}
+
+.dh-plan-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dh-plan-period {
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+
+.dh-plan-price {
+  font-weight: 600;
+  color: var(--app-brand-strong);
+  font-size: 15px;
+}
+
+.dh-plan-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 14px;
+  background: var(--app-brand-soft-bg);
+  color: var(--app-brand-strong);
+  border-radius: var(--app-button-radius);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  border: 1px solid var(--app-brand-soft-border);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.dh-plan-cta:hover {
+  background: var(--td-brand-color-2);
+  border-color: var(--td-brand-color-4);
+}
+
+.dh-plan-dates {
+  display: flex;
+  gap: 24px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--app-divider);
+  flex-wrap: wrap;
+}
+
+.dh-plan-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--app-text-muted);
+}
+
+.dh-plan-date-label {
+  font-size: 12px;
+}
+
+.dh-plan-date-value {
+  font-size: 14px;
+  color: var(--app-text-strong);
+  font-weight: 500;
+}
+
+.dh-plan-empty {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.dh-plan-empty-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--app-card-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--app-neutral-soft-bg);
+  color: var(--app-text-muted);
+}
+
+.dh-plan-empty-text {
+  flex: 1;
+}
+
+.dh-plan-empty-title {
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+
+.dh-plan-empty-sub {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-top: 2px;
+}
+
+/* 鈹€鈹€鈹€ Two-column layout 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.dh-two-col {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: var(--app-page-gap, 16px);
+}
+
+@media (max-width: 980px) {
+  .dh-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dh-list-card {
+  overflow: hidden;
+}
+
+.dh-card-head,
+.adh-card-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--app-text-strong);
+  width: 100%;
+}
+
+.adh-card-head--split {
+  width: 100%;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.adh-card-head-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dh-card-head-icon,
+.adh-card-head-icon {
+  color: var(--app-brand);
+}
+
+.dh-card-head-link,
+.adh-card-head-link {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--app-brand-strong);
+  text-decoration: none;
+}
+
+.dh-card-head-link:hover,
+.adh-card-head-link:hover {
+  text-decoration: underline;
+}
+
+.adh-card-head-sub {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--app-text-muted);
+  margin-left: 4px;
+}
+
+.adh-card {
+  overflow: hidden;
+}
+
+.adh-mini-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.adh-mini-btn:hover:not(:disabled) {
+  background: var(--app-surface-hover);
+  border-color: var(--app-border-strong);
+}
+
+.adh-mini-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.adh-mini-btn--primary {
+  background: var(--app-brand-soft-bg);
+  color: var(--app-brand-strong);
+  border-color: var(--app-brand-soft-border);
+}
+
+.adh-mini-btn--primary:hover:not(:disabled) {
+  background: var(--td-brand-color-2);
+}
+
+.adh-trend-selector {
+  margin-left: auto;
+  width: 140px;
+}
+
+/* 鈹€鈹€鈹€ Announcements 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.dh-anno-list,
+.adh-anno-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 0;
+}
+
+.dh-anno-item,
+.adh-anno-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--app-divider-soft);
+}
+
+.dh-anno-item:last-child,
+.adh-anno-item:last-child {
+  border-bottom: none;
+}
+
+.dh-anno-bullet,
+.adh-anno-bullet {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--td-brand-color);
+  box-shadow: 0 0 0 3px var(--app-brand-soft-bg);
+}
+
+.dh-anno-body,
+.adh-anno-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.dh-anno-title,
+.adh-anno-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--app-text-strong);
+  font-weight: 500;
+}
+
+.dh-anno-time,
+.adh-anno-time {
+  font-size: 12px;
+  color: var(--app-text-faint);
+  margin-top: 2px;
+}
+
+.dh-list-empty,
+.adh-empty {
+  padding: 24px 18px;
+  color: var(--app-text-faint);
+  font-size: 13px;
+  text-align: center;
+}
+
+.dh-anno-link {
+  margin-left: 8px;
+  color: var(--app-brand-strong);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.dh-anno-link:hover {
+  text-decoration: underline;
+}
+
+/* 鈹€鈹€鈹€ Quick action tiles 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.dh-quick-grid,
+.adh-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 720px) {
+  .adh-quick-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dh-quick-tile,
+.adh-quick-tile {
+  display: block;
+  padding: 14px;
+  border-radius: var(--app-card-radius);
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  text-decoration: none;
+  color: var(--app-text-strong);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.dh-quick-tile:hover,
+.adh-quick-tile:hover {
+  border-color: var(--tile-fg, var(--app-brand));
+  box-shadow: var(--app-shadow-card-hover);
+}
+
+.dh-quick-icon,
+.adh-quick-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--app-card-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.dh-quick-title,
+.adh-quick-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+
+.dh-quick-desc,
+.adh-quick-desc {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-top: 2px;
+}
+
+/* 鈹€鈹€鈹€ Order / domain rows 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.dh-row-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dh-row-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.dh-row-item:hover {
+  background: var(--app-surface-hover);
+  border-color: var(--app-border-strong);
+}
+
+.dh-row-left {
+  min-width: 0;
+  flex: 1;
+}
+
+.dh-row-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--app-text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dh-row-sub {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dh-row-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.dh-mono,
+.adh-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* 鈹€鈹€鈹€ Admin dashboard: status pills 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.adh-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.adh-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: var(--app-pill-radius);
+  font-size: 13px;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface-muted);
+}
+
+.adh-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--app-text-faint);
+  flex: 0 0 auto;
+}
+
+.adh-pill--ok {
+  background: var(--app-success-soft-bg);
+  border-color: rgba(103, 194, 58, 0.3);
+  color: var(--app-success-strong);
+}
+
+.adh-pill--ok .adh-status-dot {
+  background: var(--app-success);
+}
+
+.adh-pill--warn {
+  background: var(--app-warning-soft-bg);
+  border-color: rgba(230, 162, 60, 0.3);
+  color: var(--app-warning-strong);
+}
+
+.adh-pill--warn .adh-status-dot {
+  background: var(--app-warning);
+}
+
+.adh-pill--err {
+  background: var(--app-danger-soft-bg);
+  border-color: rgba(245, 108, 108, 0.3);
+  color: var(--app-danger-strong);
+}
+
+.adh-pill--err .adh-status-dot {
+  background: var(--app-danger);
+}
+
+.adh-status-name {
+  font-weight: 600;
+}
+
+.adh-status-detail {
+  color: inherit;
+  opacity: 0.78;
+  font-size: 12px;
+}
+
+/* 鈹€鈹€鈹€ Admin charts grid 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.adh-chart-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: var(--app-page-gap, 16px);
+}
+
+@media (max-width: 980px) {
+  .adh-chart-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.adh-net-breakdown {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.adh-net-item {
+  text-align: center;
+  padding: 12px 8px;
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+}
+
+.adh-net--ok {
+  background: var(--app-success-soft-bg);
+  border-color: rgba(103, 194, 58, 0.25);
+}
+
+.adh-net--off {
+  background: var(--app-danger-soft-bg);
+  border-color: rgba(245, 108, 108, 0.22);
+}
+
+.adh-net-label {
+  display: block;
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-bottom: 4px;
+}
+
+.adh-net-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+
+.adh-net--ok .adh-net-value {
+  color: var(--app-success-strong);
+}
+
+.adh-net--off .adh-net-value {
+  color: var(--app-danger-strong);
+}
+
+.adh-region-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.adh-region-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: var(--app-card-radius-sm);
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.adh-region-item:hover {
+  background: var(--app-surface-hover);
+}
+
+.adh-region-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--app-text);
+  font-weight: 500;
+}
+
+.adh-region-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.adh-region-nodes {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+.adh-region-latency-good {
+  color: var(--app-success-strong);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.adh-region-latency-ok {
+  color: var(--app-warning-strong);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.adh-region-latency-warn {
+  color: var(--app-danger-strong);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.adh-traffic-total {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
+}
+
+.adh-traffic-total-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--app-brand-strong);
+}
+
+/* 鈹€鈹€鈹€ Admin top domains table 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.adh-table-wrap {
+  overflow-x: auto;
+}
+
+.adh-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.adh-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--app-text-muted);
+  padding: 10px 12px;
+  background: var(--app-surface-muted);
+  border-bottom: 1px solid var(--app-border);
+  font-size: 12px;
+}
+
+.adh-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--app-divider-soft);
+  color: var(--app-text);
+}
+
+.adh-table tr:last-child td {
+  border-bottom: none;
+}
+
+.adh-table tbody tr {
+  transition: background 0.15s;
+}
+
+.adh-table tbody tr:hover {
+  background: var(--app-surface-hover);
+}
+
+.adh-rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--app-pill-radius);
+  background: var(--app-brand-soft-bg);
+  color: var(--app-brand-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.adh-domain-name {
+  color: var(--app-text-strong);
+  font-weight: 500;
+}
+
+.adh-rate-good {
+  color: var(--app-success-strong);
+  font-weight: 600;
+}
+
+.adh-rate-medium {
+  color: var(--app-warning-strong);
+  font-weight: 600;
+}
+
+.adh-rate-poor {
+  color: var(--app-danger-strong);
+  font-weight: 600;
+}
+
+/* 鈹€鈹€鈹€ Admin info grid 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.adh-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--app-page-gap, 16px);
+}
+
+@media (max-width: 980px) {
+  .adh-info-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.adh-progress-block {
+  padding: 12px 14px;
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+  margin-bottom: 14px;
+}
+
+.adh-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  margin-bottom: 8px;
+}
+
+.adh-progress-pct {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.adh-progress-pct.ok {
+  color: var(--app-success-strong);
+}
+
+.adh-progress-pct.warn {
+  color: var(--app-warning-strong);
+}
+
+.adh-progress-pct.err {
+  color: var(--app-danger-strong);
+}
+
+.adh-progress-bar {
+  height: 8px;
+  border-radius: var(--app-pill-radius);
+  background: var(--app-divider);
+  overflow: hidden;
+}
+
+.adh-progress-fill {
+  height: 100%;
+  border-radius: var(--app-pill-radius);
+  transition: width 0.4s var(--app-easing-standard);
+}
+
+.adh-progress-fill.ok {
+  background: var(--app-success);
+}
+
+.adh-progress-fill.warn {
+  background: var(--app-warning);
+}
+
+.adh-progress-fill.err {
+  background: var(--app-danger);
+}
+
+.adh-progress-foot {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-text-faint);
+}
+
+.adh-info-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.adh-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: var(--app-card-radius-sm);
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.adh-info-row:hover {
+  background: var(--app-surface-hover);
+}
+
+.adh-info-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--app-text-muted);
+}
+
+.adh-info-value {
+  color: var(--app-text-strong);
+  font-weight: 500;
+}
+
+/* 鈹€鈹€鈹€ Admin install card 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.adh-install-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.adh-install-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  margin-top: 8px;
+}
+
+.adh-install-section-title:first-child {
+  margin-top: 0;
+}
+
+.adh-install-row,
+.adh-install-script-row {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface-muted);
+  transition: border-color 0.15s;
+}
+
+.adh-install-row:hover,
+.adh-install-script-row:hover {
+  border-color: var(--app-border-strong);
+}
+
+.adh-install-script-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.adh-install-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+
+.adh-install-value {
+  font-size: 13px;
+  color: var(--app-text);
+  word-break: break-all;
+}
+
+.adh-install-script {
+  display: block;
+  padding: 12px 14px;
+  border: 1px dashed var(--app-border-strong);
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.adh-muted {
+  color: var(--app-text-muted);
+}
+
+@media (max-width: 720px) {
+  .dh-plan-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .dh-plan-dates {
+    gap: 16px;
+  }
+
+  .adh-install-row {
+    grid-template-columns: 1fr;
+  }
+
+  .adh-install-script-row {
+    grid-template-columns: 1fr;
+  }
+}

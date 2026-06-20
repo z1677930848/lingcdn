@@ -1,10 +1,10 @@
 use anyhow::Result;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::time::{sleep, interval};
+use tokio::time::{sleep, interval, MissedTickBehavior};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
-use sysinfo::{Disks, System};
+use sysinfo::{Disks, System, MINIMUM_CPU_UPDATE_INTERVAL};
 
 use crate::grpc_client::GrpcClient;
 use crate::metrics::Metrics;
@@ -15,13 +15,29 @@ use tokio::sync::RwLock;
 pub struct TelemetryReporter {
     metrics: Arc<Metrics>,
     report_interval: Duration,
+    // sysinfo computes CPU usage as the delta between two consecutive
+    // refresh_cpu() calls; the previous implementation created a fresh
+    // `System::new_all()` per report, which collapses that delta to ~0 us
+    // and locks cpu_usage() at 0.0. Holding a persistent System across
+    // reports lets each refresh produce a real interval-wide delta and
+    // restores the CPU/memory readings on the control plane.
+    system: Arc<Mutex<System>>,
 }
 
 impl TelemetryReporter {
     pub fn new(metrics: Arc<Metrics>, report_interval_secs: u64) -> Self {
+        let mut sys = System::new_all();
+        // Seed the CPU baseline so the first refresh_cpu() inside
+        // report_metrics() can compute a meaningful percentage rather
+        // than reporting 0 forever.
+        sys.refresh_cpu();
         Self {
             metrics,
-            report_interval: Duration::from_secs(report_interval_secs),
+            // Guard against accidental sub-second intervals that would
+            // straddle the sysinfo MINIMUM_CPU_UPDATE_INTERVAL and yield
+            // unstable / zero readings under fast restart loops.
+            report_interval: Duration::from_secs(report_interval_secs.max(2)),
+            system: Arc::new(Mutex::new(sys)),
         }
     }
 
@@ -35,7 +51,25 @@ impl TelemetryReporter {
     ) {
         info!("Starting telemetry reporter with interval: {:?}", self.report_interval);
 
+        // Wait at least MINIMUM_CPU_UPDATE_INTERVAL (200ms) past the
+        // baseline refresh_cpu() done in `new()` before the first report
+        // takes its measurement. Without this, the first interval tick
+        // can fire only microseconds after construction and the very
+        // first CPU sample would still be 0.
+        let warmup = MINIMUM_CPU_UPDATE_INTERVAL + Duration::from_millis(100);
+        tokio::select! {
+            _ = shutdown.recv() => {
+                info!("Telemetry reporter shutdown during warmup");
+                return;
+            }
+            _ = sleep(warmup) => {}
+        }
+
         let mut ticker = interval(self.report_interval);
+        // Default MissedTickBehavior::Burst would catch up by firing
+        // back-to-back ticks if a previous report stalled (slow gRPC,
+        // VM pause), drowning the control plane in duplicate metrics.
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut consecutive_failures: u32 = 0;
 
         loop {
@@ -63,7 +97,7 @@ impl TelemetryReporter {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as i64;
 
-        let (cpu_usage_pct, mem_usage_pct, disk_usage_pct, cpu_count, mem_total_bytes, disk_total_bytes, nginx_running) = system_snapshot();
+        let (cpu_usage_pct, mem_usage_pct, disk_usage_pct, cpu_count, mem_total_bytes, disk_total_bytes, nginx_running) = system_snapshot(&self.system);
         let (tcp_established, tcp_syn_recv, tcp_time_wait) = tcp_state_counts();
 
         let mut metrics = vec![
@@ -82,6 +116,12 @@ impl TelemetryReporter {
             Metric {
                 name: "cache_misses".to_string(),
                 value: self.metrics.cache_misses.get() as f64,
+                labels: Default::default(),
+                timestamp_ms,
+            },
+            Metric {
+                name: "waf_blocks".to_string(),
+                value: self.metrics.waf_blocks.get() as f64,
                 labels: Default::default(),
                 timestamp_ms,
             },
@@ -240,8 +280,12 @@ impl TelemetryReporter {
     }
 }
 
-fn system_snapshot() -> (f64, f64, f64, usize, u64, u64, bool) {
-    let mut sys = System::new_all();
+fn system_snapshot(system: &Arc<Mutex<System>>) -> (f64, f64, f64, usize, u64, u64, bool) {
+    // Persistent System: each refresh_cpu() now measures CPU activity
+    // since the previous report, which is the user-visible interval and
+    // far exceeds sysinfo's 200ms minimum, so cpu_usage() returns the
+    // real percentage instead of 0.
+    let mut sys = system.lock().expect("telemetry system mutex poisoned");
     sys.refresh_cpu();
     sys.refresh_memory();
     sys.refresh_processes();

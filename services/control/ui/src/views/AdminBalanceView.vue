@@ -7,28 +7,24 @@
       </div>
     </div>
 
-    <t-card bordered class="admin-list-card">
-      <t-tabs v-model="activeTab" class="admin-tabs">
-        <t-tab-panel value="accounts" label="余额账户">
-          <div v-if="accountsError" class="admin-error-box">
-            {{ accountsError }}
-            <t-button size="small" theme="primary" @click="loadAccounts">重试</t-button>
-          </div>
+    <el-card class="admin-list-card">
+      <el-tabs v-model="activeTab" class="admin-tabs">
+        <el-tab-pane name="accounts" label="余额账户">
+          <ErrorState v-if="accountsError" :message="accountsError" @retry="loadAccounts" />
           <div class="admin-toolbar">
             <div class="admin-toolbar-left">
-              <t-button variant="outline" @click="loadAccounts">刷新</t-button>
+              <el-button plain @click="loadAccounts">刷新</el-button>
             </div>
             <div class="admin-toolbar-right">
-              <t-input v-model="accountsUserId" class="admin-search-input" clearable placeholder="用户ID" />
+              <el-input v-model="accountsUserId" class="admin-search-input" clearable placeholder="用户ID" />
             </div>
           </div>
           <!-- Desktop: table view -->
           <div class="admin-desktop-only">
-            <t-table
+            <EpDataTable
               :data="accounts"
               :columns="accountColumns"
               row-key="user_id"
-              bordered
               hover
               stripe
               :loading="accountsLoading"
@@ -59,7 +55,7 @@
               </div>
             </div>
             <div v-if="accountsTotal > 0" class="admin-mobile-pagination">
-              <t-pagination
+              <el-pagination
                 :current="accountsPage"
                 :page-size="accountsPageSize"
                 :total="accountsTotal"
@@ -71,29 +67,25 @@
               />
             </div>
           </div>
-        </t-tab-panel>
+        </el-tab-pane>
 
-        <t-tab-panel value="recharges" label="充值记录">
-          <div v-if="rechargesError" class="admin-error-box">
-            {{ rechargesError }}
-            <t-button size="small" theme="primary" @click="loadRecharges">重试</t-button>
-          </div>
+        <el-tab-pane name="recharges" label="充值记录">
+          <ErrorState v-if="rechargesError" :message="rechargesError" @retry="loadRecharges" />
           <div class="admin-toolbar">
             <div class="admin-toolbar-left">
-              <t-button variant="outline" @click="loadRecharges">刷新</t-button>
+              <el-button plain @click="loadRecharges">刷新</el-button>
             </div>
             <div class="admin-toolbar-right">
-              <t-select v-model="rechargeStatus" :options="rechargeStatusOptions" class="admin-filter-select-large" />
-              <t-input v-model="rechargeUserId" class="admin-search-input" clearable placeholder="用户ID" />
+              <EpSelect v-model="rechargeStatus" :options="rechargeStatusOptions" class="admin-filter-select-large" />
+              <el-input v-model="rechargeUserId" class="admin-search-input" clearable placeholder="用户ID" />
             </div>
           </div>
           <!-- Desktop: table view -->
           <div class="admin-desktop-only">
-            <t-table
+            <EpDataTable
               :data="recharges"
               :columns="rechargeColumns"
               row-key="id"
-              bordered
               hover
               stripe
               :loading="rechargesLoading"
@@ -111,13 +103,13 @@
                 <div class="admin-mobile-card-header">
                   <div class="admin-mobile-card-title">{{ row.user_id }}</div>
                   <div class="admin-mobile-card-tags">
-                    <t-tag
-                      :theme="statusTheme(row.status)"
-                      variant="light"
+                    <el-tag
+                      :type="statusTheme(row.status)"
+                      effect="light"
                       size="small"
                     >
                       {{ statusText(row.status) }}
-                    </t-tag>
+                    </el-tag>
                   </div>
                 </div>
                 <div class="admin-mobile-card-subtitle">{{ row.out_trade_no }}</div>
@@ -152,12 +144,12 @@
                   </div>
                 </div>
                 <div class="admin-mobile-card-actions">
-                  <t-button size="small" variant="outline" @click="openRechargeDialog(row)">更新</t-button>
+                  <el-button size="small" plain @click="openRechargeDialog(row)">更新</el-button>
                 </div>
               </div>
             </div>
             <div v-if="rechargeTotal > 0" class="admin-mobile-pagination">
-              <t-pagination
+              <el-pagination
                 :current="rechargePage"
                 :page-size="rechargePageSize"
                 :total="rechargeTotal"
@@ -169,29 +161,25 @@
               />
             </div>
           </div>
-        </t-tab-panel>
+        </el-tab-pane>
 
-        <t-tab-panel value="withdrawals" label="提现申请">
-          <div v-if="withdrawalsError" class="admin-error-box">
-            {{ withdrawalsError }}
-            <t-button size="small" theme="primary" @click="loadWithdrawals">重试</t-button>
-          </div>
+        <el-tab-pane name="withdrawals" label="提现申请">
+          <ErrorState v-if="withdrawalsError" :message="withdrawalsError" @retry="loadWithdrawals" />
           <div class="admin-toolbar">
             <div class="admin-toolbar-left">
-              <t-button variant="outline" @click="loadWithdrawals">刷新</t-button>
+              <el-button plain @click="loadWithdrawals">刷新</el-button>
             </div>
             <div class="admin-toolbar-right">
-              <t-select v-model="withdrawalStatus" :options="withdrawalStatusOptions" class="admin-filter-select-large" />
-              <t-input v-model="withdrawalUserId" class="admin-search-input" clearable placeholder="用户ID" />
+              <EpSelect v-model="withdrawalStatus" :options="withdrawalStatusOptions" class="admin-filter-select-large" />
+              <el-input v-model="withdrawalUserId" class="admin-search-input" clearable placeholder="用户ID" />
             </div>
           </div>
           <!-- Desktop: table view -->
           <div class="admin-desktop-only">
-            <t-table
+            <EpDataTable
               :data="withdrawals"
               :columns="withdrawalColumns"
               row-key="id"
-              bordered
               hover
               stripe
               :loading="withdrawalsLoading"
@@ -209,13 +197,13 @@
                 <div class="admin-mobile-card-header">
                   <div class="admin-mobile-card-title">{{ row.user_id }}</div>
                   <div class="admin-mobile-card-tags">
-                    <t-tag
-                      :theme="row.status === 'approved' ? 'success' : row.status === 'rejected' ? 'danger' : 'warning'"
-                      variant="light"
+                    <el-tag
+                      :type="row.status === 'approved' ? 'success' : row.status === 'rejected' ? 'danger' : 'warning'"
+                      effect="light"
                       size="small"
                     >
                       {{ row.status === 'approved' ? '已通过' : row.status === 'rejected' ? '已拒绝' : '待审核' }}
-                    </t-tag>
+                    </el-tag>
                   </div>
                 </div>
                 <div class="admin-mobile-card-rows">
@@ -245,12 +233,12 @@
                   </div>
                 </div>
                 <div class="admin-mobile-card-actions">
-                  <t-button size="small" variant="outline" @click="openWithdrawalDialog(row)">审核</t-button>
+                  <el-button size="small" plain @click="openWithdrawalDialog(row)">审核</el-button>
                 </div>
               </div>
             </div>
             <div v-if="withdrawalTotal > 0" class="admin-mobile-pagination">
-              <t-pagination
+              <el-pagination
                 :current="withdrawalPage"
                 :page-size="withdrawalPageSize"
                 :total="withdrawalTotal"
@@ -262,35 +250,35 @@
               />
             </div>
           </div>
-        </t-tab-panel>
+        </el-tab-pane>
 
-        <t-tab-panel value="adjust" label="余额调整">
+        <el-tab-pane name="adjust" label="余额调整">
           <div class="section-body">
             <div class="admin-table-muted" style="margin-bottom:16px">
               仅管理员可操作，支持增加或扣减余额。
             </div>
-            <t-form layout="vertical" label-align="top" class="admin-balance-adjust-form">
-              <t-form-item label="用户 ID">
-                <t-input v-model="adjustUserId" />
-              </t-form-item>
-              <t-form-item label="调整类型">
-                <t-select v-model="adjustType" :options="adjustTypeOptions" />
-              </t-form-item>
-              <t-form-item label="金额（元）">
-                <t-input v-model="adjustAmount" />
-              </t-form-item>
-              <t-form-item label="备注（选填）">
-                <t-input v-model="adjustNote" placeholder="可选填写调整备注" />
-              </t-form-item>
-              <t-button theme="primary" :loading="adjusting" @click="handleAdjust">确认调整</t-button>
-            </t-form>
+            <el-form label-position="top" class="admin-balance-adjust-form">
+              <el-form-item label="用户 ID">
+                <el-input v-model="adjustUserId" />
+              </el-form-item>
+              <el-form-item label="调整类型">
+                <EpSelect v-model="adjustType" :options="adjustTypeOptions" />
+              </el-form-item>
+              <el-form-item label="金额（元）">
+                <el-input v-model="adjustAmount" />
+              </el-form-item>
+              <el-form-item label="备注（选填）">
+                <el-input v-model="adjustNote" placeholder="可选填写调整备注" />
+              </el-form-item>
+              <el-button type="primary" :loading="adjusting" @click="handleAdjust">确认调整</el-button>
+            </el-form>
           </div>
-        </t-tab-panel>
-      </t-tabs>
-    </t-card>
+        </el-tab-pane>
+      </el-tabs>
+    </el-card>
 
-    <t-dialog
-      v-model:visible="rechargeDialogOpen"
+    <EpDialog append-to-body
+      v-model="rechargeDialogOpen"
       header="更新充值状态"
       :confirm-btn="{ content: rechargeUpdating ? '更新中...' : '确认更新', loading: rechargeUpdating, theme: 'primary' }"
       cancel-btn="取消"
@@ -304,18 +292,18 @@
         <div>支付方式：{{ editingRecharge?.payment_method || '-' }}</div>
         <div v-if="editingRecharge?.payment_url">支付链接：<a :href="editingRecharge.payment_url" target="_blank">打开支付链接</a></div>
       </div>
-      <t-form layout="vertical" label-align="top">
-        <t-form-item label="状态">
-          <t-select v-model="rechargeDialogStatus" :options="rechargeDialogOptions" />
-        </t-form-item>
-        <t-form-item label="交易号">
-          <t-input v-model="rechargeDialogTradeNo" />
-        </t-form-item>
-      </t-form>
-    </t-dialog>
+      <el-form label-position="top">
+        <el-form-item label="状态">
+          <EpSelect v-model="rechargeDialogStatus" :options="rechargeDialogOptions" />
+        </el-form-item>
+        <el-form-item label="交易号">
+          <el-input v-model="rechargeDialogTradeNo" />
+        </el-form-item>
+      </el-form>
+    </EpDialog>
 
-    <t-dialog
-      v-model:visible="withdrawalDialogOpen"
+    <EpDialog append-to-body
+      v-model="withdrawalDialogOpen"
       header="审核提现申请"
       :confirm-btn="{ content: withdrawalUpdating ? '更新中...' : '确认审核', loading: withdrawalUpdating, theme: 'primary' }"
       cancel-btn="取消"
@@ -326,22 +314,27 @@
       <div class="admin-table-muted" style="margin-bottom:12px">
         提现金额：{{ editingWithdrawal ? formatMoney(editingWithdrawal.amount_cents, editingWithdrawal.currency) : '-' }}
       </div>
-      <t-form layout="vertical" label-align="top">
-        <t-form-item label="状态">
-          <t-select v-model="withdrawalDialogStatus" :options="withdrawalDialogOptions" />
-        </t-form-item>
-        <t-form-item label="备注">
-          <t-input v-model="withdrawalDialogNote" />
-        </t-form-item>
-      </t-form>
-    </t-dialog>
+      <el-form label-position="top">
+        <el-form-item label="状态">
+          <EpSelect v-model="withdrawalDialogStatus" :options="withdrawalDialogOptions" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="withdrawalDialogNote" />
+        </el-form-item>
+      </el-form>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
 import { computed, h, ref, watch } from "vue"
-import { MessagePlugin, Tag, Button } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
+import { ElTag, ElButton } from "element-plus"
 import { api, type BalanceAccount, type BalanceRecharge, type BalanceWithdrawal } from "@/lib/api"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const activeTab = ref("accounts")
 
@@ -449,7 +442,7 @@ const statusTheme = (status?: string) => {
   if (status === "paid") return "success"
   if (status === "pending") return "warning"
   if (status === "failed") return "danger"
-  return "default"
+  return "info"
 }
 
 const loadAccounts = async () => {
@@ -629,7 +622,7 @@ const rechargeColumns = computed(() => [
     title: "状态",
     width: 120,
     cell: (_h: any, { row }: { row: BalanceRecharge }) => {
-      return h(Tag, { theme: statusTheme(row.status) }, () => statusText(row.status))
+      return h(ElTag, { type: statusTheme(row.status) }, () => statusText(row.status))
     },
   },
   { colKey: "created_at", title: "创建时间", width: 170, cell: (_h: any, { row }: { row: BalanceRecharge }) => formatDateTime(row.created_at) },
@@ -639,7 +632,7 @@ const rechargeColumns = computed(() => [
     title: "操作",
     width: 120,
     fixed: "right",
-    cell: (_h: any, { row }: { row: BalanceRecharge }) => h(Button, { size: "small", variant: "text", onClick: () => openRechargeDialog(row) }, () => "更新"),
+    cell: (_h: any, { row }: { row: BalanceRecharge }) => h(ElButton, { size: "small", link: true, onClick: () => openRechargeDialog(row) }, () => "更新"),
   },
 ])
 
@@ -657,7 +650,7 @@ const withdrawalColumns = computed(() => [
       const status = row.status || "pending"
       const theme = status === "approved" ? "success" : status === "rejected" ? "danger" : "warning"
       const text = status === "approved" ? "已通过" : status === "rejected" ? "已拒绝" : "待审核"
-      return h(Tag, { theme }, () => text)
+      return h(ElTag, { theme }, () => text)
     },
   },
   { colKey: "created_at", title: "申请时间", width: 170, cell: (_h: any, { row }: { row: BalanceWithdrawal }) => formatDateTime(row.created_at) },
@@ -667,7 +660,7 @@ const withdrawalColumns = computed(() => [
     title: "操作",
     width: 120,
     fixed: "right",
-    cell: (_h: any, { row }: { row: BalanceWithdrawal }) => h(Button, { size: "small", variant: "text", onClick: () => openWithdrawalDialog(row) }, () => "审核"),
+    cell: (_h: any, { row }: { row: BalanceWithdrawal }) => h(ElButton, { size: "small", link: true, onClick: () => openWithdrawalDialog(row) }, () => "审核"),
   },
 ])
 
@@ -728,20 +721,3 @@ watch(activeTab, () => {
   if (activeTab.value === "withdrawals") loadWithdrawals()
 })
 </script>
-
-<style scoped>
-.admin-balance-adjust-form {
-  max-width: 420px;
-}
-
-.pay-link {
-  color: #2563eb;
-  font-weight: 600;
-}
-
-@media (max-width: 768px) {
-  .admin-balance-adjust-form {
-    max-width: 100%;
-  }
-}
-</style>

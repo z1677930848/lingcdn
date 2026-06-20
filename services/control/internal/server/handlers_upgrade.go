@@ -23,21 +23,11 @@ import (
 	"github.com/lingcdn/control/internal/store"
 )
 
-// nodeHeartbeatInterval mirrors the node-side heartbeat cadence
-// (services/node/src/main.rs: `tokio::time::interval(Duration::from_secs(30))`).
-// If you bump it there, bump it here.
-const nodeHeartbeatInterval = 30 * time.Second
+// nodeHeartbeatInterval mirrors the node-side heartbeat cadence (see node_online.go).
+const nodeHeartbeatInterval = NodeHeartbeatInterval
 
-// nodeOnlineForUpgradeWindow is the heartbeat-freshness tolerance used when
-// deciding whether a node is reachable for an upgrade dispatch. We require
-// the last heartbeat to be within this window; older than that, we skip.
-//
-// Chosen as 4× the heartbeat interval (2 minutes). The old 90s value was
-// only 3× the interval, which meant a single dropped heartbeat plus typical
-// DB-write jitter was enough to trip the timeout and have the UI show
-// "communication timeout" for a node the operator could see as online.
-// 4× leaves room for one dropped heartbeat + one retry round.
-const nodeOnlineForUpgradeWindow = 4 * nodeHeartbeatInterval
+// nodeOnlineForUpgradeWindow — see NodeCommOKWindow in node_online.go.
+const nodeOnlineForUpgradeWindow = NodeCommOKWindow
 
 // isNodeOnlineForUpgrade returns true if the node is reachable enough for a
 // heartbeat-dispatched upgrade command to be delivered.
@@ -112,26 +102,23 @@ func (s *Servers) handleUpgradeInfo(w http.ResponseWriter, r *http.Request) {
 		arch = "amd64"
 	}
 
-	// Query control latest version from portal.
-	if up, err := fetchPortalLatest(ctx, portal, "control", channel, "linux", arch, "latest"); err == nil {
-		info.LatestVersion = strings.TrimSpace(up.Version)
-		info.Checksum = strings.TrimSpace(up.Checksum)
-		info.DownloadURL = strings.TrimSpace(up.DownloadURL)
-		info.Changelog = strings.TrimSpace(up.Changelog)
-		info.Signature = strings.TrimSpace(up.Signature)
-		info.SigAlg = strings.TrimSpace(up.SigAlg)
-		info.SigTarget = strings.TrimSpace(up.SigTarget)
-		info.PubKey = strings.TrimSpace(up.PubKey)
-	} else {
-		info.Notes = append(info.Notes, fmt.Sprintf("failed to query control latest version: %v", err))
+	controlLatest, nodeAMD64Latest, nodeARM64Latest, portalNotes := s.fetchPortalLatestAll(ctx, portal, channel, arch)
+	info.Notes = append(info.Notes, portalNotes...)
+	if controlLatest != nil {
+		info.LatestVersion = strings.TrimSpace(controlLatest.Version)
+		info.Checksum = strings.TrimSpace(controlLatest.Checksum)
+		info.DownloadURL = strings.TrimSpace(controlLatest.DownloadURL)
+		info.Changelog = strings.TrimSpace(controlLatest.Changelog)
+		info.Signature = strings.TrimSpace(controlLatest.Signature)
+		info.SigAlg = strings.TrimSpace(controlLatest.SigAlg)
+		info.SigTarget = strings.TrimSpace(controlLatest.SigTarget)
+		info.PubKey = strings.TrimSpace(controlLatest.PubKey)
 	}
-
-	// Query node latest version per architecture.
-	if up, err := fetchPortalLatest(ctx, portal, "node", channel, "linux", "amd64", "latest"); err == nil {
-		info.NodeLatestAMD64 = strings.TrimSpace(up.Version)
+	if nodeAMD64Latest != nil {
+		info.NodeLatestAMD64 = strings.TrimSpace(nodeAMD64Latest.Version)
 	}
-	if up, err := fetchPortalLatest(ctx, portal, "node", channel, "linux", "arm64", "latest"); err == nil {
-		info.NodeLatestARM64 = strings.TrimSpace(up.Version)
+	if nodeARM64Latest != nil {
+		info.NodeLatestARM64 = strings.TrimSpace(nodeARM64Latest.Version)
 	}
 	if info.NodeLatestAMD64 != "" {
 		info.NodeLatest = info.NodeLatestAMD64
@@ -185,7 +172,10 @@ func (s *Servers) handleUpgradeControl(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Channel string `json:"channel"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+		return
+	}
 
 	// Determine upgrade channel:
 	//   1. Caller-specified `channel` (if present and valid) — lets the UI
@@ -245,7 +235,10 @@ func (s *Servers) handleUpgradeNodes(w http.ResponseWriter, r *http.Request) {
 		Force         bool     `json:"force"`
 		Channel       string   `json:"channel"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+		return
+	}
 	ctx := r.Context()
 	targetVersion := strings.TrimSpace(req.TargetVersion)
 	if targetVersion == "" {
@@ -283,12 +276,12 @@ func (s *Servers) handleUpgradeNodes(w http.ResponseWriter, r *http.Request) {
 			verARM64 := ""
 			amdErr := ""
 			armErr := ""
-			if up, err := fetchPortalLatest(ctx, portal, "node", channel, "linux", "amd64", "latest"); err == nil {
+			if up, err := s.fetchPortalLatestCached(ctx, portal, "node", channel, "linux", "amd64", "latest"); err == nil {
 				verAMD64 = strings.TrimSpace(up.Version)
 			} else {
 				amdErr = err.Error()
 			}
-			if up, err := fetchPortalLatest(ctx, portal, "node", channel, "linux", "arm64", "latest"); err == nil {
+			if up, err := s.fetchPortalLatestCached(ctx, portal, "node", channel, "linux", "arm64", "latest"); err == nil {
 				verARM64 = strings.TrimSpace(up.Version)
 			} else {
 				armErr = err.Error()

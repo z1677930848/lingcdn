@@ -2,12 +2,20 @@ html {
   scroll-behavior: smooth;
 }
 
-body {
+html,
+body,
+#app {
+  height: 100%;
   margin: 0;
+}
+
+body {
+  overflow: hidden;
   font-weight: 400;
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
   color: var(--app-text-strong);
   background: var(--app-bg-page);
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -108,12 +116,12 @@ body {
  * Force them to wrap and let controls absorb the remaining space.
  */
 @media (max-width: 1200px) {
-  .header-actions {
+  .page .header-actions {
     flex-wrap: wrap;
     row-gap: 8px;
   }
-  .header-actions .t-input,
-  .header-actions .t-select {
+  .page .header-actions .t-input,
+  .page .header-actions .t-select {
     min-width: 140px;
   }
 }

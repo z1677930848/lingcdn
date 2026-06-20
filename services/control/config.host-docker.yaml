@@ -1,0 +1,65 @@
+# Host-run control connecting to docker-compose infra (127.0.0.1 ports).
+
+STORE_BACKEND: postgres
+DATABASE_URL: postgres://lingcdn:lingcdn@127.0.0.1:5432/lingcdn?sslmode=disable
+REDIS_URL: redis://127.0.0.1:6379/0
+
+HTTP_ADDR: 127.0.0.1:8080
+GRPC_ADDR: 127.0.0.1:9443
+METRICS_ADDR: 127.0.0.1:9100
+METRICS_TOKEN: ""
+HTTPS_ADDR: ""
+
+CONTROL_SERVICE: lingcdn-control
+CONTROL_ID: host-docker-control
+CONTROL_UI_DIR: ui/dist
+SERVICE_TOKEN: docker-service-token
+ADMIN_BOOTSTRAP_TOKEN: docker-bootstrap-token
+AUTH_SECRET: docker-auth-secret-000000000000000000000
+WEBHOOK_SECRET: docker-webhook-secret-000000000000000000
+PORTAL_REPORT_SECRET: docker-portal-secret
+
+ADMIN_USERNAME: admin
+ADMIN_EMAIL: admin@local.test
+ADMIN_PASSWORD: admin123456
+
+PUBLIC_GRPC_ENDPOINT: ""
+PUBLIC_IP: ""
+PORTAL_BASE: ""
+UPGRADE_API: ""
+
+LOG_LEVEL: info
+LOG_FORMAT: console
+LOG_FILE: ""
+
+TLS_CERT_FILE: ""
+TLS_KEY_FILE: ""
+TLS_CLIENT_CA: ""
+CA_CERT_FILE: ""
+CA_KEY_FILE: ""
+ACME_ENABLE: false
+ACME_EMAIL: ""
+ACME_CACHE_DIR: data/acme
+ACME_STAGING: false
+
+LICENSE_FILE: data/license.json
+LICENSE_MODE: offline
+LICENSE_STATIC_INDEX_URL: data/local-dev-license-registry.json
+LICENSE_GRACE_HOURS: 720
+LICENSE_VERIFY_INTERVAL: 24h0m0s
+LICENSE_PUBKEY: "Y51mTrp8s2c1L5x2mkLg1jhSEMAmnUNH/DPWJ552hGA="
+ALLOW_INSECURE_LICENSE_PUBKEY: true
+
+SMTP_HOST: ""
+MAXMIND_LICENSE_KEY: ""
+GEOIP_STORAGE_DIR: data/geoip
+GEOIP_UPDATE_INTERVAL: 168h0m0s
+SYSTEM_REPORT_INTERVAL: 24h0m0s
+
+ES_URL: http://127.0.0.1:9200
+ES_USER: ""
+ES_PASS: ""
+ES_INDEX_PREFIX: cdn-access
+ES_FIELD_TIMESTAMP: '@timestamp'
+ES_FIELD_DOMAIN: domain
+ES_FIELD_BYTES: bytes

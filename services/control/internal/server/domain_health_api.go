@@ -32,14 +32,15 @@ type domainHealthSeries struct {
 }
 
 type domainHealthMetricsResponse struct {
-	Group        string             `json:"group"`
-	WindowSeconds int               `json:"window_seconds"`
-	StepSeconds  int               `json:"step_seconds"`
-	FromUnix     int64             `json:"from_unix"`
-	ToUnix       int64             `json:"to_unix"`
-	Domains      []string          `json:"domains"`
-	Port         int              `json:"port,omitempty"`
-	Series       []domainHealthSeries `json:"series"`
+	Group         string               `json:"group"`
+	WindowSeconds int                  `json:"window_seconds"`
+	StepSeconds   int                  `json:"step_seconds"`
+	FromUnix      int64                `json:"from_unix"`
+	ToUnix        int64                `json:"to_unix"`
+	Domains       []string             `json:"domains"`
+	Port          int                  `json:"port,omitempty"`
+	Series        []domainHealthSeries `json:"series"`
+	DemoData      bool                 `json:"demo_data,omitempty"`
 }
 
 type domainHealthRankEntry struct {
@@ -128,6 +129,7 @@ func (s *Servers) handleDomainHealthMetrics(w http.ResponseWriter, r *http.Reque
 			Domains:       domains,
 			Port:          port,
 			Series:        buildDomainHealthZeroSeries(group, fromUnix, toUnix, stepSeconds),
+			DemoData:      true,
 		})
 		return
 	}
@@ -144,6 +146,7 @@ func (s *Servers) handleDomainHealthMetrics(w http.ResponseWriter, r *http.Reque
 			Domains:       domains,
 			Port:          port,
 			Series:        buildDomainHealthZeroSeries(group, fromUnix, toUnix, stepSeconds),
+			DemoData:      true,
 		})
 		return
 	}
@@ -157,6 +160,7 @@ func (s *Servers) handleDomainHealthMetrics(w http.ResponseWriter, r *http.Reque
 		Domains:       domains,
 		Port:          port,
 		Series:        series,
+		DemoData:      false,
 	})
 }
 
@@ -359,10 +363,7 @@ func (s *Servers) fetchESDomainHealthMetrics(ctx context.Context, settings *stor
 	if tsField == "" {
 		tsField = "@timestamp"
 	}
-	domainField := strings.TrimSpace(settings.ElasticsearchDomainField)
-	if domainField == "" {
-		domainField = "domain.keyword"
-	}
+	domainField := resolveESDomainField(settings)
 	bytesField := strings.TrimSpace(settings.ElasticsearchBytesField)
 	if bytesField == "" {
 		bytesField = "bytes"
@@ -397,6 +398,17 @@ func (s *Servers) fetchESDomainHealthMetrics(ctx context.Context, settings *stor
 					map[string]any{"term": map[string]any{"listen_port": port}},
 				},
 				"minimum_should_match": 1,
+			},
+		})
+	}
+	if group == "origin" {
+		// Origin-facing requests are logged with cache_status != HIT
+		// (MISS / BYPASS / STALE). HIT means the edge served from cache.
+		filters = append(filters, map[string]any{
+			"bool": map[string]any{
+				"must_not": []any{
+					map[string]any{"term": map[string]any{"cache_status": "HIT"}},
+				},
 			},
 		})
 	}
@@ -487,6 +499,9 @@ func (s *Servers) fetchESDomainHealthMetrics(ctx context.Context, settings *stor
 	q4 := domainHealthSeries{Key: "http_4xx_qps", Name: "4xx QPS", Unit: "qps"}
 	q5 := domainHealthSeries{Key: "http_5xx_qps", Name: "5xx QPS", Unit: "qps"}
 	errRate := domainHealthSeries{Key: "error_rate", Name: "错误率", Unit: "ratio"}
+	originQPS := domainHealthSeries{Key: "origin_qps", Name: "回源 QPS", Unit: "qps"}
+	origin5xx := domainHealthSeries{Key: "origin_5xx_qps", Name: "回源 5xx QPS", Unit: "qps"}
+	originErrRate := domainHealthSeries{Key: "origin_error_rate", Name: "回源错误率", Unit: "ratio"}
 
 	for _, b := range esResp.Aggregations.TS.Buckets {
 		ts := time.UnixMilli(b.Key).Unix()
@@ -503,13 +518,16 @@ func (s *Servers) fetchESDomainHealthMetrics(ctx context.Context, settings *stor
 		errCount := float64(b.HTTP4xx.DocCount + b.HTTP5xx.DocCount)
 		den := math.Max(1, float64(b.DocCount))
 		errRate.Points = append(errRate.Points, domainHealthPoint{TS: ts, Value: errCount / den})
+		originQPS.Points = append(originQPS.Points, domainHealthPoint{TS: ts, Value: float64(b.DocCount) / float64(stepSeconds)})
+		origin5xx.Points = append(origin5xx.Points, domainHealthPoint{TS: ts, Value: float64(b.HTTP5xx.DocCount) / float64(stepSeconds)})
+		originErrRate.Points = append(originErrRate.Points, domainHealthPoint{TS: ts, Value: float64(b.HTTP5xx.DocCount) / den})
 	}
 
 	switch group {
 	case "quality":
 		return []domainHealthSeries{q5, q4, errRate}, nil
 	case "origin":
-		return []domainHealthSeries{}, nil
+		return []domainHealthSeries{originQPS, origin5xx, originErrRate}, nil
 	default:
 		return []domainHealthSeries{bw, tr, reqs, qps}, nil
 	}
@@ -527,10 +545,7 @@ func (s *Servers) fetchESDomainHealthRank(ctx context.Context, settings *store.S
 	if tsField == "" {
 		tsField = "@timestamp"
 	}
-	domainField := strings.TrimSpace(settings.ElasticsearchDomainField)
-	if domainField == "" {
-		domainField = "domain.keyword"
-	}
+	domainField := resolveESDomainField(settings)
 	bytesField := strings.TrimSpace(settings.ElasticsearchBytesField)
 	if bytesField == "" {
 		bytesField = "bytes"

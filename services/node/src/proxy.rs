@@ -1,44 +1,47 @@
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose, Engine};
 use bytes::Bytes;
+use futures::StreamExt;
+use hex;
+use hmac::{Hmac, Mac};
+use http::Method;
 use http::{Request, StatusCode, Uri};
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
-use hyper_util::client::legacy::{Client, connect::HttpConnector};
-use hyper_util::rt::TokioExecutor;
 use hyper_rustls::HttpsConnector;
-use http::Method;
-use tracing::{debug, error, warn};
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
-use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use base64::{engine::general_purpose, Engine};
-use hex;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
+use tokio::io::copy_bidirectional;
 use tokio::sync::mpsc;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, Notify};
-use futures::StreamExt;
-use parking_lot::Mutex;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tracing::{debug, error, warn};
 
-use crate::cache::{Cache, CacheEntry, CacheKey, CachedBody};
 use crate::access_log::AccessLogger;
-use crate::config::{CompiledWaf, CompiledWafRule, ConfigHolder, DomainConfig, OriginAuthConfig, OriginConfig};
-use crate::http_types::{NodeBody, NodeResponse};
-use crate::limited_body::LimitedBody;
+use crate::cache::{Cache, CacheEntry, CacheKey, CachedBody};
+use crate::captcha::{self, CaptchaAnswer, CaptchaType, ClickData, RotateData, SlideData};
+use crate::config::{
+    CompiledWaf, CompiledWafRule, ConfigHolder, DomainConfig, OriginAuthConfig, OriginConfig,
+};
 use crate::geoip_holder::GeoIpHolder;
+use crate::http_types::{ClientScheme, LocalAddr, NodeBody, NodeResponse};
+use crate::limited_body::LimitedBody;
 use crate::metrics::Metrics;
 use chrono::{SecondsFormat, Utc};
+use http::header::HeaderMap;
+use http::header::ACCEPT;
+use http::header::CACHE_CONTROL;
+use http::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::captcha::{self, CaptchaAnswer, CaptchaType, ClickData, RotateData, SlideData};
-use http::header::HeaderMap;
-use http::header::ACCEPT;
-use http::header::CONTENT_TYPE;
-use http::header::CACHE_CONTROL;
 use url::form_urlencoded;
 
 const STATE_SHARDS: usize = 64;
@@ -316,7 +319,10 @@ enum CaptchaGenerated {
 impl CaptchaPool {
     fn from_env() -> Self {
         let enabled = match std::env::var("CAPTCHA_POOL_ENABLED") {
-            Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+            Ok(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
             Err(_) => true,
         };
 
@@ -394,22 +400,20 @@ impl CaptchaPool {
                             continue;
                         }
                         filled_any = true;
-                        let res = tokio::task::spawn_blocking(move || {
-                            match ty {
-                                CaptchaType::Slide => {
-                                    let (data, ans) = captcha::generate_slide_captcha();
-                                    CaptchaGenerated::Slide(data, ans)
-                                }
-                                CaptchaType::Click => {
-                                    let (data, ans) = captcha::generate_click_captcha();
-                                    CaptchaGenerated::Click(data, ans)
-                                }
-                                CaptchaType::Rotate => {
-                                    let (data, ans) = captcha::generate_rotate_captcha();
-                                    CaptchaGenerated::Rotate(data, ans)
-                                }
-                                _ => unreachable!(),
+                        let res = tokio::task::spawn_blocking(move || match ty {
+                            CaptchaType::Slide => {
+                                let (data, ans) = captcha::generate_slide_captcha();
+                                CaptchaGenerated::Slide(data, ans)
                             }
+                            CaptchaType::Click => {
+                                let (data, ans) = captcha::generate_click_captcha();
+                                CaptchaGenerated::Click(data, ans)
+                            }
+                            CaptchaType::Rotate => {
+                                let (data, ans) = captcha::generate_rotate_captcha();
+                                CaptchaGenerated::Rotate(data, ans)
+                            }
+                            _ => unreachable!(),
                         })
                         .await;
 
@@ -417,7 +421,9 @@ impl CaptchaPool {
                             match generated {
                                 CaptchaGenerated::Slide(data, ans) => pool.push_slide((data, ans)),
                                 CaptchaGenerated::Click(data, ans) => pool.push_click((data, ans)),
-                                CaptchaGenerated::Rotate(data, ans) => pool.push_rotate((data, ans)),
+                                CaptchaGenerated::Rotate(data, ans) => {
+                                    pool.push_rotate((data, ans))
+                                }
                             }
                         }
                     }
@@ -434,110 +440,155 @@ impl CaptchaPool {
 }
 
 fn strip_host_port(host: &str) -> &str {
-	let host = host.trim();
-	if host.is_empty() {
-		return host;
-	}
+    let host = host.trim();
+    if host.is_empty() {
+        return host;
+    }
 
-	// IPv6: [::1]:443 or [::1]
-	if let Some(rest) = host.strip_prefix('[') {
-		if let Some(end) = rest.find(']') {
-			return &rest[..end];
-		}
-		return host;
-	}
+    // IPv6: [::1]:443 or [::1]
+    if let Some(rest) = host.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            return &rest[..end];
+        }
+        return host;
+    }
 
-	// host:port
-	if let Some((h, port)) = host.rsplit_once(':') {
-		if !h.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
-			return h;
-		}
-	}
+    // host:port
+    if let Some((h, port)) = host.rsplit_once(':') {
+        if !h.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+            return h;
+        }
+    }
 
-	host
+    host
 }
 
 fn extract_port(host: &str) -> Option<u16> {
-	let host = host.trim();
-	if host.is_empty() {
-		return None;
-	}
-	if let Some(rest) = host.strip_prefix('[') {
-		if let Some(end) = rest.find(']') {
-			if let Some(port_part) = rest[end + 1..].strip_prefix(':') {
-				return port_part.parse::<u16>().ok();
-			}
-		}
-		return None;
-	}
-	if let Some((_, port)) = host.rsplit_once(':') {
-		if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
-			return port.parse::<u16>().ok();
-		}
-	}
-	None
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+    if let Some(rest) = host.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            if let Some(port_part) = rest[end + 1..].strip_prefix(':') {
+                return port_part.parse::<u16>().ok();
+            }
+        }
+        return None;
+    }
+    if let Some((_, port)) = host.rsplit_once(':') {
+        if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+            return port.parse::<u16>().ok();
+        }
+    }
+    None
+}
+
+fn request_incoming_port(req: &Request<Incoming>, client_addr: Option<IpAddr>) -> Option<u16> {
+    if client_is_trusted(client_addr) {
+        if let Some(port) = req
+            .headers()
+            .get("x-forwarded-port")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .filter(|p| *p > 0)
+        {
+            return Some(port);
+        }
+    }
+    req.extensions()
+        .get::<LocalAddr>()
+        .map(|addr| addr.0.port())
+        .filter(|port| *port > 0)
 }
 
 fn detect_client_scheme(req: &Request<Incoming>, client_addr: Option<IpAddr>) -> String {
-	// X-Forwarded-Proto is only honored when the immediate peer is a trusted
-	// proxy (loopback by default; private ranges via env NODE_TRUST_PRIVATE=1).
-	// This prevents any Internet client from spoofing the origin scheme via
-	// origin_scheme=follow_protocol/follow_both.
-	if client_is_trusted(client_addr) {
-		if let Some(hv) = req.headers().get("x-forwarded-proto").and_then(|v| v.to_str().ok()) {
-			let val = hv.trim().to_lowercase();
-			if val == "https" || val == "http" {
-				return val;
-			}
-		}
-	}
-	if let Some(s) = req.uri().scheme_str() {
-		return s.to_string();
-	}
-	"http".to_string()
+    if let Some(scheme) = req.extensions().get::<ClientScheme>() {
+        return scheme.0.to_string();
+    }
+    // X-Forwarded-Proto is only honored when the immediate peer is a trusted
+    // proxy (loopback by default; private ranges via env NODE_TRUST_PRIVATE=1).
+    // This prevents any Internet client from spoofing the origin scheme via
+    // origin_scheme=follow_protocol/follow_both.
+    if client_is_trusted(client_addr) {
+        if let Some(hv) = req
+            .headers()
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+        {
+            let val = hv.trim().to_lowercase();
+            if val == "https" || val == "http" {
+                return val;
+            }
+        }
+    }
+    if let Some(s) = req.uri().scheme_str() {
+        return s.to_string();
+    }
+    "http".to_string()
+}
+
+fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
+    let upgrade = req
+        .headers()
+        .get(http::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+    if !upgrade {
+        return false;
+    }
+    req.headers()
+        .get(http::header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
+        })
+        .unwrap_or(false)
 }
 
 fn client_is_trusted(client_addr: Option<IpAddr>) -> bool {
-	let Some(ip) = client_addr else { return false };
-	if ip.is_loopback() {
-		return true;
-	}
-	// Opt-in extension: allow private/link-local ranges when deployed behind
-	// an in-cluster LB or reverse proxy. Default is off.
-	if std::env::var("NODE_TRUST_PRIVATE").ok().as_deref() == Some("1") {
-		match ip {
-			IpAddr::V4(v4) => {
-				return v4.is_private() || v4.is_link_local();
-			}
-			IpAddr::V6(v6) => {
-				// unique-local fc00::/7 or link-local fe80::/10
-				let seg = v6.segments()[0];
-				return (seg & 0xfe00) == 0xfc00 || (seg & 0xffc0) == 0xfe80;
-			}
-		}
-	}
-	false
+    let Some(ip) = client_addr else { return false };
+    if ip.is_loopback() {
+        return true;
+    }
+    // Opt-in extension: allow private/link-local ranges when deployed behind
+    // an in-cluster LB or reverse proxy. Default is off.
+    if std::env::var("NODE_TRUST_PRIVATE").ok().as_deref() == Some("1") {
+        match ip {
+            IpAddr::V4(v4) => {
+                return v4.is_private() || v4.is_link_local();
+            }
+            IpAddr::V6(v6) => {
+                // unique-local fc00::/7 or link-local fe80::/10
+                let seg = v6.segments()[0];
+                return (seg & 0xfe00) == 0xfc00 || (seg & 0xffc0) == 0xfe80;
+            }
+        }
+    }
+    false
 }
 
 fn default_port_for_scheme(scheme: &str) -> u16 {
-	if scheme.eq_ignore_ascii_case("https") {
-		443
-	} else {
-		80
-	}
+    if scheme.eq_ignore_ascii_case("https") {
+        443
+    } else {
+        80
+    }
 }
 
 fn resolve_origin_scheme(domain: &DomainConfig, incoming_scheme: &str) -> String {
-	match domain
-		.origin_scheme
-		.as_ref()
-		.map(|s| s.as_str())
-		.unwrap_or("http")
-	{
-		"https" => "https".to_string(),
-		"follow_protocol" | "follow_both" => incoming_scheme.to_string(),
-		_ => "http".to_string(),
-	}
+    match domain
+        .origin_scheme
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or("http")
+    {
+        "https" => "https".to_string(),
+        "follow_protocol" | "follow_both" => incoming_scheme.to_string(),
+        _ => "http".to_string(),
+    }
 }
 
 /// Build the effective `OriginConfig` for a domain, resolving the
@@ -649,9 +700,7 @@ fn resolve_effective_origin(
         .filter(|(i, _)| *i != picked_idx)
         .map(|(_, v)| v)
         .collect();
-    rest.sort_by(|a, b| {
-        b.1.weight.cmp(&a.1.weight).then(a.0.cmp(&b.0))
-    });
+    rest.sort_by(|a, b| b.1.weight.cmp(&a.1.weight).then(a.0.cmp(&b.0)));
     for (_, e) in rest {
         addresses.push(e.address.clone());
     }
@@ -675,15 +724,15 @@ fn resolve_effective_origin(
 /// when the configured port is 80. Leave everything else alone so operators
 /// with genuinely custom deployments aren't surprised.
 fn reconcile_scheme_port(scheme: &mut String, port: u16) {
-	match (scheme.as_str(), port) {
-		("http", 443) => {
-			*scheme = "https".to_string();
-		}
-		("https", 80) => {
-			*scheme = "http".to_string();
-		}
-		_ => {}
-	}
+    match (scheme.as_str(), port) {
+        ("http", 443) => {
+            *scheme = "https".to_string();
+        }
+        ("https", 80) => {
+            *scheme = "http".to_string();
+        }
+        _ => {}
+    }
 }
 
 /// Normalize a Host header value for outbound (origin-facing) use.
@@ -699,283 +748,368 @@ fn reconcile_scheme_port(scheme: &mut String, port: u16) {
 /// Non-default ports are preserved because some origins (object storage,
 /// inner services) actually need the port in Host.
 fn normalize_origin_host_header(host: &str, scheme: &str) -> String {
-	let trimmed = host.trim().trim_end_matches('.');
-	if trimmed.is_empty() {
-		return String::new();
-	}
-	let lowered = trimmed.to_ascii_lowercase();
-	// Strip IPv6 brackets + port via existing helper; otherwise split host:port.
-	if let Some(rest) = lowered.strip_prefix('[') {
-		// IPv6: "[::1]:80" -> keep brackets but strip standard port
-		if let Some(end) = rest.find(']') {
-			let host_part = &lowered[..=end + 0]; // include ']'
-			let after = &lowered[end + 1..];
-			if let Some(port_str) = after.strip_prefix(":") {
-				if (scheme == "http" && port_str == "80")
-					|| (scheme == "https" && port_str == "443")
-				{
-					// strip default port: keep "[::1]"
-					let mut s = String::new();
-					s.push('[');
-					s.push_str(&rest[..end]);
-					s.push(']');
-					return s;
-				}
-			}
-			return format!("{}{}", host_part, after);
-		}
-		return lowered;
-	}
-	if let Some((h, port)) = lowered.rsplit_once(':') {
-		if !h.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
-			if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
-				return h.to_string();
-			}
-		}
-	}
-	lowered
+    let trimmed = host.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    // Strip IPv6 brackets + port via existing helper; otherwise split host:port.
+    if let Some(rest) = lowered.strip_prefix('[') {
+        // IPv6: "[::1]:80" -> keep brackets but strip standard port
+        if let Some(end) = rest.find(']') {
+            let host_part = &lowered[..=end + 0]; // include ']'
+            let after = &lowered[end + 1..];
+            if let Some(port_str) = after.strip_prefix(":") {
+                if (scheme == "http" && port_str == "80")
+                    || (scheme == "https" && port_str == "443")
+                {
+                    // strip default port: keep "[::1]"
+                    let mut s = String::new();
+                    s.push('[');
+                    s.push_str(&rest[..end]);
+                    s.push(']');
+                    return s;
+                }
+            }
+            return format!("{}{}", host_part, after);
+        }
+        return lowered;
+    }
+    if let Some((h, port)) = lowered.rsplit_once(':') {
+        if !h.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+            if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+                return h.to_string();
+            }
+        }
+    }
+    lowered
 }
 
 /// Ensure the outbound path begins with `/`. nginx rejects request lines that
 /// don't start with `/` or an absolute URI with a 400, so a path produced by
 /// overzealous stripPrefix/rewrite logic must be repaired before send.
 fn ensure_leading_slash(path: &str) -> String {
-	if path.is_empty() {
-		return "/".to_string();
-	}
-	if path.starts_with('/') || path.starts_with("http://") || path.starts_with("https://") {
-		return path.to_string();
-	}
-	format!("/{}", path)
+    if path.is_empty() {
+        return "/".to_string();
+    }
+    if path.starts_with('/') || path.starts_with("http://") || path.starts_with("https://") {
+        return path.to_string();
+    }
+    format!("/{}", path)
+}
+
+/// Hop-by-hop headers per RFC 7230 §6.1 plus the obsolete `Proxy-Connection`
+/// some user agents still emit. A reverse proxy MUST consume these on the
+/// inbound connection rather than forwarding them to the origin: leaking
+/// `Proxy-Authorization` / `Proxy-Authenticate` to the origin can disclose
+/// credentials, and forwarding `TE` / `Transfer-Encoding` / `Upgrade`
+/// alongside an upstream-supplied `Content-Length` is the classic
+/// HTTP-request-smuggling primitive. `Connection` itself is also hop-by-hop;
+/// any field name listed in its value is hop-by-hop too and must be removed
+/// (per the same RFC). We do not strip Connection here because the existing
+/// "close → keep-alive" normalization downstream still needs it; we strip
+/// it in `strip_hop_by_hop` only after copying the names it points to.
+const HOP_BY_HOP_HEADERS: &[&str] = &[
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+fn strip_hop_by_hop(headers: &mut http::HeaderMap) {
+    // First, honor `Connection: foo, bar` by removing `foo` and `bar` —
+    // this is the RFC-mandated way for a hop to mark additional fields as
+    // hop-by-hop. We collect the names before mutating because HeaderMap
+    // doesn't allow holding a reference into it across `remove`.
+    let dyn_names: Vec<String> = headers
+        .get_all(http::header::CONNECTION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(','))
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty() && s != "close" && s != "keep-alive" && s != "upgrade")
+        .collect();
+    for name in dyn_names {
+        if let Ok(hn) = http::header::HeaderName::from_bytes(name.as_bytes()) {
+            headers.remove(&hn);
+        }
+    }
+    // Then remove the well-known hop-by-hop set. We deliberately keep the
+    // `Connection` header itself — the existing keep-alive normalization
+    // below relies on inspecting it — but its dynamic-list members above
+    // have already been dropped from the map.
+    for &name in HOP_BY_HOP_HEADERS {
+        if let Ok(hn) = http::header::HeaderName::from_bytes(name.as_bytes()) {
+            headers.remove(&hn);
+        }
+    }
 }
 
 /// Inject the usual forwarding / proxy headers into an outbound origin
-/// request. Idempotent in spirit: we only set the Host header here (always
-/// overwrite) and append X-Forwarded-For; existing X-Real-IP / X-Forwarded-*
-/// headers from the client are preserved to support multi-tier proxy chains.
+/// request. Always sets Host. Hop-by-hop headers from the inbound request
+/// are stripped before any other field is touched (see `strip_hop_by_hop`),
+/// which closes the request-smuggling / Proxy-Authorization-leak class of
+/// bugs at the proxy boundary.
+///
+/// X-Forwarded-For handling depends on the `TRUST_INCOMING_XFF` env var:
+///   * unset / "0" / "false" (default): the client-supplied XFF chain is
+///     dropped and replaced with just our `client_ip`, so a malicious
+///     client can't seed an arbitrary "real" IP for downstream rate limits
+///     or audit logs.
+///   * "1" / "true": preserve and append, the original behavior, intended
+///     for deployments where a trusted CDN-of-CDNs already populates XFF.
 ///
 /// `client_ip` may be `None` when the peer socket address is unavailable.
 /// `incoming_scheme` should be the scheme the client used to reach the edge
 /// ("http" or "https"), not the origin scheme.
 fn apply_forward_headers(
-	headers: &mut http::HeaderMap,
-	host_header: &str,
-	client_ip: Option<IpAddr>,
-	client_host: &str,
-	incoming_scheme: &str,
+    headers: &mut http::HeaderMap,
+    host_header: &str,
+    client_ip: Option<IpAddr>,
+    client_host: &str,
+    incoming_scheme: &str,
 ) {
-	// Host — always enforce the resolved origin Host. Without this, hyper
-	// derives Host from the outbound URL (= origin IP:port), which fails
-	// nginx vhost matching and typically returns 400/404.
-	if !host_header.is_empty() {
-		if let Ok(hv) = http::HeaderValue::from_str(host_header) {
-			headers.insert(http::header::HOST, hv);
-		}
-	}
+    // Strip hop-by-hop / smuggling-vector headers up front so subsequent
+    // logic (and the origin) only sees end-to-end fields.
+    strip_hop_by_hop(headers);
 
-	// X-Real-IP — preserve existing value (multi-tier chain); only set when
-	// absent.
-	if let Some(ip) = client_ip {
-		let has_real_ip = headers
-			.keys()
-			.any(|k| k.as_str().eq_ignore_ascii_case("x-real-ip"));
-		if !has_real_ip {
-			if let Ok(hv) = http::HeaderValue::from_str(&ip.to_string()) {
-				headers.insert("x-real-ip", hv);
-			}
-		}
-	}
+    // Host — always enforce the resolved origin Host. Without this, hyper
+    // derives Host from the outbound URL (= origin IP:port), which fails
+    // nginx vhost matching and typically returns 400/404.
+    if !host_header.is_empty() {
+        if let Ok(hv) = http::HeaderValue::from_str(host_header) {
+            headers.insert(http::header::HOST, hv);
+        }
+    }
 
-	// X-Forwarded-For — append client IP to existing chain, capped to 16
-	// entries to prevent header bloat from malicious clients (a common cause
-	// of origin 400s on strict servers that limit header size).
-	if let Some(ip) = client_ip {
-		let client_ip_str = ip.to_string();
-		let cap: usize = std::env::var("FORWARDED_FOR_MAX_ENTRIES")
-			.ok()
-			.and_then(|v| v.trim().parse::<usize>().ok())
-			.unwrap_or(16)
-			.max(1);
-		let existing = headers
-			.get(http::header::FORWARDED)
-			.and_then(|v| v.to_str().ok())
-			.map(|s| s.to_string());
-		// Note: hyper normalizes header names to lowercase; use the typed
-		// constant for X-Forwarded-For.
-		let existing_xff = headers
-			.get("x-forwarded-for")
-			.and_then(|v| v.to_str().ok())
-			.map(|s| s.to_string());
-		let new_xff = match existing_xff {
-			Some(chain) => {
-				let mut parts: Vec<String> = chain
-					.split(',')
-					.map(|s| s.trim().to_string())
-					.filter(|s| !s.is_empty())
-					.collect();
-				parts.push(client_ip_str);
-				if parts.len() > cap {
-					let drop = parts.len() - cap;
-					parts.drain(0..drop);
-				}
-				parts.join(", ")
-			}
-			None => client_ip_str,
-		};
-		if let Ok(hv) = http::HeaderValue::from_str(&new_xff) {
-			headers.insert("x-forwarded-for", hv);
-		}
-		let _ = existing; // Forwarded header passthrough unchanged
-	}
+    let trust_incoming_xff = std::env::var("TRUST_INCOMING_XFF")
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
 
-	// X-Forwarded-Host — original Host the client used to reach the edge.
-	if !client_host.is_empty() {
-		let has = headers
-			.keys()
-			.any(|k| k.as_str().eq_ignore_ascii_case("x-forwarded-host"));
-		if !has {
-			if let Ok(hv) = http::HeaderValue::from_str(client_host) {
-				headers.insert("x-forwarded-host", hv);
-			}
-		}
-	}
+    // X-Real-IP — when we don't trust incoming XFF we also overwrite
+    // X-Real-IP to the actual peer; otherwise preserve any value already
+    // present (multi-tier chain).
+    if let Some(ip) = client_ip {
+        let has_real_ip = headers
+            .keys()
+            .any(|k| k.as_str().eq_ignore_ascii_case("x-real-ip"));
+        let should_set = !has_real_ip || !trust_incoming_xff;
+        if should_set {
+            if let Ok(hv) = http::HeaderValue::from_str(&ip.to_string()) {
+                headers.insert("x-real-ip", hv);
+            }
+        }
+    } else if !trust_incoming_xff {
+        // No peer IP and we don't trust incoming — drop any spoofed
+        // X-Real-IP rather than leaving it for the origin to honor.
+        headers.remove("x-real-ip");
+    }
 
-	// X-Forwarded-Proto — scheme the client used to reach the edge.
-	if !incoming_scheme.is_empty() {
-		let has = headers
-			.keys()
-			.any(|k| k.as_str().eq_ignore_ascii_case("x-forwarded-proto"));
-		if !has {
-			if let Ok(hv) = http::HeaderValue::from_str(incoming_scheme) {
-				headers.insert("x-forwarded-proto", hv);
-			}
-		}
-	}
+    // X-Forwarded-For — appending client_ip to an existing chain only makes
+    // sense when the chain came from a trusted upstream proxy. With
+    // TRUST_INCOMING_XFF unset (the default) we drop whatever the client
+    // sent and rebuild the header from our own observation. The cap still
+    // applies for the trusted case to protect strict origins.
+    if let Some(ip) = client_ip {
+        let client_ip_str = ip.to_string();
+        let cap: usize = std::env::var("FORWARDED_FOR_MAX_ENTRIES")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(16)
+            .max(1);
+        let existing_xff = if trust_incoming_xff {
+            headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+        let new_xff = match existing_xff {
+            Some(chain) => {
+                let mut parts: Vec<String> = chain
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                parts.push(client_ip_str);
+                if parts.len() > cap {
+                    let drop = parts.len() - cap;
+                    parts.drain(0..drop);
+                }
+                parts.join(", ")
+            }
+            None => client_ip_str,
+        };
+        if let Ok(hv) = http::HeaderValue::from_str(&new_xff) {
+            headers.insert("x-forwarded-for", hv);
+        }
+    } else if !trust_incoming_xff {
+        // No peer IP available — strip any client-supplied XFF so the
+        // origin doesn't see attacker-chosen content.
+        headers.remove("x-forwarded-for");
+    }
 
-	// Normalize Connection: "close" -> "keep-alive" so upstream can pool
-	// connections (EdgeNode http_request.go:1667-1669). Edge cases where
-	// the client legitimately wants close are rare and do not justify
-	// constantly spinning up new origin connections.
-	if let Some(v) = headers.get(http::header::CONNECTION) {
-		if v.as_bytes().eq_ignore_ascii_case(b"close") {
-			headers.insert(
-				http::header::CONNECTION,
-				http::HeaderValue::from_static("keep-alive"),
-			);
-		}
-	}
+    // The standard `Forwarded` header (RFC 7239) is similarly attacker-
+    // controlled when not trusted; drop it in the un-trusted mode rather
+    // than passing it through unchanged.
+    if !trust_incoming_xff {
+        headers.remove(http::header::FORWARDED);
+    }
+
+    // X-Forwarded-Host — original Host the client used to reach the edge.
+    if !client_host.is_empty() {
+        let has = headers
+            .keys()
+            .any(|k| k.as_str().eq_ignore_ascii_case("x-forwarded-host"));
+        if !has {
+            if let Ok(hv) = http::HeaderValue::from_str(client_host) {
+                headers.insert("x-forwarded-host", hv);
+            }
+        }
+    }
+
+    // X-Forwarded-Proto — scheme the client used to reach the edge.
+    if !incoming_scheme.is_empty() {
+        let has = headers
+            .keys()
+            .any(|k| k.as_str().eq_ignore_ascii_case("x-forwarded-proto"));
+        if !has {
+            if let Ok(hv) = http::HeaderValue::from_str(incoming_scheme) {
+                headers.insert("x-forwarded-proto", hv);
+            }
+        }
+    }
+
+    // Normalize Connection: "close" -> "keep-alive" so upstream can pool
+    // connections (EdgeNode http_request.go:1667-1669). Edge cases where
+    // the client legitimately wants close are rare and do not justify
+    // constantly spinning up new origin connections.
+    if let Some(v) = headers.get(http::header::CONNECTION) {
+        if v.as_bytes().eq_ignore_ascii_case(b"close") {
+            headers.insert(
+                http::header::CONNECTION,
+                http::HeaderValue::from_static("keep-alive"),
+            );
+        }
+    }
 }
 
 fn apply_origin_auth(headers: &mut http::HeaderMap, auth: &OriginAuthConfig) {
-	if !auth.enabled {
-		return;
-	}
-	match auth.mode.as_deref().unwrap_or("header") {
-		"basic" => {
-			let user = auth.basic_user.as_deref().unwrap_or("");
-			let pass = auth.basic_pass.as_deref().unwrap_or("");
-			let encoded = general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
-			if let Ok(hv) = http::HeaderValue::from_str(&format!("Basic {}", encoded)) {
-				headers.insert(http::header::AUTHORIZATION, hv);
-			}
-		}
-		_ => {
-			for h in &auth.headers {
-				let name = h.name.trim();
-				if name.is_empty() {
-					continue;
-				}
-				if let (Ok(hn), Ok(hv)) = (
-					http::header::HeaderName::from_bytes(name.as_bytes()),
-					http::HeaderValue::from_str(&h.value),
-				) {
-					headers.insert(hn, hv);
-				}
-			}
-		}
-	}
+    if !auth.enabled {
+        return;
+    }
+    match auth.mode.as_deref().unwrap_or("header") {
+        "basic" => {
+            let user = auth.basic_user.as_deref().unwrap_or("");
+            let pass = auth.basic_pass.as_deref().unwrap_or("");
+            let encoded = general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+            if let Ok(hv) = http::HeaderValue::from_str(&format!("Basic {}", encoded)) {
+                headers.insert(http::header::AUTHORIZATION, hv);
+            }
+        }
+        _ => {
+            for h in &auth.headers {
+                let name = h.name.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                if let (Ok(hn), Ok(hv)) = (
+                    http::header::HeaderName::from_bytes(name.as_bytes()),
+                    http::HeaderValue::from_str(&h.value),
+                ) {
+                    headers.insert(hn, hv);
+                }
+            }
+        }
+    }
 }
 
 fn resolve_origin_port(domain: &DomainConfig, incoming_port: Option<u16>, scheme: &str) -> u16 {
-	let mut port = domain.origin_port.unwrap_or(0);
-	let mode = domain
-		.origin_scheme
-		.as_ref()
-		.map(|s| s.as_str())
-		.unwrap_or("http");
-	if matches!(mode, "follow_port" | "follow_both") {
-		if let Some(p) = incoming_port {
-			port = p as i32;
-		}
-	}
-	if port <= 0 {
-		return default_port_for_scheme(scheme);
-	}
-	port as u16
+    let mut port = domain.origin_port.unwrap_or(0);
+    let mode = domain
+        .origin_scheme
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or("http");
+    if matches!(mode, "follow_port" | "follow_both") {
+        if let Some(p) = incoming_port {
+            port = p as i32;
+        }
+    }
+    if port <= 0 {
+        return default_port_for_scheme(scheme);
+    }
+    port as u16
 }
 
 fn format_host_with_port(host: &str, port: u16) -> String {
-	if host.contains(':') && !host.starts_with('[') {
-		format!("[{}]:{}", host, port)
-	} else if host.starts_with('[') {
-		format!("{}:{}", host, port)
-	} else {
-		format!("{}:{}", host, port)
-	}
+    // IPv6 addresses must be bracketed when followed by a port. Bare IPv6
+    // such as "::1" gets wrapped here; pre-bracketed forms ("[::1]") and
+    // ordinary hostnames / IPv4 share the same trailing-port form.
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{}]:{}", host, port)
+    } else {
+        format!("{}:{}", host, port)
+    }
 }
 
 fn resolve_origin_host_header(
-	domain: &DomainConfig,
-	original_host_header: &str,
-	origin_scheme: &str,
+    domain: &DomainConfig,
+    original_host_header: &str,
+    origin_scheme: &str,
 ) -> String {
-	let mode = domain
-		.origin_host_mode
-		.as_ref()
-		.map(|s| s.as_str())
-		.unwrap_or("request_host");
-	// Callers that pass an empty Host header (HTTP/1.0 without Host, or a
-	// stripped-port edge case) would otherwise end up with hyper auto-deriving
-	// the Host from the outbound URL (= origin IP:port), which lands on the
-	// wrong vhost for almost every origin. Fall back to the configured domain
-	// name in all modes so the origin sees a sane Host.
-	let fallback = domain.name.as_str();
-	let raw = match mode {
-		"custom" => {
-			let custom = domain
-				.origin_host
-				.as_ref()
-				.map(|s| s.as_str())
-				.unwrap_or("");
-			if !custom.is_empty() {
-				custom.to_string()
-			} else if !original_host_header.is_empty() {
-				original_host_header.to_string()
-			} else {
-				fallback.to_string()
-			}
-		}
-		"request_host_port" => {
-			// Keep port even if it's the default for parity with the original
-			// behavior — some origins rely on this. We still lowercase / trim.
-			if !original_host_header.is_empty() {
-				let t = original_host_header.trim().trim_end_matches('.');
-				return t.to_ascii_lowercase();
-			}
-			fallback.to_string()
-		}
-		_ => {
-			let stripped = strip_host_port(original_host_header);
-			if !stripped.is_empty() {
-				stripped.to_string()
-			} else {
-				fallback.to_string()
-			}
-		}
-	};
-	// Final normalization: lowercase, trim trailing dot, strip default port
-	// for the actual origin scheme (not the inbound scheme).
-	normalize_origin_host_header(&raw, origin_scheme)
+    let mode = domain
+        .origin_host_mode
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or("request_host");
+    // Callers that pass an empty Host header (HTTP/1.0 without Host, or a
+    // stripped-port edge case) would otherwise end up with hyper auto-deriving
+    // the Host from the outbound URL (= origin IP:port), which lands on the
+    // wrong vhost for almost every origin. Fall back to the configured domain
+    // name in all modes so the origin sees a sane Host.
+    let fallback = domain.name.as_str();
+    let raw = match mode {
+        "custom" => {
+            let custom = domain
+                .origin_host
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            if !custom.is_empty() {
+                custom.to_string()
+            } else if !original_host_header.is_empty() {
+                original_host_header.to_string()
+            } else {
+                fallback.to_string()
+            }
+        }
+        "request_host_port" => {
+            // Keep port even if it's the default for parity with the original
+            // behavior — some origins rely on this. We still lowercase / trim.
+            if !original_host_header.is_empty() {
+                let t = original_host_header.trim().trim_end_matches('.');
+                return t.to_ascii_lowercase();
+            }
+            fallback.to_string()
+        }
+        _ => {
+            let stripped = strip_host_port(original_host_header);
+            if !stripped.is_empty() {
+                stripped.to_string()
+            } else {
+                fallback.to_string()
+            }
+        }
+    };
+    // Final normalization: lowercase, trim trailing dot, strip default port
+    // for the actual origin scheme (not the inbound scheme).
+    normalize_origin_host_header(&raw, origin_scheme)
 }
 
 /// 拉黑事件，用于实时上报到主控
@@ -1063,10 +1197,11 @@ impl ProxyService {
             .enable_http2()
             .wrap_connector(http_connector);
 
-        let client: Client<HttpsConnector<HttpConnector>, NodeBody> = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(pool_idle_timeout_secs))
-            .pool_max_idle_per_host(pool_max_idle_per_host)
-            .build(https_connector);
+        let client: Client<HttpsConnector<HttpConnector>, NodeBody> =
+            Client::builder(TokioExecutor::new())
+                .pool_idle_timeout(Duration::from_secs(pool_idle_timeout_secs))
+                .pool_max_idle_per_host(pool_max_idle_per_host)
+                .build(https_connector);
 
         let captcha_pool = Arc::new(CaptchaPool::from_env());
         captcha_pool.clone().spawn_fillers();
@@ -1086,10 +1221,19 @@ impl ProxyService {
         let origin_inflight_acquire_timeout = std::env::var("ORIGIN_MAX_INFLIGHT_WAIT_MS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
-            .and_then(|ms| if ms == 0 { None } else { Some(Duration::from_millis(ms)) });
+            .and_then(|ms| {
+                if ms == 0 {
+                    None
+                } else {
+                    Some(Duration::from_millis(ms))
+                }
+            });
 
         let cache_singleflight_enabled = match std::env::var("CACHE_SINGLEFLIGHT_ENABLED") {
-            Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+            Ok(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
             Err(_) => true,
         };
         let cache_singleflight_wait = std::env::var("CACHE_SINGLEFLIGHT_WAIT_MS")
@@ -1170,12 +1314,12 @@ impl ProxyService {
         build_response_or_fallback(builder, b, status, "internal response build error")
     }
 
-    pub async fn handle_request(
-        &self,
-        req: Request<Incoming>,
-    ) -> Result<NodeResponse> {
+    pub async fn handle_request(&self, mut req: Request<Incoming>) -> Result<NodeResponse> {
         let started = std::time::Instant::now();
-        let client_addr: Option<IpAddr> = req.extensions().get::<std::net::SocketAddr>().map(|addr| addr.ip());
+        let client_addr: Option<IpAddr> = req
+            .extensions()
+            .get::<std::net::SocketAddr>()
+            .map(|addr| addr.ip());
         let uri = req.uri().clone();
         let host_header = req
             .headers()
@@ -1187,7 +1331,8 @@ impl ProxyService {
         let host = strip_host_port(host_header_str).to_string();
         let host_cache = host.to_ascii_lowercase();
         let host_str = host.as_str();
-        let incoming_port = extract_port(host_header_str);
+        let incoming_port =
+            request_incoming_port(&req, client_addr).or_else(|| extract_port(host_header_str));
         let incoming_scheme = detect_client_scheme(&req, client_addr);
         let path = uri.path();
         let method = req.method().clone();
@@ -1211,7 +1356,17 @@ impl ProxyService {
                 Bytes::from("No Config"),
                 "text/plain; charset=utf-8",
             );
-            self.log_access(&started, client_addr, host_str, &uri, method_str, resp.status().as_u16(), "BYPASS", 0, "no_config");
+            self.log_access(
+                &started,
+                client_addr,
+                host_str,
+                &uri,
+                method_str,
+                resp.status().as_u16(),
+                "BYPASS",
+                0,
+                "no_config",
+            );
             return Ok(resp);
         };
         let config = state.config.clone();
@@ -1230,7 +1385,9 @@ impl ProxyService {
             let status = license.status.trim().to_ascii_lowercase();
             let now = chrono::Utc::now().timestamp();
             let expired = status == "expired"
-                || (status == "active" && license.expires_at_unix > 0 && now > license.expires_at_unix);
+                || (status == "active"
+                    && license.expires_at_unix > 0
+                    && now > license.expires_at_unix);
             if expired {
                 let resp = build_friendly_error(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -1242,30 +1399,47 @@ impl ProxyService {
                     None,
                     Some(&config.templates),
                 );
-                self.log_access(&started, client_addr, host_str, &uri, method_str, resp.status().as_u16(), "BYPASS", 0, "license_expired");
+                self.log_access(
+                    &started,
+                    client_addr,
+                    host_str,
+                    &uri,
+                    method_str,
+                    resp.status().as_u16(),
+                    "BYPASS",
+                    0,
+                    "license_expired",
+                );
                 return Ok(resp);
             }
         }
 
-        let route_match = match router.route(host_cache.as_str(), path, method_str) {
-            Some(m) => m,
-            None => {
-                warn!("No route found for: {} {}", host_str, path);
-                let resp = build_unmatched_host_page(
-                    host_str,
-                    path,
-                    accept_json,
-                    &config.templates,
-                );
-                let log_tag = if host_str.parse::<std::net::IpAddr>().is_ok() {
-                    "direct_ip_access"
-                } else {
-                    "route_not_found"
-                };
-                self.log_access(&started, client_addr, host_str, &uri, method_str, resp.status().as_u16(), "BYPASS", 0, log_tag);
-                return Ok(resp);
-            }
-        };
+        let route_match =
+            match router.route_with_port(host_cache.as_str(), path, method_str, incoming_port) {
+                Some(m) => m,
+                None => {
+                    warn!("No route found for: {} {}", host_str, path);
+                    let resp =
+                        build_unmatched_host_page(host_str, path, accept_json, &config.templates);
+                    let log_tag = if host_str.parse::<std::net::IpAddr>().is_ok() {
+                        "direct_ip_access"
+                    } else {
+                        "route_not_found"
+                    };
+                    self.log_access(
+                        &started,
+                        client_addr,
+                        host_str,
+                        &uri,
+                        method_str,
+                        resp.status().as_u16(),
+                        "BYPASS",
+                        0,
+                        log_tag,
+                    );
+                    return Ok(resp);
+                }
+            };
 
         // Avoid cloning DomainConfig per request; keep a reference into the runtime config.
         let domain = match config.domains.get(route_match.domain_idx) {
@@ -1282,10 +1456,109 @@ impl ProxyService {
                     None,
                     Some(&config.templates),
                 );
-                self.log_access(&started, client_addr, host_str, &uri, method_str, resp.status().as_u16(), "BYPASS", 0, "domain_idx_oob");
+                self.log_access(
+                    &started,
+                    client_addr,
+                    host_str,
+                    &uri,
+                    method_str,
+                    resp.status().as_u16(),
+                    "BYPASS",
+                    0,
+                    "domain_idx_oob",
+                );
                 return Ok(resp);
             }
         };
+
+        if let Some(secret) = domain
+            .signed_url_secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if !validate_signed_url(secret, path, uri.query()) {
+                let resp = build_friendly_error(
+                    StatusCode::FORBIDDEN,
+                    "链接无效",
+                    "签名 URL 无效或已过期，请重新生成访问链接。",
+                    host_str,
+                    path,
+                    accept_json,
+                    Some(&domain.error_pages),
+                    Some(&config.templates),
+                );
+                self.log_access(
+                    &started,
+                    client_addr,
+                    host_str,
+                    &uri,
+                    method_str,
+                    resp.status().as_u16(),
+                    "BYPASS",
+                    0,
+                    "signed_url_invalid",
+                );
+                return Ok(resp);
+            }
+        }
+
+        let (effective_path, _image_transform) = if domain.effective_image_transform_enabled() {
+            crate::media::normalize_image_request(path, uri.query())
+        } else {
+            (path.to_string(), None)
+        };
+        let path = effective_path.as_str();
+
+        if incoming_scheme == "https" && !domain.effective_https_enabled() {
+            let resp = build_friendly_error(
+                StatusCode::FORBIDDEN,
+                "HTTPS 未开启",
+                "该域名未开启 HTTPS，请使用 HTTP 访问或在控制台开启 HTTPS。",
+                host_str,
+                path,
+                accept_json,
+                Some(&domain.error_pages),
+                Some(&config.templates),
+            );
+            self.log_access(
+                &started,
+                client_addr,
+                host_str,
+                &uri,
+                method_str,
+                resp.status().as_u16(),
+                "BYPASS",
+                0,
+                "https_disabled",
+            );
+            return Ok(resp);
+        }
+
+        if is_websocket_upgrade(&req) && !domain.effective_websocket_enabled() {
+            let resp = build_friendly_error(
+                StatusCode::FORBIDDEN,
+                "WebSocket 未开启",
+                "该域名未开启 WebSocket，请在控制台开启后再访问。",
+                host_str,
+                path,
+                accept_json,
+                Some(&domain.error_pages),
+                Some(&config.templates),
+            );
+            self.log_access(
+                &started,
+                client_addr,
+                host_str,
+                &uri,
+                method_str,
+                resp.status().as_u16(),
+                "BYPASS",
+                0,
+                "websocket_disabled",
+            );
+            return Ok(resp);
+        }
 
         let http2_enabled = domain.http2_enabled.unwrap_or(true);
         if req.version() == http::Version::HTTP_2 && !http2_enabled {
@@ -1299,8 +1572,37 @@ impl ProxyService {
                 Some(&domain.error_pages),
                 Some(&config.templates),
             );
-            self.log_access(&started, client_addr, host_str, &uri, method_str, resp.status().as_u16(), "BYPASS", 0, "http2_disabled");
+            self.log_access(
+                &started,
+                client_addr,
+                host_str,
+                &uri,
+                method_str,
+                resp.status().as_u16(),
+                "BYPASS",
+                0,
+                "http2_disabled",
+            );
             return Ok(resp);
+        }
+
+        if domain.effective_bot_score_enabled() {
+            let score = crate::edge_enhance::bot_score(req.headers(), path, 0);
+            if score >= 75 {
+                let resp = self.challenge_response(host_str, 5, None, None);
+                self.log_access(
+                    &started,
+                    client_addr,
+                    host_str,
+                    &uri,
+                    method_str,
+                    resp.status().as_u16(),
+                    "BYPASS",
+                    0,
+                    "bot_score",
+                );
+                return Ok(resp);
+            }
         }
 
         let cache_enabled = domain.cache_enabled.unwrap_or(true);
@@ -1310,7 +1612,16 @@ impl ProxyService {
         } else {
             None
         };
-        let cache_ttl = cache_decision.map(|d| d.ttl_seconds);
+        let cache_ttl = cache_decision.map(|d| {
+            let mut ttl = d.ttl_seconds;
+            if domain.effective_l2_origin_enabled() {
+                ttl = ttl.saturating_mul(2);
+            }
+            if domain.effective_video_segment_cache_enabled() && crate::media::is_video_segment(path) {
+                ttl = crate::media::video_segment_cache_ttl(ttl);
+            }
+            ttl
+        });
         let cache_key: Option<CacheKey> = if method == Method::GET && cache_ttl.is_some() {
             let include_query = cache_decision
                 .as_ref()
@@ -1339,7 +1650,8 @@ impl ProxyService {
                 cache_status = "HIT";
                 let bytes = entry.body_len();
                 self.metrics.bytes_sent.inc_by(bytes);
-                let resp = self.build_response_from_cache(entry).await?;
+                let mut resp = self.build_response_from_cache(entry).await?;
+                apply_edge_finish(&domain, &mut resp);
                 self.log_access(
                     &started,
                     client_addr,
@@ -1355,6 +1667,40 @@ impl ProxyService {
             }
         }
         if method == Method::GET && cache_ttl.is_some() {
+            if let (Some(cache_key), Some(decision)) = (cache_key.as_ref(), cache_decision.as_ref()) {
+                if decision.stale_while_revalidate_seconds > 0 {
+                    if let Some((entry, is_stale)) = self
+                        .cache
+                        .get_async_with_stale(cache_key, decision.stale_while_revalidate_seconds)
+                        .await
+                    {
+                        if is_stale {
+                            debug!(
+                                "Serving stale cache while revalidating: {}",
+                                cache_key.to_string()
+                            );
+                            self.metrics.cache_hits.inc();
+                            cache_status = "STALE";
+                            let bytes = entry.body_len();
+                            self.metrics.bytes_sent.inc_by(bytes);
+                            let mut resp = self.build_response_from_cache(entry).await?;
+                            apply_edge_finish(&domain, &mut resp);
+                            self.log_access(
+                                &started,
+                                client_addr,
+                                host_str,
+                                &uri,
+                                method_str,
+                                resp.status().as_u16(),
+                                cache_status,
+                                bytes,
+                                "",
+                            );
+                            return Ok(resp);
+                        }
+                    }
+                }
+            }
             self.metrics.cache_misses.inc();
             cache_status = "MISS";
         }
@@ -1369,14 +1715,17 @@ impl ProxyService {
                         cache_flight_guard = Some(guard);
                     }
                     CacheSingleFlightPermit::Follower(notify) => {
-                        let _ = tokio::time::timeout(self.cache_singleflight_wait, notify.notified()).await;
+                        let _ =
+                            tokio::time::timeout(self.cache_singleflight_wait, notify.notified())
+                                .await;
                         if let Some(entry) = self.cache.get_async(cache_key).await {
                             debug!("Serving from cache after wait: {}", cache_key.to_string());
                             self.metrics.cache_hits.inc();
                             cache_status = "HIT";
                             let bytes = entry.body_len();
                             self.metrics.bytes_sent.inc_by(bytes);
-                            let resp = self.build_response_from_cache(entry).await?;
+                            let mut resp = self.build_response_from_cache(entry).await?;
+                            apply_edge_finish(&domain, &mut resp);
                             self.log_access(
                                 &started,
                                 client_addr,
@@ -1397,11 +1746,16 @@ impl ProxyService {
 
         // Prepare stale entry for stale-if-error fallback.
         let mut stale_entry: Option<CacheEntry> = None;
-        if self.cache_stale_if_error_secs > 0 {
+        let stale_if_error_secs = cache_decision
+            .as_ref()
+            .map(|d| d.stale_if_error_seconds)
+            .filter(|v| *v > 0)
+            .unwrap_or(self.cache_stale_if_error_secs);
+        if stale_if_error_secs > 0 {
             if let Some(cache_key) = cache_key.as_ref() {
                 if let Some((entry, is_stale)) = self
                     .cache
-                    .get_async_with_stale(cache_key, self.cache_stale_if_error_secs)
+                    .get_async_with_stale(cache_key, stale_if_error_secs)
                     .await
                 {
                     if !is_stale {
@@ -1410,7 +1764,8 @@ impl ProxyService {
                         cache_status = "HIT";
                         let bytes = entry.body_len();
                         self.metrics.bytes_sent.inc_by(bytes);
-                        let resp = self.build_response_from_cache(entry).await?;
+                        let mut resp = self.build_response_from_cache(entry).await?;
+                        apply_edge_finish(&domain, &mut resp);
                         self.log_access(
                             &started,
                             client_addr,
@@ -1437,7 +1792,10 @@ impl ProxyService {
         //      for domains migrated before the refactor.
         // When both are absent we return 502 with a friendly page.
         let legacy_origin = config.origins.get(domain.origin_id.as_str());
-        let has_domain_origins = domain.origins.iter().any(|e| e.enabled && !e.address.trim().is_empty());
+        let has_domain_origins = domain
+            .origins
+            .iter()
+            .any(|e| e.enabled && !e.address.trim().is_empty());
         let origin_owned: OriginConfig = if has_domain_origins {
             // Use per-domain origins. Fabricate a minimal OriginConfig
             // envelope with sensible defaults when no legacy row
@@ -1463,7 +1821,10 @@ impl ProxyService {
         } else if let Some(o) = legacy_origin {
             o.clone()
         } else {
-            error!("Origin not found: domain={} origin_id={}", domain.name, domain.origin_id);
+            error!(
+                "Origin not found: domain={} origin_id={}",
+                domain.name, domain.origin_id
+            );
             let resp = build_friendly_error(
                 StatusCode::BAD_GATEWAY,
                 "源站不可用",
@@ -1474,7 +1835,17 @@ impl ProxyService {
                 Some(&domain.error_pages),
                 Some(&config.templates),
             );
-            self.log_access(&started, client_addr, host_str, &uri, method_str, resp.status().as_u16(), cache_status, 0, "origin_not_found");
+            self.log_access(
+                &started,
+                client_addr,
+                host_str,
+                &uri,
+                method_str,
+                resp.status().as_u16(),
+                cache_status,
+                0,
+                "origin_not_found",
+            );
             return Ok(resp);
         };
         let origin = &origin_owned;
@@ -1485,17 +1856,71 @@ impl ProxyService {
         } else {
             None
         };
+
+        if domain.effective_edge_script_enabled() {
+            if let Some(rules) = domain
+                .edge_script_rules
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            {
+                if let Some(early) = crate::edge_script::apply_request_rules(rules, req.headers_mut())
+                {
+                    if let Some(loc) = early.location.as_deref() {
+                        let mut resp = Self::full_response(
+                            early.status,
+                            Bytes::new(),
+                            "text/plain; charset=utf-8",
+                        );
+                        if let Ok(hv) = http::HeaderValue::from_str(loc) {
+                            resp.headers_mut().insert(http::header::LOCATION, hv);
+                        }
+                        self.log_access(
+                            &started,
+                            client_addr,
+                            host_str,
+                            &uri,
+                            method_str,
+                            resp.status().as_u16(),
+                            "BYPASS",
+                            0,
+                            early.tag,
+                        );
+                        return Ok(resp);
+                    }
+                    let resp = Self::full_response(
+                        early.status,
+                        Bytes::from("Blocked by edge script"),
+                        "text/plain; charset=utf-8",
+                    );
+                    self.log_access(
+                        &started,
+                        client_addr,
+                        host_str,
+                        &uri,
+                        method_str,
+                        resp.status().as_u16(),
+                        "BYPASS",
+                        0,
+                        early.tag,
+                    );
+                    return Ok(resp);
+                }
+            }
+        }
+
         if let Some(resp) = self.enforce_waf_compiled(
             state.waf.as_ref(),
             !config.waf_policies.is_empty(),
             domain.id.as_str(),
             host_str,
             path,
+            uri.query(),
             method_str,
             client_ip_str.as_deref(),
             client_addr,
             req.headers(),
         ) {
+            self.metrics.waf_blocks.inc();
             let status = resp.status().as_u16();
             self.log_access(
                 &started,
@@ -1509,6 +1934,94 @@ impl ProxyService {
                 "waf_block",
             );
             return Ok(resp);
+        }
+
+        if is_websocket_upgrade(&req) {
+            let _cache_flight_guard = cache_flight_guard;
+            let resp = self
+                .proxy_websocket(
+                    req,
+                    domain,
+                    origin,
+                    &incoming_scheme,
+                    incoming_port,
+                    host_header_str,
+                    accept_json,
+                )
+                .await?;
+            self.log_access(
+                &started,
+                client_addr,
+                host_str,
+                &uri,
+                method_str,
+                resp.status().as_u16(),
+                "BYPASS",
+                0,
+                "websocket",
+            );
+            return Ok(resp);
+        }
+
+        // L2 sibling fetch before origin on cache miss.
+        if domain.effective_l2_origin_enabled()
+            && method == Method::GET
+            && cache_key.is_some()
+            && cache_ttl.is_some()
+            && !config.l2_peers.is_empty()
+        {
+            let l2_timeout = Duration::from_millis(1500);
+            if let Some(l2) = crate::l2_fetch::try_fetch_from_peers(
+                &self.client,
+                &config.l2_peers,
+                self.node_id.as_deref(),
+                host_str,
+                path,
+                uri.query(),
+                l2_timeout,
+            )
+            .await
+            {
+                if let (Some(cache_key), Some(ttl)) = (cache_key.as_ref(), cache_ttl) {
+                    let _ = self.cache_response_bytes(
+                        cache_key,
+                        l2.status,
+                        l2.headers.clone(),
+                        l2.body.clone(),
+                        ttl,
+                    );
+                }
+                let mut builder = hyper::Response::builder().status(
+                    StatusCode::from_u16(l2.status).unwrap_or(StatusCode::OK),
+                );
+                for (k, v) in &l2.headers {
+                    builder = builder.header(k.as_ref(), v.as_ref());
+                }
+                let mut resp = builder
+                    .body(Full::new(l2.body).map_err(|e| match e {}).boxed())
+                    .unwrap_or_else(|_| {
+                        hyper::Response::new(Full::new(Bytes::new()).map_err(|e| match e {}).boxed())
+                    });
+                apply_edge_finish(&domain, &mut resp);
+                let bytes = resp
+                    .headers()
+                    .get(http::header::CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                self.log_access(
+                    &started,
+                    client_addr,
+                    host_str,
+                    &uri,
+                    method_str,
+                    resp.status().as_u16(),
+                    "L2-HIT",
+                    bytes,
+                    "",
+                );
+                return Ok(resp);
+            }
         }
 
         // Proxy to origin
@@ -1532,7 +2045,8 @@ impl ProxyService {
                 if status >= 500 {
                     if let Some(entry) = stale_entry.take() {
                         let bytes = entry.body_len();
-                        let resp = self.build_response_from_cache(entry).await?;
+                        let mut resp = self.build_response_from_cache(entry).await?;
+                        apply_edge_finish(&domain, &mut resp);
                         self.log_access(
                             &started,
                             client_addr,
@@ -1557,10 +2071,7 @@ impl ProxyService {
                     .map(|v| !matches!(v.trim(), "0" | "false" | "no" | "off"))
                     .unwrap_or(true);
                 if replace_friendly && status >= 400 {
-                    let has_custom = domain
-                        .error_pages
-                        .iter()
-                        .any(|p| p.status as u16 == status);
+                    let has_custom = domain.error_pages.iter().any(|p| p.status as u16 == status);
                     if has_custom {
                         let resp = build_friendly_error(
                             response.status(),
@@ -1603,12 +2114,15 @@ impl ProxyService {
                     bytes,
                     "",
                 );
+                let mut response = response;
+                apply_edge_finish(&domain, &mut response);
                 Ok(response)
             }
             Err(e) => {
                 if let Some(entry) = stale_entry.take() {
                     let bytes = entry.body_len();
-                    let resp = self.build_response_from_cache(entry).await?;
+                    let mut resp = self.build_response_from_cache(entry).await?;
+                    apply_edge_finish(&domain, &mut resp);
                     self.log_access(
                         &started,
                         client_addr,
@@ -1634,7 +2148,17 @@ impl ProxyService {
                     Some(&domain.error_pages),
                     Some(&config.templates),
                 );
-                self.log_access(&started, client_addr, host_str, &uri, method_str, resp.status().as_u16(), cache_status, 0, "proxy_error");
+                self.log_access(
+                    &started,
+                    client_addr,
+                    host_str,
+                    &uri,
+                    method_str,
+                    resp.status().as_u16(),
+                    cache_status,
+                    0,
+                    "proxy_error",
+                );
                 Ok(resp)
             }
         }
@@ -1652,7 +2176,9 @@ impl ProxyService {
         bytes: u64,
         err: &str,
     ) {
-        let Some(logger) = self.access_logger.as_ref() else { return };
+        let Some(logger) = self.access_logger.as_ref() else {
+            return;
+        };
 
         #[derive(Serialize)]
         struct AccessLog<'a> {
@@ -1756,7 +2282,8 @@ impl ProxyService {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
-        let has_body = content_length > 0 || req.headers().contains_key(http::header::TRANSFER_ENCODING);
+        let has_body =
+            content_length > 0 || req.headers().contains_key(http::header::TRANSFER_ENCODING);
 
         if self.max_request_body_bytes > 0 && content_length > self.max_request_body_bytes {
             let templates_state = self.config_holder.get_state();
@@ -1786,9 +2313,17 @@ impl ProxyService {
             domain.name, domain.origin_port, port, scheme
         );
 
-        let cache_ttl = if retryable_method && !has_body { cache_ttl } else { None };
+        let cache_ttl = if retryable_method && !has_body {
+            cache_ttl
+        } else {
+            None
+        };
         let cache_key = if cache_ttl.is_some() { cache_key } else { None };
-        let max_retries = if retryable_method && !has_body { origin.max_retries } else { 0 };
+        let max_retries = if retryable_method && !has_body {
+            origin.max_retries
+        } else {
+            0
+        };
         let timeout_ms = domain
             .origin_timeout_ms
             .map(|v| v.max(1) as u64)
@@ -1818,12 +2353,7 @@ impl ProxyService {
                     .map(|p| p.as_str())
                     .unwrap_or("/");
                 let path = ensure_leading_slash(raw_path);
-                let origin_uri = format!(
-                    "{}://{}{}",
-                    scheme,
-                    host_for_connect,
-                    path
-                );
+                let origin_uri = format!("{}://{}{}", scheme, host_for_connect, path);
                 let uri: Uri = origin_uri.parse().context("Invalid origin URI")?;
                 if content_length > 0 {
                     self.metrics.bytes_received.inc_by(content_length);
@@ -1847,7 +2377,9 @@ impl ProxyService {
                 if let Some(ref auth) = domain.origin_auth {
                     apply_origin_auth(out_req.headers_mut(), auth);
                 }
-                return self.send_to_origin(out_req, timeout, cache_key, cache_ttl, false, &start).await;
+                return self
+                    .send_to_origin(out_req, timeout, cache_key, cache_ttl, false, &start)
+                    .await;
             }
 
             // Buffered-body failover path.
@@ -1871,16 +2403,12 @@ impl ProxyService {
                     .map(|p| p.as_str())
                     .unwrap_or("/");
                 let path = ensure_leading_slash(raw_path);
-                let origin_uri = format!(
-                    "{}://{}{}",
-                    scheme,
-                    host_for_connect,
-                    path
-                );
+                let origin_uri = format!("{}://{}{}", scheme, host_for_connect, path);
                 let uri: Uri = match origin_uri.parse() {
                     Ok(u) => u,
                     Err(e) => {
-                        last_err = Some(anyhow::anyhow!("Invalid origin URI {}: {}", origin_uri, e));
+                        last_err =
+                            Some(anyhow::anyhow!("Invalid origin URI {}: {}", origin_uri, e));
                         continue;
                     }
                 };
@@ -1899,7 +2427,10 @@ impl ProxyService {
                 if let Some(ref auth) = domain.origin_auth {
                     apply_origin_auth(out_req.headers_mut(), auth);
                 }
-                match self.send_to_origin(out_req, timeout, cache_key, cache_ttl, false, &start).await {
+                match self
+                    .send_to_origin(out_req, timeout, cache_key, cache_ttl, false, &start)
+                    .await
+                {
                     Ok(resp) => return Ok(resp),
                     Err(e) => {
                         last_err = Some(e);
@@ -1920,12 +2451,7 @@ impl ProxyService {
                 .map(|p| p.as_str())
                 .unwrap_or("/");
             let path = ensure_leading_slash(raw_path);
-            let origin_uri = format!(
-                "{}://{}{}",
-                scheme,
-                host_for_connect,
-                path
-            );
+            let origin_uri = format!("{}://{}{}", scheme, host_for_connect, path);
             let uri: Uri = match origin_uri.parse() {
                 Ok(u) => u,
                 Err(e) => {
@@ -1958,7 +2484,10 @@ impl ProxyService {
                     apply_origin_auth(out_req.headers_mut(), auth);
                 }
 
-                match self.send_to_origin(out_req, timeout, cache_key, cache_ttl, true, &start).await {
+                match self
+                    .send_to_origin(out_req, timeout, cache_key, cache_ttl, true, &start)
+                    .await
+                {
                     Ok(resp) => return Ok(resp),
                     Err(e) => {
                         last_err = Some(e);
@@ -1979,6 +2508,97 @@ impl ProxyService {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("All origins failed")))
     }
 
+    async fn proxy_websocket(
+        &self,
+        mut req: Request<Incoming>,
+        domain: &DomainConfig,
+        origin: &OriginConfig,
+        incoming_scheme: &str,
+        incoming_port: Option<u16>,
+        original_host_header: &str,
+        accept_json: bool,
+    ) -> Result<NodeResponse> {
+        let Some(origin_addr) = origin.addresses.first() else {
+            return Ok(build_friendly_error(
+                StatusCode::BAD_GATEWAY,
+                "源站不可用",
+                "未找到可用的 WebSocket 回源地址。",
+                strip_host_port(original_host_header),
+                req.uri().path(),
+                accept_json,
+                Some(&domain.error_pages),
+                None,
+            ));
+        };
+
+        let scheme = resolve_origin_scheme(domain, incoming_scheme);
+        let port = resolve_origin_port(domain, incoming_port, &scheme);
+        let mut scheme = scheme;
+        reconcile_scheme_port(&mut scheme, port);
+        let upstream_host = strip_host_port(origin_addr);
+        let host_for_connect = format_host_with_port(upstream_host, port);
+        let raw_path = req
+            .uri()
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or("/");
+        let path = ensure_leading_slash(raw_path);
+        let origin_uri: Uri = format!("{}://{}{}", scheme, host_for_connect, path)
+            .parse()
+            .context("Invalid websocket origin URI")?;
+        let host_header = resolve_origin_host_header(domain, original_host_header, &scheme);
+        let client_ip: Option<IpAddr> = req
+            .extensions()
+            .get::<std::net::SocketAddr>()
+            .map(|a| a.ip());
+
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        let (mut parts, body) = req.into_parts();
+        parts.uri = origin_uri;
+        let body = body.map_err(|e| anyhow::anyhow!(e)).boxed();
+        let mut out_req = Request::from_parts(parts, body);
+        apply_forward_headers(
+            out_req.headers_mut(),
+            &host_header,
+            client_ip,
+            original_host_header,
+            incoming_scheme,
+        );
+        if let Some(ref auth) = domain.origin_auth {
+            apply_origin_auth(out_req.headers_mut(), auth);
+        }
+
+        let mut response = self
+            .client
+            .request(out_req)
+            .await
+            .context("websocket origin request failed")?;
+        if response.status() != StatusCode::SWITCHING_PROTOCOLS {
+            return Ok(response.map(|body| body.map_err(|e| anyhow::anyhow!(e)).boxed()));
+        }
+
+        let response_on_upgrade = hyper::upgrade::on(&mut response);
+        tokio::spawn(async move {
+            match (on_upgrade.await, response_on_upgrade.await) {
+                (Ok(client), Ok(origin)) => {
+                    let mut client = TokioIo::new(client);
+                    let mut origin = TokioIo::new(origin);
+                    if let Err(e) = copy_bidirectional(&mut client, &mut origin).await {
+                        warn!("websocket tunnel error: {}", e);
+                    }
+                }
+                (Err(e), _) => warn!("client websocket upgrade failed: {}", e),
+                (_, Err(e)) => warn!("origin websocket upgrade failed: {}", e),
+            }
+        });
+
+        let (parts, _) = response.into_parts();
+        Ok(hyper::Response::from_parts(
+            parts,
+            Empty::new().map_err(|e| match e {}).boxed(),
+        ))
+    }
+
     async fn send_to_origin(
         &self,
         out_req: Request<NodeBody>,
@@ -1990,26 +2610,27 @@ impl ProxyService {
     ) -> Result<NodeResponse> {
         // Bound total concurrent origin streams (including long-running downloads). This prevents
         // overload collapse and keeps latency stable at high QPS. Set ORIGIN_MAX_INFLIGHT=0 to disable.
-        let mut origin_permit: Option<OwnedSemaphorePermit> = if let Some(sem) = &self.origin_inflight {
-            if let Some(wait) = self.origin_inflight_acquire_timeout {
-                match tokio::time::timeout(wait, sem.clone().acquire_owned()).await {
-                    Ok(Ok(p)) => Some(p),
-                    Ok(Err(_)) => None, // semaphore closed; treat as no permit
-                    Err(_) => {
-                        return Ok(Self::full_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            Bytes::from("origin busy"),
-                            "text/plain; charset=utf-8",
-                        ));
+        let mut origin_permit: Option<OwnedSemaphorePermit> =
+            if let Some(sem) = &self.origin_inflight {
+                if let Some(wait) = self.origin_inflight_acquire_timeout {
+                    match tokio::time::timeout(wait, sem.clone().acquire_owned()).await {
+                        Ok(Ok(p)) => Some(p),
+                        Ok(Err(_)) => None, // semaphore closed; treat as no permit
+                        Err(_) => {
+                            return Ok(Self::full_response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                Bytes::from("origin busy"),
+                                "text/plain; charset=utf-8",
+                            ));
+                        }
                     }
+                } else {
+                    // Wait indefinitely (backpressure) if no timeout configured.
+                    Some(sem.clone().acquire_owned().await?)
                 }
             } else {
-                // Wait indefinitely (backpressure) if no timeout configured.
-                Some(sem.clone().acquire_owned().await?)
-            }
-        } else {
-            None
-        };
+                None
+            };
 
         let response = tokio::time::timeout(timeout, self.client.request(out_req))
             .await
@@ -2060,7 +2681,9 @@ impl ProxyService {
         }
 
         self.metrics.origin_requests_total.inc();
-        self.metrics.origin_request_duration.observe(started.elapsed().as_secs_f64());
+        self.metrics
+            .origin_request_duration
+            .observe(started.elapsed().as_secs_f64());
         if content_length > 0 {
             self.metrics.bytes_sent.inc_by(content_length);
         }
@@ -2068,11 +2691,19 @@ impl ProxyService {
         let max_cache_object = self.max_cache_object_bytes;
         let mem_max_object = {
             let v = self.cache.memory_max_object_bytes();
-            if v == 0 { max_cache_object } else { v }
+            if v == 0 {
+                max_cache_object
+            } else {
+                v
+            }
         };
         let disk_max_object = {
             let v = self.cache.disk_max_object_bytes();
-            if v == 0 { max_cache_object } else { v }
+            if v == 0 {
+                max_cache_object
+            } else {
+                v
+            }
         };
         let ttl = cache_ttl.unwrap_or(0);
         let negative_ttl = match parts.status.as_u16() {
@@ -2092,7 +2723,8 @@ impl ProxyService {
             && (!has_cl
                 || (content_length <= max_cache_object
                     && content_length <= mem_max_object
-                    && (self.max_response_body_bytes == 0 || content_length <= self.max_response_body_bytes)));
+                    && (self.max_response_body_bytes == 0
+                        || content_length <= self.max_response_body_bytes)));
         if negative_cache_allowed {
             if let Some(cache_key) = cache_key {
                 let body_bytes = body
@@ -2104,7 +2736,8 @@ impl ProxyService {
                 let body_len = body_bytes.len() as u64;
                 let within_caps = body_len <= max_cache_object
                     && body_len <= mem_max_object
-                    && (self.max_response_body_bytes == 0 || body_len <= self.max_response_body_bytes);
+                    && (self.max_response_body_bytes == 0
+                        || body_len <= self.max_response_body_bytes);
                 let headers: Vec<(Box<str>, Box<str>)> = parts
                     .headers
                     .iter()
@@ -2133,7 +2766,8 @@ impl ProxyService {
             && cache_key.is_some()
             && max_cache_object > 0
             && content_length <= max_cache_object
-            && (self.max_response_body_bytes == 0 || content_length <= self.max_response_body_bytes);
+            && (self.max_response_body_bytes == 0
+                || content_length <= self.max_response_body_bytes);
 
         // Small objects: cache in memory (and inline to disk for persistence).
         if cache_allowed && content_length <= mem_max_object {
@@ -2148,7 +2782,13 @@ impl ProxyService {
                     .iter()
                     .map(|(k, v)| (k.as_str().into(), v.to_str().unwrap_or("").into()))
                     .collect();
-                let _ = self.cache_response_bytes(cache_key, parts.status.as_u16(), headers, body_bytes.clone(), ttl);
+                let _ = self.cache_response_bytes(
+                    cache_key,
+                    parts.status.as_u16(),
+                    headers,
+                    body_bytes.clone(),
+                    ttl,
+                );
                 let resp = hyper::Response::from_parts(
                     parts,
                     Full::new(body_bytes).map_err(|e| match e {}).boxed(),
@@ -2178,122 +2818,144 @@ impl ProxyService {
                         let cache = self.cache.clone();
                         let cache_key = cache_key.clone();
                         let expected_len = content_length;
-                        let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<http_body::Frame<Bytes>, anyhow::Error>>(16);
+                        let (tx, mut rx) = tokio::sync::mpsc::channel::<
+                            Result<http_body::Frame<Bytes>, anyhow::Error>,
+                        >(16);
 
                         let origin_permit_for_task = origin_permit.take();
                         tokio::spawn(async move {
-                        use http_body_util::BodyExt;
-                        use tokio::io::AsyncWriteExt;
+                            use http_body_util::BodyExt;
+                            use tokio::io::AsyncWriteExt;
 
-                        // Hold origin inflight permit for the whole lifetime of streaming from origin.
-                        let _origin_permit = origin_permit_for_task;
+                            // Hold origin inflight permit for the whole lifetime of streaming from origin.
+                            let _origin_permit = origin_permit_for_task;
 
-                        let mut caching_ok = true;
-                        let mut written: u64 = 0;
-                        let mut f = match tokio::fs::File::create(&paths.tmp_path).await {
-                            Ok(file) => Some(file),
-                            Err(e) => {
-                                caching_ok = false;
-                                tracing::warn!("disk cache create failed {}: {}", paths.tmp_path.display(), e);
-                                None
-                            }
-                        };
+                            let mut caching_ok = true;
+                            let mut written: u64 = 0;
+                            let mut f = match tokio::fs::File::create(&paths.tmp_path).await {
+                                Ok(file) => Some(file),
+                                Err(e) => {
+                                    caching_ok = false;
+                                    tracing::warn!(
+                                        "disk cache create failed {}: {}",
+                                        paths.tmp_path.display(),
+                                        e
+                                    );
+                                    None
+                                }
+                            };
 
-                        // Client disconnect policy: once the downstream receiver goes
-                        // away we stop forwarding frames. If we have already written
-                        // at least this fraction of the expected body to disk we keep
-                        // draining the origin so the cache entry can be committed for
-                        // future requests; otherwise we abandon the origin stream so
-                        // the inflight permit is released and upstream bandwidth is
-                        // not wasted on a client that is no longer listening.
-                        const CONTINUE_CACHE_THRESHOLD_NUM: u64 = 1;
-                        const CONTINUE_CACHE_THRESHOLD_DEN: u64 = 2; // 50%
+                            // Client disconnect policy: once the downstream receiver goes
+                            // away we stop forwarding frames. If we have already written
+                            // at least this fraction of the expected body to disk we keep
+                            // draining the origin so the cache entry can be committed for
+                            // future requests; otherwise we abandon the origin stream so
+                            // the inflight permit is released and upstream bandwidth is
+                            // not wasted on a client that is no longer listening.
+                            const CONTINUE_CACHE_THRESHOLD_NUM: u64 = 1;
+                            const CONTINUE_CACHE_THRESHOLD_DEN: u64 = 2; // 50%
 
-                        let mut client_gone = false;
-                        let mut origin_body = body;
-                        while let Some(frame_res) = origin_body.frame().await {
-                            match frame_res {
-                                Ok(frame) => {
-                                    if let Some(data) = frame.data_ref() {
-                                        if caching_ok {
-                                            if let Some(file) = f.as_mut() {
-                                                if let Err(e) = file.write_all(data).await {
-                                                    caching_ok = false;
-                                                    tracing::warn!("disk cache write failed: {}", e);
-                                                } else {
-                                                    written = written.saturating_add(data.len() as u64);
-                                                    if expected_len > 0 && written > expected_len {
+                            let mut client_gone = false;
+                            let mut origin_body = body;
+                            while let Some(frame_res) = origin_body.frame().await {
+                                match frame_res {
+                                    Ok(frame) => {
+                                        if let Some(data) = frame.data_ref() {
+                                            if caching_ok {
+                                                if let Some(file) = f.as_mut() {
+                                                    if let Err(e) = file.write_all(data).await {
                                                         caching_ok = false;
+                                                        tracing::warn!(
+                                                            "disk cache write failed: {}",
+                                                            e
+                                                        );
+                                                    } else {
+                                                        written = written
+                                                            .saturating_add(data.len() as u64);
+                                                        if expected_len > 0
+                                                            && written > expected_len
+                                                        {
+                                                            caching_ok = false;
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
-                                    }
 
-                                    // Forward to client if still connected. On send error
-                                    // (receiver dropped) decide whether to keep draining
-                                    // origin for the cache or bail out early.
-                                    if !client_gone {
-                                        if tx.send(Ok(frame)).await.is_err() {
-                                            client_gone = true;
-                                            let keep_draining = caching_ok
-                                                && expected_len > 0
-                                                && written.saturating_mul(CONTINUE_CACHE_THRESHOLD_DEN)
-                                                    >= expected_len.saturating_mul(CONTINUE_CACHE_THRESHOLD_NUM);
-                                            if !keep_draining {
-                                                // Abandon the origin stream and the partial cache.
-                                                caching_ok = false;
-                                                break;
+                                        // Forward to client if still connected. On send error
+                                        // (receiver dropped) decide whether to keep draining
+                                        // origin for the cache or bail out early.
+                                        if !client_gone {
+                                            if tx.send(Ok(frame)).await.is_err() {
+                                                client_gone = true;
+                                                let keep_draining = caching_ok
+                                                    && expected_len > 0
+                                                    && written.saturating_mul(
+                                                        CONTINUE_CACHE_THRESHOLD_DEN,
+                                                    ) >= expected_len.saturating_mul(
+                                                        CONTINUE_CACHE_THRESHOLD_NUM,
+                                                    );
+                                                if !keep_draining {
+                                                    // Abandon the origin stream and the partial cache.
+                                                    caching_ok = false;
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    caching_ok = false;
-                                    if !client_gone {
-                                        let _ = tx.send(Err(anyhow::anyhow!(e))).await;
+                                    Err(e) => {
+                                        caching_ok = false;
+                                        if !client_gone {
+                                            let _ = tx.send(Err(anyhow::anyhow!(e))).await;
+                                        }
+                                        break;
                                     }
-                                    break;
                                 }
                             }
-                        }
 
-                        if let Some(mut file) = f.take() {
-                            let _ = file.flush().await;
-                        }
-
-                        if caching_ok && expected_len > 0 && written == expected_len {
-                            // Commit: rename tmp -> final and write metadata.
-                            if tokio::fs::metadata(&paths.final_path).await.is_ok() {
-                                let _ = tokio::fs::remove_file(&paths.final_path).await;
+                            if let Some(mut file) = f.take() {
+                                let _ = file.flush().await;
                             }
-                            if let Err(e) = tokio::fs::rename(&paths.tmp_path, &paths.final_path).await {
-                                caching_ok = false;
-                                tracing::warn!("disk cache rename failed: {}", e);
-                            } else {
-                                let created_at = unix_now_secs();
-                                let file_rel = paths.file_rel.clone();
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    cache.put_disk_file(cache_key, status, headers, file_rel, written, created_at, ttl)
-                                })
-                                .await;
+
+                            if caching_ok && expected_len > 0 && written == expected_len {
+                                // Commit: rename tmp -> final and write metadata.
+                                if tokio::fs::metadata(&paths.final_path).await.is_ok() {
+                                    let _ = tokio::fs::remove_file(&paths.final_path).await;
+                                }
+                                if let Err(e) =
+                                    tokio::fs::rename(&paths.tmp_path, &paths.final_path).await
+                                {
+                                    caching_ok = false;
+                                    tracing::warn!("disk cache rename failed: {}", e);
+                                } else {
+                                    let created_at = unix_now_secs();
+                                    let file_rel = paths.file_rel.clone();
+                                    let _ = tokio::task::spawn_blocking(move || {
+                                        cache.put_disk_file(
+                                            cache_key, status, headers, file_rel, written,
+                                            created_at, ttl,
+                                        )
+                                    })
+                                    .await;
+                                }
                             }
-                        }
 
-                        if !caching_ok {
-                            let _ = tokio::fs::remove_file(&paths.tmp_path).await;
-                        }
+                            if !caching_ok {
+                                let _ = tokio::fs::remove_file(&paths.tmp_path).await;
+                            }
 
-                        drop(permit);
-                        drop(tx);
-                    });
+                            drop(permit);
+                            drop(tx);
+                        });
 
                         let body_stream = async_stream::stream! {
                             while let Some(item) = rx.recv().await {
                                 yield item;
                             }
                         };
-                        let resp_body = http_body_util::BodyExt::boxed(http_body_util::StreamBody::new(body_stream));
+                        let resp_body = http_body_util::BodyExt::boxed(
+                            http_body_util::StreamBody::new(body_stream),
+                        );
                         let resp = hyper::Response::from_parts(parts, resp_body);
                         return Ok(resp);
                     }
@@ -2311,7 +2973,11 @@ impl ProxyService {
         };
 
         let body = if let Some(p) = origin_permit {
-            PermitBody { inner: body, _permit: p }.boxed()
+            PermitBody {
+                inner: body,
+                _permit: p,
+            }
+            .boxed()
         } else {
             body
         };
@@ -2434,13 +3100,17 @@ impl ProxyService {
             let mut total = 0usize;
             for shard in self.waf_ban.iter_shards() {
                 let mut guard = shard.lock();
-                guard.retain(|_, v| now < v.until && now.duration_since(v.last_seen) < Duration::from_secs(3600));
+                guard.retain(|_, v| {
+                    now < v.until && now.duration_since(v.last_seen) < Duration::from_secs(3600)
+                });
                 total = total.saturating_add(guard.len());
             }
             if total > 200000 {
                 for shard in self.waf_ban.iter_shards() {
                     let mut guard = shard.lock();
-                    guard.retain(|_, v| now < v.until && now.duration_since(v.last_seen) < Duration::from_secs(600));
+                    guard.retain(|_, v| {
+                        now < v.until && now.duration_since(v.last_seen) < Duration::from_secs(600)
+                    });
                 }
             }
         }
@@ -2456,7 +3126,8 @@ impl ProxyService {
                 // Under extreme load, keep only very recent entries
                 for shard in self.waf_rate_limits.iter_shards() {
                     let mut guard = shard.lock();
-                    guard.retain(|_, v| now.duration_since(v.window_start) < Duration::from_secs(5));
+                    guard
+                        .retain(|_, v| now.duration_since(v.window_start) < Duration::from_secs(5));
                 }
             }
         }
@@ -2496,13 +3167,11 @@ impl ProxyService {
             return None;
         }
         if self.enforce_global_ban(bans, client_ip) {
-            return Some(
-                Self::full_response(
-                    StatusCode::FORBIDDEN,
-                    Bytes::from("Blocked by global WAF ban"),
-                    "text/plain; charset=utf-8",
-                ),
-            );
+            return Some(Self::full_response(
+                StatusCode::FORBIDDEN,
+                Bytes::from("Blocked by global WAF ban"),
+                "text/plain; charset=utf-8",
+            ));
         }
         let mut matched: Vec<&WAFPolicy> = Vec::new();
         for p in policies {
@@ -2591,11 +3260,16 @@ impl ProxyService {
                 "geo_block" => {
                     if rule.action == "deny" && !rule.geo_countries.is_empty() {
                         if let Some(ip) = client_ip {
-                            if let Some(country) = self.geoip_holder.get().and_then(|r| r.lookup_country(ip)) {
+                            if let Some(country) =
+                                self.geoip_holder.get().and_then(|r| r.lookup_country(ip))
+                            {
                                 let blocked = is_geo_blocked(&rule.geo_countries, &country);
                                 if blocked {
                                     if rule.log_only.unwrap_or(false) {
-                                        warn!("WAF log-only geo_block hit ip={} country={}", ip, country);
+                                        warn!(
+                                            "WAF log-only geo_block hit ip={} country={}",
+                                            ip, country
+                                        );
                                         continue;
                                     }
                                     return Some(Self::full_response(
@@ -2635,7 +3309,8 @@ impl ProxyService {
                                     count: 0,
                                     window_start: now,
                                 });
-                                if now.duration_since(entry.window_start).as_secs() >= window as u64 {
+                                if now.duration_since(entry.window_start).as_secs() >= window as u64
+                                {
                                     entry.count = 1;
                                     entry.window_start = now;
                                     false
@@ -2646,7 +3321,10 @@ impl ProxyService {
                             };
                             if exceeded {
                                 if rule.log_only.unwrap_or(false) {
-                                    warn!("WAF log-only rate_limit hit ip={} threshold={}", ip, threshold);
+                                    warn!(
+                                        "WAF log-only rate_limit hit ip={} threshold={}",
+                                        ip, threshold
+                                    );
                                     continue;
                                 }
                                 let ban_mode = rule.ban_mode.as_deref().unwrap_or("ipset");
@@ -2671,12 +3349,14 @@ impl ProxyService {
                     }
                     let ban_mode = rule.ban_mode.as_deref().unwrap_or("ipset");
                     if let Some(mode) = self.is_banned(client_ip) {
-                        return Some(self.ban_response(
-                            &mode,
-                            rule.ban_template_html
-                                .as_deref()
-                                .or(rule.template_html.as_deref()),
-                        ));
+                        return Some(
+                            self.ban_response(
+                                &mode,
+                                rule.ban_template_html
+                                    .as_deref()
+                                    .or(rule.template_html.as_deref()),
+                            ),
+                        );
                     }
                     let ban_seconds = rule.ban_seconds.or(rule.shield_seconds).unwrap_or(300);
                     let fail_limit = rule.threshold.unwrap_or(3);
@@ -2745,7 +3425,12 @@ impl ProxyService {
                     return Some(self.shield_response(rule.shield_seconds.unwrap_or(5)));
                 }
                 "default" | "path_match" | "header_match" | "ua_match" => {
-                    if !domain_security_rule_matches(rule.r#type.as_str(), &rule.value, path, headers) {
+                    if !domain_security_rule_matches(
+                        rule.r#type.as_str(),
+                        &rule.value,
+                        path,
+                        headers,
+                    ) {
                         continue;
                     }
                     if rule.log_only.unwrap_or(false) {
@@ -2758,12 +3443,14 @@ impl ProxyService {
                     if rule.action == "challenge" {
                         let ban_mode = rule.ban_mode.as_deref().unwrap_or("ipset");
                         if let Some(mode) = self.is_banned(client_ip) {
-                            return Some(self.ban_response(
-                                &mode,
-                                rule.ban_template_html
-                                    .as_deref()
-                                    .or(rule.template_html.as_deref()),
-                            ));
+                            return Some(
+                                self.ban_response(
+                                    &mode,
+                                    rule.ban_template_html
+                                        .as_deref()
+                                        .or(rule.template_html.as_deref()),
+                                ),
+                            );
                         }
                         let ban_seconds = rule.ban_seconds.or(rule.shield_seconds).unwrap_or(300);
                         let fail_limit = rule.threshold.unwrap_or(3);
@@ -2829,6 +3516,7 @@ impl ProxyService {
         domain_id: &str,
         host: &str,
         path: &str,
+        uri_query: Option<&str>,
         method: &str,
         client_ip: Option<&str>,
         client_addr: Option<IpAddr>,
@@ -2935,7 +3623,9 @@ impl ProxyService {
 
             match rule.r#type.as_str() {
                 "ip_cidr" => {
-                    let Some(net) = next.cidr.as_ref() else { continue };
+                    let Some(net) = next.cidr.as_ref() else {
+                        continue;
+                    };
                     let Some(addr) = client_addr else { continue };
                     if net.contains(&addr) && rule.action == "deny" {
                         if rule.log_only.unwrap_or(false) {
@@ -2952,11 +3642,16 @@ impl ProxyService {
                 "geo_block" => {
                     if rule.action == "deny" && !rule.geo_countries.is_empty() {
                         if let Some(ip) = client_ip {
-                            if let Some(country) = self.geoip_holder.get().and_then(|r| r.lookup_country(ip)) {
+                            if let Some(country) =
+                                self.geoip_holder.get().and_then(|r| r.lookup_country(ip))
+                            {
                                 let blocked = is_geo_blocked(&rule.geo_countries, &country);
                                 if blocked {
                                     if rule.log_only.unwrap_or(false) {
-                                        warn!("WAF log-only geo_block hit ip={} country={}", ip, country);
+                                        warn!(
+                                            "WAF log-only geo_block hit ip={} country={}",
+                                            ip, country
+                                        );
                                         continue;
                                     }
                                     return Some(Self::full_response(
@@ -2996,7 +3691,8 @@ impl ProxyService {
                                     count: 0,
                                     window_start: now,
                                 });
-                                if now.duration_since(entry.window_start).as_secs() >= window as u64 {
+                                if now.duration_since(entry.window_start).as_secs() >= window as u64
+                                {
                                     entry.count = 1;
                                     entry.window_start = now;
                                     false
@@ -3007,7 +3703,10 @@ impl ProxyService {
                             };
                             if exceeded {
                                 if rule.log_only.unwrap_or(false) {
-                                    warn!("WAF log-only rate_limit hit ip={} threshold={}", ip, threshold);
+                                    warn!(
+                                        "WAF log-only rate_limit hit ip={} threshold={}",
+                                        ip, threshold
+                                    );
                                     continue;
                                 }
                                 let ban_mode = rule.ban_mode.as_deref().unwrap_or("ipset");
@@ -3032,12 +3731,14 @@ impl ProxyService {
                     }
                     let ban_mode = rule.ban_mode.as_deref().unwrap_or("ipset");
                     if let Some(mode) = self.is_banned(client_ip) {
-                        return Some(self.ban_response(
-                            &mode,
-                            rule.ban_template_html
-                                .as_deref()
-                                .or(rule.template_html.as_deref()),
-                        ));
+                        return Some(
+                            self.ban_response(
+                                &mode,
+                                rule.ban_template_html
+                                    .as_deref()
+                                    .or(rule.template_html.as_deref()),
+                            ),
+                        );
                     }
                     let ban_seconds = rule.ban_seconds.or(rule.shield_seconds).unwrap_or(300);
                     let fail_limit = rule.threshold.unwrap_or(3);
@@ -3104,7 +3805,12 @@ impl ProxyService {
                     return Some(self.shield_response(rule.shield_seconds.unwrap_or(5)));
                 }
                 "default" | "path_match" | "header_match" | "ua_match" => {
-                    if !domain_security_rule_matches(rule.r#type.as_str(), &rule.value, path, headers) {
+                    if !domain_security_rule_matches(
+                        rule.r#type.as_str(),
+                        &rule.value,
+                        path,
+                        headers,
+                    ) {
                         continue;
                     }
                     if rule.log_only.unwrap_or(false) {
@@ -3117,12 +3823,14 @@ impl ProxyService {
                     if rule.action == "challenge" {
                         let ban_mode = rule.ban_mode.as_deref().unwrap_or("ipset");
                         if let Some(mode) = self.is_banned(client_ip) {
-                            return Some(self.ban_response(
-                                &mode,
-                                rule.ban_template_html
-                                    .as_deref()
-                                    .or(rule.template_html.as_deref()),
-                            ));
+                            return Some(
+                                self.ban_response(
+                                    &mode,
+                                    rule.ban_template_html
+                                        .as_deref()
+                                        .or(rule.template_html.as_deref()),
+                                ),
+                            );
                         }
                         let ban_seconds = rule.ban_seconds.or(rule.shield_seconds).unwrap_or(300);
                         let fail_limit = rule.threshold.unwrap_or(3);
@@ -3175,6 +3883,49 @@ impl ProxyService {
                         }
                     }
                 }
+                "sql_injection" | "xss" | "path_traversal" | "ua_block" => {
+                    let Some(re) = next.regex.as_ref() else {
+                        continue;
+                    };
+                    if rule.action != "deny" {
+                        continue;
+                    }
+                    let ua = headers
+                        .get("User-Agent")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    let target =
+                        waf_pattern_target(rule.r#type.as_str(), path, uri_query, ua);
+                    if !re.is_match(&target) {
+                        continue;
+                    }
+                    if rule.log_only.unwrap_or(false) {
+                        warn!(
+                            "WAF log-only {} hit domain_id={} target={}",
+                            rule.r#type, domain_id, target
+                        );
+                        continue;
+                    }
+                    return Some(Self::full_response(
+                        StatusCode::FORBIDDEN,
+                        Bytes::from("Blocked by WAF"),
+                        "text/plain; charset=utf-8",
+                    ));
+                }
+                "method_block" => {
+                    if rule.action != "deny" {
+                        continue;
+                    }
+                    if rule.log_only.unwrap_or(false) {
+                        warn!("WAF log-only method_block hit domain_id={}", domain_id);
+                        continue;
+                    }
+                    return Some(Self::full_response(
+                        StatusCode::FORBIDDEN,
+                        Bytes::from("Blocked by WAF"),
+                        "text/plain; charset=utf-8",
+                    ));
+                }
                 _ => {}
             }
         }
@@ -3208,9 +3959,15 @@ impl ProxyService {
 
     /// 检查IP是否在白名单中
     #[allow(dead_code)]
-    fn is_ip_whitelisted(&self, whitelist: &[crate::config::WAFWhitelist], client_ip: Option<&str>) -> bool {
+    fn is_ip_whitelisted(
+        &self,
+        whitelist: &[crate::config::WAFWhitelist],
+        client_ip: Option<&str>,
+    ) -> bool {
         let Some(ip) = client_ip else { return false };
-        let Ok(addr) = ip.parse::<std::net::IpAddr>() else { return false };
+        let Ok(addr) = ip.parse::<std::net::IpAddr>() else {
+            return false;
+        };
 
         for w in whitelist {
             // CIDR 匹配
@@ -3249,14 +4006,17 @@ impl ProxyService {
             stat.window_start = now;
         }
         stat.count += 1;
-        let qps = (stat.count as f64 / now.duration_since(stat.window_start).as_secs_f64().max(0.1)) as u64;
+        let qps = (stat.count as f64 / now.duration_since(stat.window_start).as_secs_f64().max(0.1))
+            as u64;
 
         if qps > threshold {
             stat.challenge_active = true;
             stat.last_over = now;
         } else {
             stat.last_under = now;
-            if stat.challenge_active && now.duration_since(stat.last_over) >= Duration::from_secs(180) {
+            if stat.challenge_active
+                && now.duration_since(stat.last_over) >= Duration::from_secs(180)
+            {
                 stat.challenge_active = false;
             }
         }
@@ -3271,9 +4031,7 @@ impl ProxyService {
                     .as_ref()
                     .map(|s| s.config.templates.waf_ban_default.as_str())
                     .filter(|s| !s.is_empty());
-                let chosen = template_html
-                    .filter(|s| !s.is_empty())
-                    .or(fallback_tpl);
+                let chosen = template_html.filter(|s| !s.is_empty()).or(fallback_tpl);
                 if let Some(tpl) = chosen {
                     let builder = hyper::Response::builder()
                         .status(StatusCode::FORBIDDEN)
@@ -3281,7 +4039,9 @@ impl ProxyService {
                         .header("X-WAF-Ban", "page");
                     return build_response_or_fallback(
                         builder,
-                        Full::new(Bytes::from(tpl.to_string())).map_err(|e| match e {}).boxed(),
+                        Full::new(Bytes::from(tpl.to_string()))
+                            .map_err(|e| match e {})
+                            .boxed(),
                         StatusCode::FORBIDDEN,
                         "Access denied by WAF ban",
                     );
@@ -3292,7 +4052,9 @@ impl ProxyService {
                     .header("X-WAF-Ban", "page");
                 build_response_or_fallback(
                     builder,
-                    Full::new(Bytes::from("Access denied by WAF ban")).map_err(|e| match e {}).boxed(),
+                    Full::new(Bytes::from("Access denied by WAF ban"))
+                        .map_err(|e| match e {})
+                        .boxed(),
                     StatusCode::FORBIDDEN,
                     "Access denied by WAF ban",
                 )
@@ -3338,9 +4100,7 @@ impl ProxyService {
                 .header("X-WAF-Token", token.clone());
             return build_response_or_fallback(
                 builder,
-                Full::new(Bytes::from(""))
-                    .map_err(|e| match e {})
-                    .boxed(),
+                Full::new(Bytes::from("")).map_err(|e| match e {}).boxed(),
                 StatusCode::FOUND,
                 "redirect",
             );
@@ -3479,11 +4239,7 @@ impl ProxyService {
     }
 
     /// 生成无感验证响应 (JS Challenge)
-    fn js_challenge_response(
-        &self,
-        template_html: &str,
-        lang: &str,
-    ) -> NodeResponse {
+    fn js_challenge_response(&self, template_html: &str, lang: &str) -> NodeResponse {
         let (token, _, _) = self.create_captcha_session(CaptchaType::JsChallenge);
 
         let (pow_challenge, pow_difficulty) = {
@@ -3532,11 +4288,19 @@ impl ProxyService {
         mac.update(payload.as_bytes());
         let sig = mac.finalize().into_bytes();
         let sig_hex = hex::encode(sig);
-        let token = general_purpose::STANDARD.encode([payload.as_bytes(), b"|", sig_hex.as_bytes()].concat());
+        let token = general_purpose::STANDARD
+            .encode([payload.as_bytes(), b"|", sig_hex.as_bytes()].concat());
         (format!("{} + {} = ?", a, b), token)
     }
 
-    fn verify_challenge(&self, client_ip: Option<&str>, headers: &HeaderMap, fail_limit: i64, ban_seconds: i64, ban_mode: &str) -> bool {
+    fn verify_challenge(
+        &self,
+        client_ip: Option<&str>,
+        headers: &HeaderMap,
+        fail_limit: i64,
+        ban_seconds: i64,
+        ban_mode: &str,
+    ) -> bool {
         let token = headers
             .get("X-WAF-Token")
             .and_then(|v| v.to_str().ok())
@@ -3690,7 +4454,9 @@ impl ProxyService {
 
     /// 记录IP拉黑事件到日志（用于ES分析）
     fn log_ban_event(&self, ip: &str, strikes: u32, duration_secs: u64, mode: &str) {
-        let Some(logger) = self.access_logger.as_ref() else { return };
+        let Some(logger) = self.access_logger.as_ref() else {
+            return;
+        };
 
         #[derive(Serialize)]
         struct BanLog<'a> {
@@ -3720,7 +4486,24 @@ impl ProxyService {
         };
 
         logger.log(&entry);
-        warn!("WAF banned IP: {} strikes={} duration={}s mode={}", ip, strikes, duration_secs, mode);
+        warn!(
+            "WAF banned IP: {} strikes={} duration={}s mode={}",
+            ip, strikes, duration_secs, mode
+        );
+    }
+
+    /// Fetch a URL through the node proxy path to warm cache (preload).
+    pub async fn preload_url(&self, url: &str) -> Result<bool> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .context("build preload client")?;
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("preload fetch {}", url))?;
+        Ok(resp.status().is_success())
     }
 
     /// 收集本地拉黑的IP用于上报到主控
@@ -3879,12 +4662,8 @@ impl ProxyService {
             CaptchaType::Slide | CaptchaType::SlideRegion => {
                 self.verify_slide_answer(&answer, req.point.as_ref())
             }
-            CaptchaType::Click => {
-                self.verify_click_answer(&answer, req.dots.as_ref())
-            }
-            CaptchaType::Rotate => {
-                self.verify_rotate_answer(&answer, req.angle)
-            }
+            CaptchaType::Click => self.verify_click_answer(&answer, req.dots.as_ref()),
+            CaptchaType::Rotate => self.verify_rotate_answer(&answer, req.angle),
             CaptchaType::JsChallenge => {
                 // 无感验证只需要 PoW 和指纹验证
                 self.verify_js_challenge(req.fingerprint.as_ref())
@@ -3930,8 +4709,21 @@ impl ProxyService {
             Ok(collected) => collected.to_bytes(),
             Err(_) => {
                 self.record_fail(client_ip, fail_limit, ban_seconds, ban_mode);
-                let resp = Self::json_response(StatusCode::BAD_REQUEST, r#"{"ok":false,"error":"invalid body"}"#);
-                self.log_access(started, client_ip.and_then(|s| s.parse::<IpAddr>().ok()), host, uri, "POST", 400, "BYPASS", 0, "captcha_invalid_body");
+                let resp = Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    r#"{"ok":false,"error":"invalid body"}"#,
+                );
+                self.log_access(
+                    started,
+                    client_ip.and_then(|s| s.parse::<IpAddr>().ok()),
+                    host,
+                    uri,
+                    "POST",
+                    400,
+                    "BYPASS",
+                    0,
+                    "captcha_invalid_body",
+                );
                 return Ok(resp);
             }
         };
@@ -3941,8 +4733,21 @@ impl ProxyService {
             Ok(r) => r,
             Err(_) => {
                 self.record_fail(client_ip, fail_limit, ban_seconds, ban_mode);
-                let resp = Self::json_response(StatusCode::BAD_REQUEST, r#"{"ok":false,"error":"invalid json"}"#);
-                self.log_access(started, client_ip.and_then(|s| s.parse::<IpAddr>().ok()), host, uri, "POST", 400, "BYPASS", 0, "captcha_invalid_json");
+                let resp = Self::json_response(
+                    StatusCode::BAD_REQUEST,
+                    r#"{"ok":false,"error":"invalid json"}"#,
+                );
+                self.log_access(
+                    started,
+                    client_ip.and_then(|s| s.parse::<IpAddr>().ok()),
+                    host,
+                    uri,
+                    "POST",
+                    400,
+                    "BYPASS",
+                    0,
+                    "captcha_invalid_json",
+                );
                 return Ok(resp);
             }
         };
@@ -3954,13 +4759,36 @@ impl ProxyService {
             // 验证成功，清除失败记录
             self.clear_fail(client_ip);
             let resp = Self::json_response(StatusCode::OK, r#"{"ok":true}"#);
-            self.log_access(started, client_ip.and_then(|s| s.parse::<IpAddr>().ok()), host, uri, "POST", 200, "BYPASS", 0, "captcha_success");
+            self.log_access(
+                started,
+                client_ip.and_then(|s| s.parse::<IpAddr>().ok()),
+                host,
+                uri,
+                "POST",
+                200,
+                "BYPASS",
+                0,
+                "captcha_success",
+            );
             Ok(resp)
         } else {
             // 验证失败，记录失败并可能拉黑IP
             self.record_fail(client_ip, fail_limit, ban_seconds, ban_mode);
-            let resp = Self::json_response(StatusCode::FORBIDDEN, r#"{"ok":false,"error":"verification failed"}"#);
-            self.log_access(started, client_ip.and_then(|s| s.parse::<IpAddr>().ok()), host, uri, "POST", 403, "BYPASS", 0, "captcha_fail");
+            let resp = Self::json_response(
+                StatusCode::FORBIDDEN,
+                r#"{"ok":false,"error":"verification failed"}"#,
+            );
+            self.log_access(
+                started,
+                client_ip.and_then(|s| s.parse::<IpAddr>().ok()),
+                host,
+                uri,
+                "POST",
+                403,
+                "BYPASS",
+                0,
+                "captcha_fail",
+            );
             Ok(resp)
         }
     }
@@ -4036,9 +4864,8 @@ impl ProxyService {
 
         // 计算速度标准差
         let avg_speed: f64 = speeds.iter().sum::<f64>() / speeds.len() as f64;
-        let variance: f64 = speeds.iter()
-            .map(|s| (s - avg_speed).powi(2))
-            .sum::<f64>() / speeds.len() as f64;
+        let variance: f64 =
+            speeds.iter().map(|s| (s - avg_speed).powi(2)).sum::<f64>() / speeds.len() as f64;
         let std_dev = variance.sqrt();
 
         // 如果速度完全一致（标准差接近0），可能是机器人
@@ -4064,7 +4891,11 @@ impl ProxyService {
     }
 
     /// 验证点选答案
-    fn verify_click_answer(&self, answer: &CaptchaAnswer, dots: Option<&Vec<CaptchaPoint>>) -> bool {
+    fn verify_click_answer(
+        &self,
+        answer: &CaptchaAnswer,
+        dots: Option<&Vec<CaptchaPoint>>,
+    ) -> bool {
         let dots = match dots {
             Some(d) => d,
             None => return false,
@@ -4179,10 +5010,10 @@ fn build_friendly_error(
                 "redirect" => {
                     return build_response_or_fallback(
                         builder
-                        .status(StatusCode::FOUND)
-                        .header(http::header::LOCATION, page.content.as_str())
-                        .header("X-CDN-Request-ID", req_id.as_str())
-                        .header("X-CDN-Error-Page", format!("custom-{}", status.as_u16())),
+                            .status(StatusCode::FOUND)
+                            .header(http::header::LOCATION, page.content.as_str())
+                            .header("X-CDN-Request-ID", req_id.as_str())
+                            .header("X-CDN-Error-Page", format!("custom-{}", status.as_u16())),
                         Full::new(Bytes::from_static(b""))
                             .map_err(|e| match e {})
                             .boxed(),
@@ -4194,11 +5025,11 @@ fn build_friendly_error(
                     let body = placeholders(&page.content);
                     return build_response_or_fallback(
                         builder
-                        .status(status)
-                        .header(CONTENT_TYPE, "application/json; charset=utf-8")
-                        .header(CACHE_CONTROL, "no-cache")
-                        .header("X-CDN-Request-ID", req_id.as_str())
-                        .header("X-CDN-Error-Page", format!("custom-{}", status.as_u16())),
+                            .status(status)
+                            .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                            .header(CACHE_CONTROL, "no-cache")
+                            .header("X-CDN-Request-ID", req_id.as_str())
+                            .header("X-CDN-Error-Page", format!("custom-{}", status.as_u16())),
                         Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed(),
                         status,
                         "custom error page",
@@ -4208,11 +5039,11 @@ fn build_friendly_error(
                     let body = placeholders(&page.content);
                     return build_response_or_fallback(
                         builder
-                        .status(status)
-                        .header(CONTENT_TYPE, "text/html; charset=utf-8")
-                        .header(CACHE_CONTROL, "no-cache")
-                        .header("X-CDN-Request-ID", req_id.as_str())
-                        .header("X-CDN-Error-Page", format!("custom-{}", status.as_u16())),
+                            .status(status)
+                            .header(CONTENT_TYPE, "text/html; charset=utf-8")
+                            .header(CACHE_CONTROL, "no-cache")
+                            .header("X-CDN-Request-ID", req_id.as_str())
+                            .header("X-CDN-Error-Page", format!("custom-{}", status.as_u16())),
                         Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed(),
                         status,
                         "custom error page",
@@ -4232,17 +5063,21 @@ fn build_friendly_error(
                 .filter(|s| !s.trim().is_empty())
                 .or_else(|| {
                     let d = tpl.error_default.as_str();
-                    if d.trim().is_empty() { None } else { Some(d) }
+                    if d.trim().is_empty() {
+                        None
+                    } else {
+                        Some(d)
+                    }
                 });
             if let Some(raw) = template_html {
                 let body = placeholders(raw);
                 return build_response_or_fallback(
                     builder
-                    .status(status)
-                    .header(CONTENT_TYPE, "text/html; charset=utf-8")
-                    .header(CACHE_CONTROL, "no-cache")
-                    .header("X-CDN-Request-ID", req_id.as_str())
-                    .header("X-CDN-Error-Page", format!("global-{}", status.as_u16())),
+                        .status(status)
+                        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+                        .header(CACHE_CONTROL, "no-cache")
+                        .header("X-CDN-Request-ID", req_id.as_str())
+                        .header("X-CDN-Error-Page", format!("global-{}", status.as_u16())),
                     Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed(),
                     status,
                     "global error template",
@@ -4263,11 +5098,11 @@ fn build_friendly_error(
         let body = serde_json::to_vec_pretty(&body_json).unwrap_or_default();
         return build_response_or_fallback(
             builder
-            .status(status)
-            .header(CONTENT_TYPE, "application/json; charset=utf-8")
-            .header(CACHE_CONTROL, "no-cache")
-            .header("X-CDN-Request-ID", req_id.as_str())
-            .header("X-CDN-Error-Page", format!("default-{}", status.as_u16())),
+                .status(status)
+                .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                .header(CACHE_CONTROL, "no-cache")
+                .header("X-CDN-Request-ID", req_id.as_str())
+                .header("X-CDN-Error-Page", format!("default-{}", status.as_u16())),
             Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed(),
             status,
             "json error",
@@ -4289,11 +5124,11 @@ fn build_friendly_error(
     );
     build_response_or_fallback(
         builder
-        .status(status)
-        .header(CONTENT_TYPE, "text/html; charset=utf-8")
-        .header(CACHE_CONTROL, "no-cache")
-        .header("X-CDN-Request-ID", req_id.as_str())
-        .header("X-CDN-Error-Page", format!("default-{}", status.as_u16())),
+            .status(status)
+            .header(CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(CACHE_CONTROL, "no-cache")
+            .header("X-CDN-Request-ID", req_id.as_str())
+            .header("X-CDN-Error-Page", format!("default-{}", status.as_u16())),
         Full::new(Bytes::from(html)).map_err(|e| match e {}).boxed(),
         status,
         "html error",
@@ -4316,7 +5151,11 @@ fn build_unmatched_host_page(
 
     // JSON callers get a structured response regardless.
     if accept_json {
-        let title = if is_ip { "CDN 节点" } else { "站点未找到" };
+        let title = if is_ip {
+            "CDN 节点"
+        } else {
+            "站点未找到"
+        };
         let message = if is_ip {
             "该节点仅为已配置的域名提供加速服务，不支持通过 IP 直接访问"
         } else {
@@ -4331,7 +5170,11 @@ fn build_unmatched_host_page(
             "request_id": req_id,
         });
         let body = serde_json::to_vec_pretty(&body_json).unwrap_or_default();
-        let status = if is_ip { StatusCode::FORBIDDEN } else { StatusCode::NOT_FOUND };
+        let status = if is_ip {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::NOT_FOUND
+        };
         return build_response_or_fallback(
             hyper::Response::builder()
                 .status(status)
@@ -4369,7 +5212,14 @@ fn build_unmatched_host_page(
                 .header(CONTENT_TYPE, "text/html; charset=utf-8")
                 .header(CACHE_CONTROL, "no-cache")
                 .header("X-CDN-Request-ID", req_id.as_str())
-                .header("X-CDN-Error-Page", if is_ip { "template-direct-ip" } else { "template-cname-not-found" }),
+                .header(
+                    "X-CDN-Error-Page",
+                    if is_ip {
+                        "template-direct-ip"
+                    } else {
+                        "template-cname-not-found"
+                    },
+                ),
             Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed(),
             status,
             "template unmatched host",
@@ -4402,34 +5252,52 @@ fn build_unmatched_host_page(
     )
 }
 
+fn waf_pattern_target(rule_type: &str, path: &str, uri_query: Option<&str>, ua: &str) -> String {
+    match rule_type {
+        "path_traversal" => path.to_string(),
+        "ua_block" => ua.to_string(),
+        _ => {
+            let mut target = path.to_string();
+            if let Some(q) = uri_query {
+                if !q.is_empty() {
+                    target.push('?');
+                    target.push_str(q);
+                }
+            }
+            target
+        }
+    }
+}
+
 fn domain_security_rule_matches(
-	rule_type: &str,
-	value: &str,
-	path: &str,
-	headers: &HeaderMap,
+    rule_type: &str,
+    value: &str,
+    path: &str,
+    headers: &HeaderMap,
 ) -> bool {
-	match rule_type {
-		"default" => true,
-		"path_match" => {
-			!value.is_empty() && path.starts_with(value)
-		}
-		"header_match" => {
-			let name = value.strip_prefix("header:").unwrap_or(value);
-			!name.is_empty() && headers.contains_key(name.trim())
-		}
-		"ua_match" => {
-			let sub = value.strip_prefix("ua:").unwrap_or(value).to_ascii_lowercase();
-			if sub.is_empty() {
-				return false;
-			}
-			headers
-				.get("User-Agent")
-				.and_then(|v| v.to_str().ok())
-				.map(|ua| ua.to_ascii_lowercase().contains(&sub))
-				.unwrap_or(false)
-		}
-		_ => false,
-	}
+    match rule_type {
+        "default" => true,
+        "path_match" => !value.is_empty() && path.starts_with(value),
+        "header_match" => {
+            let name = value.strip_prefix("header:").unwrap_or(value);
+            !name.is_empty() && headers.contains_key(name.trim())
+        }
+        "ua_match" => {
+            let sub = value
+                .strip_prefix("ua:")
+                .unwrap_or(value)
+                .to_ascii_lowercase();
+            if sub.is_empty() {
+                return false;
+            }
+            headers
+                .get("User-Agent")
+                .and_then(|v| v.to_str().ok())
+                .map(|ua| ua.to_ascii_lowercase().contains(&sub))
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
 }
 
 /// Check if a visitor's country should be blocked given the geo_countries list.
@@ -4454,6 +5322,26 @@ fn is_geo_blocked(geo_countries: &[String], country: &str) -> bool {
     }
     // Plain country code list
     geo_countries.iter().any(|c| c.eq_ignore_ascii_case(&uc))
+}
+
+fn apply_edge_finish(domain: &DomainConfig, resp: &mut NodeResponse) {
+    if domain.effective_edge_script_enabled() {
+        if let Some(rules) = domain.edge_script_rules.as_deref().filter(|s| !s.is_empty()) {
+            crate::edge_script::apply_response_rules(rules, resp.headers_mut());
+        }
+    }
+    apply_domain_edge_headers(domain, resp);
+}
+
+fn apply_domain_edge_headers(domain: &DomainConfig, resp: &mut NodeResponse) {
+    if domain.effective_http3_enabled() {
+        let port = domain.effective_listen_port().unwrap_or(443);
+        let value = format!(r#"h3=":{port}"; ma=86400"#);
+        if let Ok(hv) = http::HeaderValue::from_str(&value) {
+            resp.headers_mut()
+                .insert(http::header::HeaderName::from_static("alt-svc"), hv);
+        }
+    }
 }
 
 fn apply_placeholders(text: &str, status: u16, host: &str, path: &str, req_id: &str) -> String {
@@ -4580,4 +5468,45 @@ struct TrajectoryPoint {
 struct PowResult {
     nonce: u64,
     hash: String,
+}
+
+fn validate_signed_url(secret: &str, path: &str, query: Option<&str>) -> bool {
+    let query = query.unwrap_or("");
+    let mut expires: Option<i64> = None;
+    let mut sign: Option<&str> = None;
+    for part in query.split('&') {
+        let mut kv = part.splitn(2, '=');
+        match kv.next() {
+            Some("expires") => expires = kv.next().and_then(|v| v.parse().ok()),
+            Some("sign") => sign = kv.next(),
+            _ => {}
+        }
+    }
+    let (expires, sign) = match (expires, sign) {
+        (Some(e), Some(s)) if !s.is_empty() => (e, s),
+        _ => return false,
+    };
+    if chrono::Utc::now().timestamp() > expires {
+        return false;
+    }
+    type HmacSha256 = Hmac<Sha256>;
+    let payload = format!("{}{}", path, expires);
+    let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(payload.as_bytes());
+    let expected = hex::encode(mac.finalize().into_bytes());
+    constant_time_eq(sign.as_bytes(), expected.as_bytes())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }

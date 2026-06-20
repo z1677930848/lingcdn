@@ -12,8 +12,20 @@ import (
 
 // Hub manages online node sessions and config distribution.
 type Hub struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session
+	mu         sync.RWMutex
+	sessions   map[string]*Session
+	ackMu      sync.Mutex
+	ackWaiters map[string][]chan ConfigAckResult
+	ackLast    map[string]ConfigAckResult
+}
+
+type ConfigAckResult struct {
+	NodeID     string
+	Version    string
+	DeliveryID string
+	OK         bool
+	Reason     string
+	At         time.Time
 }
 
 // Session represents a connected node with its config stream.
@@ -23,9 +35,10 @@ type Session struct {
 	Version      string
 	Capabilities []string
 	Status       string
-	ConfigStream controlpb.NodeControl_StreamConfigServer
-	PurgeStream  controlpb.NodeControl_StreamPurgeServer
-	LastSeen     time.Time
+	ConfigStream  controlpb.NodeControl_StreamConfigServer
+	PurgeStream   controlpb.NodeControl_StreamPurgeServer
+	PreloadStream controlpb.NodeControl_StreamPreloadServer
+	LastSeen      time.Time
 	ConfigVer    string
 	cancel       context.CancelFunc
 	sendMu       sync.Mutex
@@ -34,7 +47,9 @@ type Session struct {
 // New creates a Hub.
 func New() *Hub {
 	return &Hub{
-		sessions: make(map[string]*Session),
+		sessions:   make(map[string]*Session),
+		ackWaiters: make(map[string][]chan ConfigAckResult),
+		ackLast:    make(map[string]ConfigAckResult),
 	}
 }
 
@@ -90,6 +105,103 @@ func (h *Hub) UpdateHeartbeat(nodeID, status, configVer string) {
 		s.Status = status
 		s.ConfigVer = configVer
 	}
+}
+
+func (h *Hub) NotifyConfigAck(nodeID string, ack *controlpb.ConfigAck) {
+	if h == nil || ack == nil || nodeID == "" || ack.GetVersion() == "" || ack.GetDeliveryId() == "" {
+		return
+	}
+	res := ConfigAckResult{
+		NodeID:     nodeID,
+		Version:    ack.GetVersion(),
+		DeliveryID: ack.GetDeliveryId(),
+		OK:         ack.GetOk(),
+		Reason:     ack.GetReason(),
+		At:         time.Now(),
+	}
+	key := configAckKey(nodeID, ack.GetVersion(), ack.GetDeliveryId())
+
+	h.ackMu.Lock()
+	h.ackLast[key] = res
+	waiters := h.ackWaiters[key]
+	delete(h.ackWaiters, key)
+	h.ackMu.Unlock()
+
+	for _, ch := range waiters {
+		ch <- res
+		close(ch)
+	}
+}
+
+func (h *Hub) WaitForConfigAck(ctx context.Context, nodeID, version, deliveryID string) (ConfigAckResult, error) {
+	if h == nil {
+		return ConfigAckResult{}, context.Canceled
+	}
+	if nodeID == "" || version == "" || deliveryID == "" {
+		return ConfigAckResult{}, context.Canceled
+	}
+	key := configAckKey(nodeID, version, deliveryID)
+	ch := make(chan ConfigAckResult, 1)
+
+	h.ackMu.Lock()
+	if res, ok := h.ackLast[key]; ok {
+		// Drain the stored ACK as soon as the waiter consumes it —
+		// keeping it would let `ackLast` grow unbounded over the
+		// process lifetime (one entry per (node, version, deliveryID)
+		// triplet, and every Publish mints a fresh deliveryID). Callers
+		// that need to re-observe the same ACK should call again before
+		// another Publish lands a new triplet.
+		delete(h.ackLast, key)
+		h.ackMu.Unlock()
+		return res, nil
+	}
+	h.ackWaiters[key] = append(h.ackWaiters[key], ch)
+	h.ackMu.Unlock()
+
+	select {
+	case res := <-ch:
+		// NotifyConfigAck delivered the ACK directly via `ch` and stored
+		// it in ackLast + cleared the waiter list. Drop the cached copy
+		// now that this waiter has taken ownership of the result; the
+		// Publisher only waits once per (node, delivery) tuple.
+		h.ackMu.Lock()
+		delete(h.ackLast, key)
+		h.ackMu.Unlock()
+		return res, nil
+	case <-ctx.Done():
+		h.removeConfigAckWaiter(key, ch)
+		return ConfigAckResult{}, ctx.Err()
+	}
+}
+
+func (h *Hub) ClearConfigAck(nodeID, version, deliveryID string) {
+	if h == nil || nodeID == "" || version == "" || deliveryID == "" {
+		return
+	}
+	h.ackMu.Lock()
+	delete(h.ackLast, configAckKey(nodeID, version, deliveryID))
+	h.ackMu.Unlock()
+}
+
+func (h *Hub) removeConfigAckWaiter(key string, ch chan ConfigAckResult) {
+	h.ackMu.Lock()
+	defer h.ackMu.Unlock()
+	waiters := h.ackWaiters[key]
+	for i, waiter := range waiters {
+		if waiter == ch {
+			waiters = append(waiters[:i], waiters[i+1:]...)
+			break
+		}
+	}
+	if len(waiters) == 0 {
+		delete(h.ackWaiters, key)
+	} else {
+		h.ackWaiters[key] = waiters
+	}
+}
+
+func configAckKey(nodeID, version, deliveryID string) string {
+	return nodeID + "\x00" + version + "\x00" + deliveryID
 }
 
 // SetConfigStream sets the config stream for a node session.
@@ -182,18 +294,35 @@ func (h *Hub) Count() int {
 }
 
 // SendConfig sends a config envelope to a specific node.
+//
+// The stream reference is captured under sendMu so that a concurrent
+// ClearConfigStream (which nils s.ConfigStream under hub.mu) cannot turn
+// this into a nil-interface Send panic. The previous code read
+// s.ConfigStream *outside* sendMu, meaning:
+//
+//  1. SendConfig RLock()s, sees s.ConfigStream != nil, RUnlock()s.
+//  2. ClearConfigStream Lock()s, sets s.ConfigStream = nil, Unlock()s.
+//  3. SendConfig reaches `s.ConfigStream.Send(env)` — nil deref.
+//
+// Capturing inside sendMu closes the window: ClearConfigStream has no
+// serialisation with sendMu, but re-reading the field while we own
+// sendMu lets us bail cleanly when the stream has already been cleared.
 func (h *Hub) SendConfig(nodeID string, env *controlpb.ConfigEnvelope) error {
 	h.mu.RLock()
 	s, ok := h.sessions[nodeID]
 	h.mu.RUnlock()
 
-	if !ok || s.ConfigStream == nil {
+	if !ok {
 		return ErrNodeNotConnected
 	}
 
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
-	return s.ConfigStream.Send(env)
+	stream := s.ConfigStream
+	if stream == nil {
+		return ErrNodeNotConnected
+	}
+	return stream.Send(env)
 }
 
 func (h *Hub) SendPurge(nodeID string, cmd *controlpb.PurgeCommand) error {
@@ -201,12 +330,44 @@ func (h *Hub) SendPurge(nodeID string, cmd *controlpb.PurgeCommand) error {
 	s, ok := h.sessions[nodeID]
 	h.mu.RUnlock()
 
-	if !ok || s.PurgeStream == nil {
+	if !ok {
 		return ErrNodeNotConnected
 	}
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
-	return s.PurgeStream.Send(cmd)
+	stream := s.PurgeStream
+	if stream == nil {
+		return ErrNodeNotConnected
+	}
+	return stream.Send(cmd)
+}
+
+func (h *Hub) SetPreloadStream(nodeID string, stream controlpb.NodeControl_StreamPreloadServer) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if s, ok := h.sessions[nodeID]; ok {
+		s.PreloadStream = stream
+		return true
+	}
+	return false
+}
+
+func (h *Hub) SendPreload(nodeID string, cmd *controlpb.PreloadCommand) error {
+	h.mu.RLock()
+	s, ok := h.sessions[nodeID]
+	h.mu.RUnlock()
+
+	if !ok {
+		return ErrNodeNotConnected
+	}
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	stream := s.PreloadStream
+	if stream == nil {
+		return ErrNodeNotConnected
+	}
+	return stream.Send(cmd)
 }
 
 // BroadcastConfig sends a config envelope to all connected nodes.
@@ -220,12 +381,17 @@ func (h *Hub) BroadcastConfig(env *controlpb.ConfigEnvelope) map[string]error {
 
 	errors := make(map[string]error)
 	for _, s := range sessions {
-		if s.ConfigStream == nil {
+		// Same race discipline as SendConfig: capture the stream under
+		// sendMu so ClearConfigStream cannot flip it to nil between the
+		// check and the Send call.
+		s.sendMu.Lock()
+		stream := s.ConfigStream
+		if stream == nil {
+			s.sendMu.Unlock()
 			errors[s.NodeID] = ErrNodeNotConnected
 			continue
 		}
-		s.sendMu.Lock()
-		err := s.ConfigStream.Send(env)
+		err := stream.Send(env)
 		s.sendMu.Unlock()
 		if err != nil {
 			errors[s.NodeID] = err

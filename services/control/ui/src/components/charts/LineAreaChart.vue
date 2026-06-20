@@ -38,7 +38,7 @@
       />
     </svg>
 
-    <div class="labels">
+    <div class="chart-labels">
       <span
         v-for="(label, idx) in labels"
         :key="idx"
@@ -106,30 +106,3 @@ const gridY = (idx: number) => {
 export default { name: "LineAreaChart" }
 </script>
 
-<style scoped>
-.chart {
-  width: 100%;
-}
-
-.labels {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 10px;
-  color: var(--app-text-faint);
-  font-size: 12px;
-}
-
-.labels span {
-  flex: 1;
-  text-align: center;
-}
-
-.labels span.start {
-  text-align: left;
-}
-
-.labels span.end {
-  text-align: right;
-}
-</style>

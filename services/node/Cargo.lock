@@ -1606,7 +1606,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "lingcdn-node"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1617,6 +1617,7 @@ dependencies = [
  "bytes",
  "chrono",
  "ed25519-dalek",
+ "flate2",
  "futures",
  "hex",
  "hmac",

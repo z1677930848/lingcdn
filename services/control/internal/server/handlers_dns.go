@@ -7,8 +7,8 @@
 // same dnsTask type and global task list defined here.
 
 import (
-	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -129,27 +129,12 @@ func (s *Servers) handleDNSRecover(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
 		return
 	}
-	ctx, cancel := store.WithTimeout(r.Context())
-	defer cancel()
-
-	cfg, _ := s.store.GetDNSConfig(ctx)
-	if cfg == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "DNS配置缺失"})
+	task := s.runDNSSyncNow("recover", "manual recover")
+	if task == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "DNS 恢复任务启动失败"})
 		return
 	}
-
-	client, err := dnsprovider.NewClient(cfg)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-
-	task := s.runDNSTask("recover", "", cfg.Provider, func() (string, error) {
-		taskCtx, taskCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer taskCancel()
-		return client.Recover(taskCtx)
-	})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": task.Message, "task_id": task.ID})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": task.Status != "failed", "message": task.Message, "task_id": task.ID})
 }
 
 func (s *Servers) handleDNSCleanup(w http.ResponseWriter, r *http.Request) {
@@ -157,27 +142,12 @@ func (s *Servers) handleDNSCleanup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
 		return
 	}
-	ctx, cancel := store.WithTimeout(r.Context())
-	defer cancel()
-
-	cfg, _ := s.store.GetDNSConfig(ctx)
-	if cfg == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "DNS配置缺失"})
+	task := s.runDNSCleanupNow("cleanup", "manual cleanup")
+	if task == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "DNS 清理任务启动失败"})
 		return
 	}
-
-	client, err := dnsprovider.NewClient(cfg)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-
-	task := s.runDNSTask("cleanup", "", cfg.Provider, func() (string, error) {
-		taskCtx, taskCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer taskCancel()
-		return client.Cleanup(taskCtx)
-	})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": task.Message, "task_id": task.ID})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": task.Status != "failed", "message": task.Message, "task_id": task.ID})
 }
 
 func (s *Servers) handleDNSProviderOptions(w http.ResponseWriter, r *http.Request) {
@@ -386,11 +356,43 @@ func (s *Servers) emitDNSTaskEvent(t *dnsTask) {
 	})
 }
 
-func dnsProviders() []map[string]string {
-	return []map[string]string{
-		{"value": "dnspod", "label": "DNSPod (dnspod.cn)"},
-		{"value": "dnspod-global", "label": "DNSPod Global (dnspod.com)"},
-		{"value": "alidns", "label": "AliDNS (aliyun.com)"},
-		{"value": "cloudflare", "label": "Cloudflare"},
+func dnsSyncNotReadyMessage(provider string) string {
+	return fmt.Sprintf("DNS 提供商 %q 尚未支持自动解析同步", strings.TrimSpace(provider))
+}
+
+func ensureDNSSyncReady(cfg *store.DNSConfig) error {
+	if cfg == nil || strings.TrimSpace(cfg.Provider) == "" {
+		return fmt.Errorf("DNS 提供商未配置")
 	}
+	if !dnsprovider.SyncReady(cfg.Provider) {
+		return fmt.Errorf("%s", dnsSyncNotReadyMessage(cfg.Provider))
+	}
+	return nil
+}
+
+func dnsProviders() []map[string]any {
+	type entry struct {
+		value, label string
+		syncReady    bool
+	}
+	list := []entry{
+		{"dnspod", "DNSPod (dnspod.cn)", true},
+		{"dnspod-global", "DNSPod Global (dnspod.com)", true},
+		{"alidns", "AliDNS (aliyun.com)", true},
+		{"cloudflare", "Cloudflare", true},
+		{"route53", "Amazon Route53", true},
+		{"huawei", "华为云 DNS", true},
+		{"google", "Google Cloud DNS", true},
+		{"51dns", "51DNS", true},
+		{"dnsla", "DNS.LA", true},
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, p := range list {
+		out = append(out, map[string]any{
+			"value":      p.value,
+			"label":      p.label,
+			"sync_ready": p.syncReady,
+		})
+	}
+	return out
 }

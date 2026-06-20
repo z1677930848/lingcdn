@@ -194,12 +194,12 @@
   border-radius: var(--app-card-radius-sm);
   padding: 14px 16px;
   background: var(--app-surface);
+  box-shadow: var(--app-shadow-card);
   transition: var(--app-anim-card-hover);
 }
 
 .admin-user-card:hover {
   box-shadow: var(--app-shadow-card-hover);
-  border-color: var(--app-border-strong);
 }
 
 .admin-user-card-header {
@@ -285,12 +285,12 @@
   border-radius: var(--app-card-radius-sm);
   padding: 14px 16px;
   background: var(--app-surface);
+  box-shadow: var(--app-shadow-card);
   transition: var(--app-anim-card-hover);
 }
 
 .admin-mobile-card:hover {
   box-shadow: var(--app-shadow-card-hover);
-  border-color: var(--app-border-strong);
 }
 
 .admin-mobile-card-header {
@@ -391,6 +391,27 @@
 @media (max-width: 640px) {
   .admin-form-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .admin-toolbar {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .admin-toolbar-left,
+  .admin-toolbar-right {
+    width: 100%;
+  }
+
+  .admin-toolbar-right {
+    flex-direction: column;
+  }
+
+  .admin-filter-select,
+  .admin-search-input {
+    width: 100% !important;
   }
 }
 

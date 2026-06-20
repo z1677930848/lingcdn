@@ -12,13 +12,33 @@
 
 .t-card {
   border-radius: var(--app-card-radius);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-card);
   transition: var(--app-anim-card-hover);
+  background: var(--app-surface);
+}
+
+.t-card--bordered {
+  border: 1px solid var(--app-border);
+}
+
+.t-card__body {
+  padding: var(--app-card-padding);
 }
 
 .t-input {
   border-radius: var(--app-input-radius);
   transition: border-color var(--app-anim-base) var(--app-easing-standard),
               box-shadow var(--app-anim-base) var(--app-easing-standard);
+}
+
+.t-input .t-input__inner {
+  font-size: 14px;
+}
+
+.t-textarea__inner {
+  border-radius: var(--app-input-radius);
+  line-height: 1.55;
 }
 
 .t-input.t-is-focused {
@@ -32,11 +52,11 @@
 }
 
 .t-button--theme-primary {
-  box-shadow: var(--app-brand-shadow-sm);
+  box-shadow: none;
 }
 
 .t-button--theme-primary:hover {
-  box-shadow: var(--app-brand-shadow-md);
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.35);
 }
 
 .t-select {
@@ -52,13 +72,25 @@
   font-weight: 600;
   color: var(--app-text-muted);
   font-size: 12px;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.02em;
   background: var(--app-surface-muted);
+  border-color: var(--app-divider) !important;
 }
 
 .t-table td {
   color: var(--app-text);
+  border-color: var(--app-divider) !important;
   transition: background var(--app-anim-fast) var(--app-easing-standard);
+}
+
+.t-table--bordered {
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.t-table--bordered .t-table__content {
+  border: none;
 }
 
 .t-table tr:hover td {
@@ -69,11 +101,110 @@
   font-weight: 600;
 }
 
+.t-tabs__header.t-is-border {
+  border-bottom-color: var(--app-divider);
+}
+
+.t-tabs__nav-container {
+  margin-bottom: 4px;
+}
+
+.t-tabs__bar {
+  height: 2px;
+  border-radius: 2px;
+}
+
+.t-alert {
+  border-radius: var(--app-card-radius-sm);
+  border: 1px solid transparent;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.t-alert--warning {
+  background: var(--app-warning-soft-bg);
+  border-color: var(--app-warning-soft-border);
+  color: var(--app-warning-soft-fg);
+}
+
+.t-alert--error {
+  background: var(--app-danger-soft-bg);
+  border-color: var(--app-danger-soft-border);
+  color: var(--app-danger-soft-fg);
+}
+
+.t-alert--success {
+  background: var(--app-success-soft-bg);
+  border-color: rgba(0, 164, 124, 0.16);
+  color: var(--app-success-soft-fg);
+}
+
+.t-alert--info {
+  background: var(--app-info-soft-bg);
+  border-color: rgba(64, 158, 255, 0.2);
+  color: var(--app-info-soft-fg);
+}
+
 /* Make TDesign portals (Dialog, Drawer, Popup, Message, Notification)
  * pick up the same elevation system as the rest of the app. */
+/* Element Plus–style dialog overlay (lighter than TDesign default 0.6) */
+.t-dialog__mask {
+  background-color: rgba(0, 0, 0, 0.45) !important;
+}
+
+.t-drawer__mask {
+  background-color: rgba(0, 0, 0, 0.45) !important;
+}
+
 .t-dialog {
   border-radius: var(--app-card-radius);
   box-shadow: var(--app-shadow-popover);
+  border: 1px solid var(--app-border);
+  overflow: hidden;
+}
+
+.t-dialog__ctx .t-dialog__position.t-dialog--top {
+  padding-top: 8vh;
+}
+
+.t-dialog__header {
+  padding: 20px var(--app-dialog-padding) 14px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  border-bottom: 1px solid var(--app-divider-soft);
+}
+
+.t-dialog__header-content {
+  line-height: 1.4;
+}
+
+.t-dialog__close {
+  color: var(--app-text-faint);
+  transition: color var(--app-anim-fast) var(--app-easing-standard),
+              background var(--app-anim-fast) var(--app-easing-standard);
+}
+
+.t-dialog__close:hover {
+  color: var(--app-text-muted);
+  background: var(--app-surface-hover);
+  border-radius: 8px;
+}
+
+.t-dialog__body {
+  padding: 18px var(--app-dialog-padding) 22px;
+  color: var(--app-text);
+}
+
+.t-dialog__footer {
+  padding: 14px var(--app-dialog-padding) 20px;
+  border-top: 1px solid var(--app-divider-soft);
+  background: var(--app-surface-muted);
+}
+
+.t-dialog__footer .t-button + .t-button {
+  margin-left: 10px;
 }
 
 .t-popup__content,
@@ -84,10 +215,106 @@
   box-shadow: var(--app-shadow-popover);
 }
 
-/* Keyboard focus ring for interactive shells (links, buttons, custom
- * triggers like the brand button in the header). */
-:where(a, button, [role="button"], [tabindex]):focus-visible {
+/* Keyboard focus ring for interactive controls only.
+ * Do NOT match bare [tabindex] — TDesign table/drawer roots use
+ * tabindex="0" for keyboard nav and would wrap the entire table in a
+ * blue halo during loading or after dialog close. Header custom triggers
+ * (e.g. .header-brand) define their own :focus-visible in TemplateShell. */
+:where(a, button, [role="button"]):focus-visible {
   outline: none;
   box-shadow: var(--app-focus-ring);
   border-radius: var(--app-input-radius);
+}
+
+/* TDesign layout shells: keep keyboard nav but suppress the global ring. */
+:where(.t-table, .t-drawer, .t-drawer__content-wrapper, .t-dialog__ctx):focus,
+:where(.t-table, .t-drawer, .t-drawer__content-wrapper, .t-dialog__ctx):focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.t-pagination {
+  font-size: 13px;
+}
+
+.t-pagination__number.t-is-current {
+  font-weight: 600;
+}
+
+.t-drawer {
+  box-shadow: var(--app-shadow-popover);
+}
+
+.t-drawer__header {
+  padding: 16px 20px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  border-bottom: 1px solid var(--app-divider-soft);
+}
+
+.t-drawer__body {
+  padding: 20px;
+}
+
+.t-drawer__footer {
+  padding: 14px 20px;
+  border-top: 1px solid var(--app-divider-soft);
+  background: var(--app-surface-muted);
+}
+
+.t-form__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--app-text-muted);
+}
+
+.t-form__controls-content {
+  font-size: 14px;
+}
+
+/* Dialog forms — label above control (Element Plus el-dialog default) */
+.t-dialog .t-form__item {
+  margin-bottom: 18px;
+}
+
+.t-dialog .t-form__item:last-child {
+  margin-bottom: 0;
+}
+
+.t-dialog .t-form__label {
+  width: auto !important;
+  float: none !important;
+  display: block;
+  text-align: left !important;
+  padding: 0 0 6px !important;
+  line-height: 1.4;
+}
+
+.t-dialog .t-form__controls {
+  margin-left: 0 !important;
+  max-width: none;
+}
+
+.t-dialog .t-input,
+.t-dialog .t-select,
+.t-dialog .t-textarea {
+  width: 100%;
+}
+
+.t-switch.t-is-checked {
+  background: var(--td-brand-color);
+}
+
+.t-checkbox.t-is-checked .t-checkbox__input {
+  border-color: var(--td-brand-color);
+  background-color: var(--td-brand-color);
+}
+
+.t-radio.t-is-checked .t-radio__input {
+  border-color: var(--td-brand-color);
+}
+
+.t-radio.t-is-checked .t-radio__input::after {
+  background-color: var(--td-brand-color);
 }

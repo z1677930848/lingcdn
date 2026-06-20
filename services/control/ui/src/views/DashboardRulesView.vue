@@ -6,31 +6,32 @@
         <p class="subtitle">按您名下的域名维度管理缓存规则（只读）与 WAF 策略（自助维护）。</p>
       </div>
       <div class="header-actions">
-        <t-button variant="text" :loading="loading" @click="load">
-          <template #icon><t-icon name="refresh" /></template>
+        <el-button link :loading="loading" @click="load">
+          <template #icon><EpIcon name="refresh" /></template>
           刷新
-        </t-button>
+        </el-button>
       </div>
     </div>
 
-    <t-card class="section-card" bordered>
-      <t-tabs v-model="activeTab">
-        <t-tab-panel value="cache" label="缓存规则">
-          <t-alert theme="info" class="tab-alert">
+    <ErrorState v-if="error" :message="error" @retry="load" />
+
+    <el-card class="section-card">
+      <el-tabs v-model="activeTab">
+        <el-tab-pane name="cache" label="缓存规则">
+          <el-alert theme="info" class="tab-alert">
             <template #message>
               {{ brand.title }} 的缓存规则按 <code>host_pattern</code> 匹配生效。下表仅包含与您任一域名匹配的规则（含通配）。
               如需新建/修改规则，请在「域名详情 → 缓存设置」里按域名申请，管理员会审阅后发布。
             </template>
-          </t-alert>
+          </el-alert>
           <div class="admin-desktop-only">
-            <t-table
+            <EpDataTable
               :data="matchedCacheRules"
               :columns="cacheColumns"
               row-key="id"
               size="small"
-              bordered
               :loading="loading"
-              empty="您的域名暂无缓存规则命中"
+              empty-text="您的域名暂无缓存规则命中"
               :pagination="{
                 defaultCurrent: 1,
                 defaultPageSize: 10,
@@ -40,16 +41,16 @@
             />
           </div>
           <div class="admin-mobile-only">
-            <div v-if="loading" class="loading-row"><t-loading /></div>
+            <div v-if="loading" class="loading-row"><div v-loading="true" style="min-height:48px" /></div>
             <div v-else-if="matchedCacheRules.length === 0" class="admin-mobile-card-empty">您的域名暂无缓存规则命中</div>
             <div v-else class="admin-mobile-cards">
               <div v-for="rule in matchedCacheRules" :key="rule.id" class="admin-mobile-card">
                 <div class="admin-mobile-card-header">
                   <span class="admin-mobile-card-title">{{ rule.name || rule.id }}</span>
                   <div class="admin-mobile-card-tags">
-                    <t-tag size="small" :theme="rule.enabled ? 'success' : 'default'" variant="light">
+                    <el-tag size="small" :type="rule.enabled ? 'success' : 'info'" effect="light">
                       {{ rule.enabled ? '启用' : '停用' }}
-                    </t-tag>
+                    </el-tag>
                   </div>
                 </div>
                 <div class="admin-mobile-card-rows">
@@ -73,33 +74,33 @@
               </div>
             </div>
           </div>
-        </t-tab-panel>
+        </el-tab-pane>
 
-        <t-tab-panel value="waf" label="WAF 策略">
-          <t-alert theme="info" class="tab-alert">
+        <el-tab-pane name="waf" label="WAF 策略">
+          <PermissionNotice :show="hasRestrictions && !canWAFEdit" />
+          <el-alert theme="info" class="tab-alert">
             <template #message>
               仅展示「按域名绑定」到您名下域名的 WAF 策略。您可以自助创建、启停和删除。
               全局 / 集群级策略由平台管理员维护，请联系管理员。
             </template>
-          </t-alert>
-          <div class="waf-toolbar">
-            <t-button theme="primary" :disabled="ownDomains.length === 0" @click="openWafDialog()">
-              <template #icon><t-icon name="add" /></template>
+          </el-alert>
+          <div v-if="canWAFEdit" class="waf-toolbar">
+            <el-button type="primary" :disabled="ownDomains.length === 0" @click="openWafDialog()">
+              <template #icon><EpIcon name="add" /></template>
               新建域名策略
-            </t-button>
+            </el-button>
             <span v-if="ownDomains.length === 0" class="waf-toolbar-hint">
               您当前还没有域名，无法创建 WAF 策略。
             </span>
           </div>
           <div class="admin-desktop-only">
-            <t-table
+            <EpDataTable
               :data="ownPolicies"
               :columns="wafColumns"
               row-key="id"
               size="small"
-              bordered
               :loading="loading"
-              empty="暂无绑定到您域名的 WAF 策略"
+              empty-text="暂无绑定到您域名的 WAF 策略"
               :pagination="{
                 defaultCurrent: 1,
                 defaultPageSize: 10,
@@ -109,16 +110,16 @@
             />
           </div>
           <div class="admin-mobile-only">
-            <div v-if="loading" class="loading-row"><t-loading /></div>
+            <div v-if="loading" class="loading-row"><div v-loading="true" style="min-height:48px" /></div>
             <div v-else-if="ownPolicies.length === 0" class="admin-mobile-card-empty">暂无绑定到您域名的 WAF 策略</div>
             <div v-else class="admin-mobile-cards">
               <div v-for="p in ownPolicies" :key="p.id" class="admin-mobile-card">
                 <div class="admin-mobile-card-header">
                   <span class="admin-mobile-card-title">{{ p.name || p.id }}</span>
                   <div class="admin-mobile-card-tags">
-                    <t-tag size="small" :theme="p.enabled ? 'success' : 'default'" variant="light">
+                    <el-tag size="small" :type="p.enabled ? 'success' : 'info'" effect="light">
                       {{ p.enabled ? '启用' : '停用' }}
-                    </t-tag>
+                    </el-tag>
                   </div>
                 </div>
                 <div class="admin-mobile-card-rows">
@@ -132,34 +133,34 @@
                   </div>
                 </div>
                 <div class="admin-mobile-card-actions">
-                  <t-switch :model-value="p.enabled" size="small" @change="(v: boolean) => toggleWaf(p, v)" />
+                  <el-switch :model-value="p.enabled" size="small" @change="(v: boolean) => toggleWaf(p, v)" />
                   <span class="switch-text">{{ p.enabled ? '已启用' : '已停用' }}</span>
                   <div class="action-spacer" />
-                  <t-button size="small" theme="primary" variant="text" @click="openWafDialog(p)">编辑</t-button>
-                  <t-button size="small" theme="danger" variant="text" @click="confirmDeleteWaf(p)">删除</t-button>
+                  <el-button size="small" type="primary" link @click="openWafDialog(p)">编辑</el-button>
+                  <el-button size="small" type="danger" link @click="confirmDeleteWaf(p)">删除</el-button>
                 </div>
               </div>
             </div>
           </div>
-        </t-tab-panel>
-      </t-tabs>
-    </t-card>
+        </el-tab-pane>
+      </el-tabs>
+    </el-card>
 
-    <t-dialog
-      v-model:visible="wafDialogOpen"
-      :header="wafEditing ? '编辑 WAF 策略' : '新建 WAF 策略'"
+    <EpDialog append-to-body
+      v-model="wafDialogOpen"
+      :title="wafEditing ? '编辑 WAF 策略' : '新建 WAF 策略'"
       :confirm-btn="{ content: '保存' }"
       cancel-btn="取消"
       @confirm="submitWaf"
     >
-      <div class="form-grid">
+      <div class="form-grid-vertical">
         <div class="form-row-v">
           <label class="form-label-v">名称</label>
-          <t-input v-model="wafForm.name" class="form-input-v" />
+          <el-input v-model="wafForm.name" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">目标域名</label>
-          <t-select
+          <EpSelect
             v-model="wafForm.scope_id"
             :options="ownDomainOptions"
             filterable
@@ -172,26 +173,38 @@
         </div>
         <div class="form-row-v">
           <label class="form-label-v">描述</label>
-          <t-textarea v-model="wafForm.description" :autosize="{ minRows: 2 }" class="form-input-v" />
+          <el-input v-model="wafForm.description" :autosize="{ minRows: 2 }" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">启用</label>
-          <t-switch v-model="wafForm.enabled" />
+          <el-switch v-model="wafForm.enabled" />
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import { MessagePlugin } from "@/lib/ep-message"
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
+import EpIcon from "@/components/ep/EpIcon.vue"
 import { computed, h, onMounted, reactive, ref } from "vue"
-import { DialogPlugin, MessagePlugin, Switch, Button } from "tdesign-vue-next"
+import { DialogPlugin } from "@/lib/ep-dialog"
+import { ElButton, ElSwitch } from "element-plus"
 import { api, type CacheRule, type Domain, type WAFPolicy } from "@/lib/api"
 import { useSystemSettings } from "@/lib/systemSettings"
+import ErrorState from "@/components/common/ErrorState.vue"
+import PermissionNotice from "@/components/common/PermissionNotice.vue"
+import { useUserPermissions } from "@/composables/useUserPermissions"
+
+const { canWAFEdit, hasRestrictions } = useUserPermissions()
 
 const { brand } = useSystemSettings()
 
 const loading = ref(false)
+const error = ref("")
 const activeTab = ref<"cache" | "waf">("cache")
 const rules = ref<CacheRule[]>([])
 const domains = ref<Domain[]>([])
@@ -199,6 +212,7 @@ const policies = ref<WAFPolicy[]>([])
 
 const load = async () => {
   loading.value = true
+  error.value = ""
   try {
     // listDomains is already user-scoped by the backend, so `domains`
     // contains only the current user's sites. We then filter cache rules
@@ -211,8 +225,9 @@ const load = async () => {
     rules.value = r.cache_rules || []
     domains.value = d.domains || []
     policies.value = p.policies || []
-  } catch (err: any) {
-    MessagePlugin.error(err?.message || "加载失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -380,149 +395,25 @@ const wafColumns = computed(() => [
     title: "启用",
     width: 80,
     cell: (_h: any, { row }: { row: WAFPolicy }) =>
-      h(Switch, { size: "small", modelValue: row.enabled, "onUpdate:modelValue": (v: boolean) => toggleWaf(row, v) }),
+      canWAFEdit.value
+        ? h(ElSwitch, { size: "small", modelValue: row.enabled, "onUpdate:modelValue": (v: boolean) => toggleWaf(row, v) })
+        : h("span", null, row.enabled ? "是" : "否"),
   },
-  {
-    colKey: "actions",
-    title: "操作",
-    width: 140,
-    fixed: "right",
-    cell: (_h: any, { row }: { row: WAFPolicy }) =>
-      h("div", { style: "display:flex;gap:4px" }, [
-        h(Button, { size: "small", theme: "primary", variant: "text", onClick: () => openWafDialog(row) }, () => "编辑"),
-        h(Button, { size: "small", theme: "danger", variant: "text", onClick: () => confirmDeleteWaf(row) }, () => "删除"),
-      ]),
-  },
+  ...(canWAFEdit.value
+    ? [{
+        colKey: "actions",
+        title: "操作",
+        width: 140,
+        fixed: "right" as const,
+        cell: (_h: any, { row }: { row: WAFPolicy }) =>
+          h("div", { style: "display:flex;gap:4px" }, [
+            h(ElButton, { size: "small", type: "primary", link: true, onClick: () => openWafDialog(row) }, () => "编辑"),
+            h(ElButton, { size: "small", type: "danger", link: true, onClick: () => confirmDeleteWaf(row) }, () => "删除"),
+          ]),
+      }]
+    : []),
 ])
 
 onMounted(load)
 </script>
 
-<style scoped>
-.page {
-  padding: 24px;
-}
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-.header-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.title {
-  font-size: 20px;
-  font-weight: 600;
-  margin: 0 0 4px;
-  color: var(--app-text-strong);
-}
-.subtitle {
-  color: var(--app-text-faint);
-  margin: 0;
-  font-size: 13px;
-}
-
-.tab-alert {
-  margin: 12px 0;
-}
-
-.waf-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.waf-toolbar-hint {
-  color: var(--app-text-faint);
-  font-size: 12px;
-}
-
-.loading-row {
-  text-align: center;
-  padding: 32px 0;
-}
-
-.admin-mobile-card-actions {
-  align-items: center;
-}
-
-.action-spacer {
-  flex: 1;
-}
-
-.switch-text {
-  font-size: 12px;
-  color: var(--app-text-muted);
-}
-
-.form-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.form-row-v {
-  display: grid;
-  grid-template-columns: 100px minmax(280px, 1fr);
-  gap: 6px 16px;
-  align-items: center;
-}
-.form-label-v {
-  color: var(--app-text-faint);
-  font-weight: 500;
-  text-align: right;
-}
-.form-input-v {
-  width: 100%;
-}
-.form-hint-v {
-  grid-column: 2;
-  color: var(--app-text-faint);
-  font-size: 12px;
-  margin-top: 2px;
-}
-.section-card {
-  min-width: 0;
-}
-.section-card :deep(.t-table) {
-  min-width: 100%;
-}
-
-@media (max-width: 768px) {
-  .page {
-    padding: 12px;
-  }
-
-  .header {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .header-actions {
-    flex-wrap: wrap;
-  }
-
-  .title {
-    font-size: 16px;
-  }
-
-  .form-row-v {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-
-  .form-label-v {
-    text-align: left;
-  }
-
-  .form-hint-v {
-    grid-column: 1;
-  }
-}
-</style>

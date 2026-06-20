@@ -36,9 +36,10 @@ impl CacheKey {
         Self { host, path, query }
     }
 
-    pub fn to_string(&self) -> String {
-        format!("{}", self)
-    }
+    // `to_string()` is provided by the blanket impl for `Display` above;
+    // defining an inherent method here would shadow it (clippy lint:
+    // `inherent_to_string_shadow_display`) and break any generic code that
+    // expects `ToString`.
 
     #[allow(dead_code)]
     pub fn from_url(url: &str) -> Result<Self> {
@@ -946,6 +947,84 @@ impl Cache {
         self.remove(&key)
     }
 
+    /// Remove all cache entries whose key string starts with the given prefix.
+    /// Prefix may be a full URL (https://host/path/) or host/path form.
+    pub fn purge_by_prefix(&self, prefix: &str) -> Result<u32> {
+        let normalized = normalize_purge_prefix(prefix);
+        let mut removed = 0u32;
+
+        // Memory cache
+        let mem_keys: Vec<CacheKey> = {
+            let mem = self.memory.read();
+            mem.iter()
+                .filter_map(|(k, _)| parse_cache_key_str(k).ok())
+                .collect()
+        };
+        for key in mem_keys {
+            if key.to_string().starts_with(&normalized) || matches_url_prefix(&key, prefix) {
+                if self.remove(&key)? {
+                    removed += 1;
+                }
+            }
+        }
+
+        // Disk cache — scan sled keys
+        if let Some(ref disk) = *self.disk.read() {
+            for item in disk.iter() {
+                let (k, _) = item?;
+                let key_str = String::from_utf8_lossy(&k);
+                if key_str.starts_with(&normalized) {
+                    if let Ok(key) = parse_cache_key_str(&key_str) {
+                        if self.remove(&key)? {
+                            removed += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(removed)
+    }
+
+    /// Remove cache entries tagged with the given tag (matches host for now).
+    pub fn purge_by_tag(&self, tag: &str) -> Result<u32> {
+        let tag = tag.trim().to_lowercase();
+        if tag.is_empty() {
+            return Ok(0);
+        }
+        let mut removed = 0u32;
+
+        let mem_keys: Vec<CacheKey> = {
+            let mem = self.memory.read();
+            mem.iter()
+                .filter_map(|(k, _)| parse_cache_key_str(k).ok())
+                .collect()
+        };
+        for key in mem_keys {
+            if key.host.to_lowercase().contains(&tag) || key.path.to_lowercase().contains(&tag) {
+                if self.remove(&key)? {
+                    removed += 1;
+                }
+            }
+        }
+
+        if let Some(ref disk) = *self.disk.read() {
+            for item in disk.iter() {
+                let (k, _) = item?;
+                let key_str = String::from_utf8_lossy(&k);
+                if let Ok(key) = parse_cache_key_str(&key_str) {
+                    if key.host.to_lowercase().contains(&tag) || key.path.to_lowercase().contains(&tag) {
+                        if self.remove(&key)? {
+                            removed += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(removed)
+    }
+
     #[allow(dead_code)]
     pub fn stats(&self) -> CacheStats {
         self.stats.read().clone()
@@ -1015,4 +1094,38 @@ fn dir_size(path: &Path) -> Result<u64> {
         total = total.saturating_add(dir_size(&entry.path())?);
     }
     Ok(total)
+}
+
+fn normalize_purge_prefix(prefix: &str) -> String {
+    let p = prefix.trim();
+    if let Ok(u) = url::Url::parse(p) {
+        let host = u.host_str().unwrap_or("");
+        let path = u.path();
+        return format!("{}{}", host, path);
+    }
+    p.trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_string()
+}
+
+fn matches_url_prefix(key: &CacheKey, prefix: &str) -> bool {
+    let norm = normalize_purge_prefix(prefix);
+    let key_str = key.to_string();
+    key_str.starts_with(&norm)
+}
+
+fn parse_cache_key_str(s: &str) -> Result<CacheKey> {
+    if let Ok(u) = url::Url::parse(&format!("http://{}", s)) {
+        return CacheKey::from_url(&u.to_string());
+    }
+    // fallback: host/path?query
+    let (host_path, query) = match s.split_once('?') {
+        Some((hp, q)) => (hp, Some(q.to_string())),
+        None => (s, None),
+    };
+    let (host, path) = match host_path.split_once('/') {
+        Some((h, p)) => (h.to_string(), format!("/{}", p)),
+        None => (host_path.to_string(), "/".to_string()),
+    };
+    Ok(CacheKey::new(host, path, query))
 }

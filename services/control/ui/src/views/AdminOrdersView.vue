@@ -1,31 +1,27 @@
 ﻿<template>
   <div class="admin-page">
-    <div v-if="error" class="admin-error-box">
-      {{ error }}
-      <t-button size="small" theme="primary" @click="loadOrders">重试</t-button>
-    </div>
+    <ErrorState v-if="error" :message="error" @retry="loadOrders" />
 
-    <t-card bordered class="admin-list-card">
+    <el-card class="admin-list-card">
       <div class="admin-toolbar">
         <div class="admin-toolbar-left">
-          <t-button theme="primary" @click="openCreate">添加已售套餐</t-button>
+          <el-button type="primary" @click="openCreate">添加已售套餐</el-button>
         </div>
         <div class="admin-toolbar-right">
-          <t-select v-model="status" :options="statusOptions" class="admin-search-select" />
-          <t-input v-model="userId" class="admin-search-input" clearable placeholder="用户ID" />
-          <t-button variant="outline" @click="loadOrders">刷新</t-button>
+          <EpSelect v-model="status" :options="statusOptions" class="admin-search-select" />
+          <el-input v-model="userId" class="admin-search-input" clearable placeholder="用户ID" />
+          <el-button plain @click="loadOrders">刷新</el-button>
         </div>
       </div>
 
       <div class="admin-desktop-only">
-        <t-table
+        <EpDataTable
           :data="orders"
           :columns="columns"
           row-key="id"
-          bordered
           hover
           stripe
-          size="medium"
+          size="default"
           :loading="loading"
           :pagination="pagination"
         />
@@ -33,7 +29,7 @@
 
       <div class="admin-mobile-only">
         <div v-if="loading" style="text-align:center;padding:32px 0">
-          <t-loading />
+          <div v-loading="true" style="min-height:48px" />
         </div>
         <div v-else-if="orders.length === 0" class="admin-mobile-card-empty">暂无订单数据</div>
         <div v-else class="admin-mobile-cards">
@@ -41,7 +37,7 @@
             <div class="admin-mobile-card-header">
               <span class="admin-mobile-card-title">{{ order.product_name || '-' }}</span>
               <div class="admin-mobile-card-tags">
-                <t-tag :theme="statusTheme(order.status)" size="small">{{ statusLabel(order.status) }}</t-tag>
+                <el-tag :type="statusTheme(order.status)" size="small">{{ statusLabel(order.status) }}</el-tag>
               </div>
             </div>
             <div class="admin-mobile-card-subtitle">{{ order.product_id || '-' }}</div>
@@ -72,25 +68,25 @@
               </div>
             </div>
             <div class="admin-mobile-card-actions">
-              <t-button
+              <el-button
                 v-if="String(order.status || '').toLowerCase() !== 'paid'"
                 size="small"
-                theme="primary"
-                variant="text"
+                type="primary"
+                link
                 @click="quickUpdateStatus(order.id, 'paid')"
-              >标记已支付</t-button>
-              <t-button
+              >标记已支付</el-button>
+              <el-button
                 v-if="String(order.status || '').toLowerCase() !== 'cancelled'"
                 size="small"
-                theme="danger"
-                variant="text"
+                type="danger"
+                link
                 @click="quickUpdateStatus(order.id, 'cancelled')"
-              >取消</t-button>
+              >取消</el-button>
             </div>
           </div>
         </div>
         <div v-if="total > 0" class="admin-mobile-pagination">
-          <t-pagination
+          <el-pagination
             :current="page"
             :page-size="pageSize"
             :total="total"
@@ -102,10 +98,10 @@
           />
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-dialog
-      v-model:visible="createDialogOpen"
+    <EpDialog append-to-body
+      v-model="createDialogOpen"
       header="添加已售套餐"
       :confirm-btn="{ content: creating ? '创建中...' : '创建', loading: creating, theme: 'primary' }"
       cancel-btn="取消"
@@ -113,40 +109,46 @@
       @confirm="createOrder"
       @close="() => (createDialogOpen = false)"
     >
-      <t-form layout="vertical" label-align="top">
-        <t-form-item label="用户ID">
-          <t-input v-model="createUserId" />
-        </t-form-item>
-        <t-form-item label="套餐">
-          <t-select v-model="createProductId" :options="productOptions" />
-        </t-form-item>
-        <t-form-item label="周期">
-          <t-select v-model="createPeriod" :options="periodOptions" />
-        </t-form-item>
-        <t-form-item label="数量">
-          <t-input-number v-model="createQuantity" :min="1" :step="1" />
-        </t-form-item>
-        <t-form-item label="金额（元）">
+      <el-form label-position="top">
+        <el-form-item label="用户ID">
+          <el-input v-model="createUserId" />
+        </el-form-item>
+        <el-form-item label="套餐">
+          <EpSelect v-model="createProductId" :options="productOptions" />
+        </el-form-item>
+        <el-form-item label="周期">
+          <EpSelect v-model="createPeriod" :options="periodOptions" />
+        </el-form-item>
+        <el-form-item label="数量">
+          <el-input-number v-model="createQuantity" :min="1" :step="1" />
+        </el-form-item>
+        <el-form-item label="金额（元）">
           <div class="amount-stack">
-            <t-input-number v-model="amountInput" :min="0" :step="1" />
+            <el-input-number v-model="amountInput" :min="0" :step="1" />
             <span class="admin-table-muted">建议金额：{{ suggestedAmountYuan.toFixed(2) }} 元</span>
           </div>
-        </t-form-item>
-        <t-form-item label="状态">
-          <t-select v-model="createStatus" :options="orderStatusOptions" />
-        </t-form-item>
-        <t-form-item label="备注">
-          <t-textarea v-model="createNote" :autosize="{ minRows: 3, maxRows: 6 }" />
-        </t-form-item>
-      </t-form>
-    </t-dialog>
+        </el-form-item>
+        <el-form-item label="状态">
+          <EpSelect v-model="createStatus" :options="orderStatusOptions" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="createNote" :autosize="{ minRows: 3, maxRows: 6 }" />
+        </el-form-item>
+      </el-form>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
 import { computed, h, onMounted, ref, watch } from "vue"
-import { MessagePlugin, Tag, Button } from "tdesign-vue-next"
+import { epTagType } from "@/lib/ep-tag"
+import { MessagePlugin } from "@/lib/ep-message"
+import { ElTag, ElButton } from "element-plus"
 import { api, type Order, type Product } from "@/lib/api"
+import ErrorState from "@/components/common/ErrorState.vue"
 import "@/styles/admin-shared.css"
 
 const statusOptions = [
@@ -237,12 +239,14 @@ const statusLabel = (s?: string) => {
   return s || "-"
 }
 
-const statusTheme = (s?: string): string => {
-  const v = String(s || "").toLowerCase()
-  if (v === "paid") return "success"
-  if (v === "pending") return "warning"
-  return "default"
-}
+const statusTheme = (s?: string) => epTagType(
+  (() => {
+    const v = String(s || "").toLowerCase()
+    if (v === "paid") return "success"
+    if (v === "pending") return "warning"
+    return "info"
+  })()
+)
 
 const periodLabel = (p?: string) => {
   const v = String(p || "month").toLowerCase()
@@ -253,11 +257,11 @@ const periodLabel = (p?: string) => {
 
 const statusTag = (s?: string) => {
   const v = String(s || "").toLowerCase()
-  if (v === "paid") return h(Tag, { theme: "success" }, () => "已支付")
-  if (v === "pending") return h(Tag, { theme: "warning" }, () => "待支付")
-  if (v === "expired") return h(Tag, { theme: "default" }, () => "已过期")
-  if (v === "cancelled") return h(Tag, { theme: "default" }, () => "已取消")
-  return h(Tag, { theme: "default" }, () => s || "-")
+  if (v === "paid") return h(ElTag, { type: "success" }, () => "已支付")
+  if (v === "pending") return h(ElTag, { type: "warning" }, () => "待支付")
+  if (v === "expired") return h(ElTag, { type: "info" }, () => "已过期")
+  if (v === "cancelled") return h(ElTag, { type: "info" }, () => "已取消")
+  return h(ElTag, { type: "info" }, () => s || "-")
 }
 
 const loadOrders = async () => {
@@ -352,7 +356,7 @@ const columns = computed(() => [
     minWidth: 200,
     cell: (_h: any, { row }: { row: Order }) =>
       h("div", { style: "display:flex;flex-direction:column;gap:4px" }, [
-        h("span", { style: "font-weight:600;color:#0f172a" }, row.product_name || "-"),
+        h("span", { style: "font-weight:600;color:var(--app-text-strong)" }, row.product_name || "-"),
         h("span", { class: "admin-table-muted", style: "font-size:12px" }, row.product_id || "-"),
       ]),
   },
@@ -379,10 +383,10 @@ const columns = computed(() => [
     cell: (_h: any, { row }: { row: Order }) =>
       h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, [
         String(row.status || "").toLowerCase() !== "paid"
-          ? h(Button, { size: "small", theme: "primary", variant: "text", onClick: () => quickUpdateStatus(row.id, "paid") }, () => "标记已支付")
+          ? h(ElButton, { size: "small", type: "primary", link: true, onClick: () => quickUpdateStatus(row.id, "paid") }, () => "标记已支付")
           : null,
         String(row.status || "").toLowerCase() !== "cancelled"
-          ? h(Button, { size: "small", theme: "danger", variant: "text", onClick: () => quickUpdateStatus(row.id, "cancelled") }, () => "取消")
+          ? h(ElButton, { size: "small", type: "danger", link: true, onClick: () => quickUpdateStatus(row.id, "cancelled") }, () => "取消")
           : null,
       ]),
   },
@@ -415,10 +419,4 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
-.amount-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-</style>
+

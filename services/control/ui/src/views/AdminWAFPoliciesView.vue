@@ -6,35 +6,40 @@
         <p class="subtitle">人机验证 · 5秒盾 · 速率限制 · IP 封禁 — 全局 / 集群 / 域名级别防护。</p>
       </div>
       <div class="header-actions">
-        <t-button theme="primary" @click="openDialog()">
-          <template #icon><t-icon name="add" /></template>
+        <el-button plain :loading="applyingRuleset" @click="applyOWASPRuleset">
+          <template #icon><EpIcon name="secured" /></template>
+          应用 OWASP 规则集
+        </el-button>
+        <el-button type="primary" @click="openDialog()">
+          <template #icon><EpIcon name="add" /></template>
           新建策略
-        </t-button>
-        <t-button variant="text" :loading="loading" @click="load">
-          <template #icon><t-icon name="refresh" /></template>
+        </el-button>
+        <el-button link :loading="loading" @click="load">
+          <template #icon><EpIcon name="refresh" /></template>
           刷新
-        </t-button>
+        </el-button>
       </div>
     </div>
 
+    <ErrorState v-if="error" :message="error" @retry="load" />
+
     <!-- 策略列表 -->
-    <t-card class="section-card" bordered v-if="!detailPolicy">
-      <t-tabs v-model="activeScope" @change="load">
-        <t-tab-panel value="all" label="全部" />
-        <t-tab-panel value="global" label="全局" />
-        <t-tab-panel value="domain" label="按域名" />
-        <t-tab-panel value="line_group" label="按集群" />
-      </t-tabs>
+    <el-card class="section-card" v-if="!detailPolicy">
+      <el-tabs v-model="activeScope" @tab-change="load">
+        <el-tab-pane name="all" label="全部" />
+        <el-tab-pane name="global" label="全局" />
+        <el-tab-pane name="domain" label="按域名" />
+        <el-tab-pane name="line_group" label="按集群" />
+      </el-tabs>
 
       <div class="admin-desktop-only">
-        <t-table
+        <EpDataTable
           :data="visible"
           :columns="columns"
           row-key="id"
           size="small"
-          bordered
           :loading="loading"
-          empty="暂无策略"
+          empty-text="暂无策略"
           :pagination="{
             defaultCurrent: 1,
             defaultPageSize: 10,
@@ -45,16 +50,16 @@
         />
       </div>
       <div class="admin-mobile-only">
-        <div v-if="loading" class="loading-row"><t-loading /></div>
+        <div v-if="loading" class="loading-row"><div v-loading="true" style="min-height:48px" /></div>
         <div v-else-if="visible.length === 0" class="admin-mobile-card-empty">暂无策略</div>
         <div v-else class="admin-mobile-cards">
           <div v-for="p in visible" :key="p.id" class="admin-mobile-card">
             <div class="admin-mobile-card-header">
               <span class="admin-mobile-card-title">{{ p.name || p.id }}</span>
               <div class="admin-mobile-card-tags">
-                <t-tag size="small" :theme="p.enabled ? 'success' : 'default'" variant="light">
+                <el-tag size="small" :type="p.enabled ? 'success' : 'info'" effect="light">
                   {{ p.enabled ? '启用' : '停用' }}
-                </t-tag>
+                </el-tag>
               </div>
             </div>
             <div class="admin-mobile-card-rows">
@@ -72,103 +77,102 @@
               </div>
             </div>
             <div class="admin-mobile-card-actions">
-              <t-switch :model-value="p.enabled" size="small" @change="(v: boolean) => toggle(p, v)" />
+              <el-switch :model-value="p.enabled" size="small" @change="(v: boolean) => toggle(p, v)" />
               <span class="switch-text">{{ p.enabled ? '已启用' : '已停用' }}</span>
               <div class="action-spacer" />
-              <t-button size="small" theme="primary" variant="text" @click="enterDetail(p)">规则</t-button>
-              <t-button size="small" variant="text" @click="openDialog(p)">编辑</t-button>
-              <t-button size="small" theme="danger" variant="text" @click="confirmDelete(p)">删除</t-button>
+              <el-button size="small" type="primary" link @click="enterDetail(p)">规则</el-button>
+              <el-button size="small" link @click="openDialog(p)">编辑</el-button>
+              <el-button size="small" type="danger" link @click="confirmDelete(p)">删除</el-button>
             </div>
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
     <!-- 策略详情（规则管理面板） -->
     <template v-if="detailPolicy">
       <div class="detail-header">
-        <t-button variant="text" shape="square" @click="detailPolicy = null">
-          <template #icon><t-icon name="arrow-left" /></template>
-        </t-button>
+        <el-button link shape="square" @click="detailPolicy = null">
+          <template #icon><EpIcon name="arrow-left" /></template>
+        </el-button>
         <h2 class="detail-title">{{ detailPolicy.name }}</h2>
-        <t-tag :theme="detailPolicy.enabled ? 'success' : 'default'" size="medium">
+        <el-tag :type="detailPolicy.enabled ? 'success' : 'info'" size="default">
           {{ detailPolicy.enabled ? '已启用' : '已停用' }}
-        </t-tag>
-        <t-tag theme="primary" variant="light" size="medium">{{ scopeDisplay(detailPolicy) }}</t-tag>
+        </el-tag>
+        <el-tag type="primary" effect="light" size="default">{{ scopeDisplay(detailPolicy) }}</el-tag>
       </div>
 
-      <t-card class="section-card" bordered header-bordered title="防护规则">
+      <el-card class="section-card" header-bordered title="防护规则">
         <template #actions>
-          <t-button theme="primary" size="small" @click="openRuleDialog()">
-            <template #icon><t-icon name="add" /></template>
+          <el-button type="primary" size="small" @click="openRuleDialog()">
+            <template #icon><EpIcon name="add" /></template>
             添加规则
-          </t-button>
+          </el-button>
         </template>
-        <t-table
+        <EpDataTable
           :data="detailPolicy.rules || []"
           :columns="ruleColumns"
           row-key="id"
           size="small"
-          bordered
-          empty="暂无规则，点击「添加规则」创建人机验证或限速策略"
+          empty-text="暂无规则，点击「添加规则」创建人机验证或限速策略"
         />
-      </t-card>
+      </el-card>
     </template>
 
     <!-- 策略编辑对话框 -->
-    <t-dialog
-      v-model:visible="dialogOpen"
-      :header="editing ? '编辑 WAF 策略' : '新建 WAF 策略'"
+    <EpDialog append-to-body
+      v-model="dialogOpen"
+      :title="editing ? '编辑 WAF 策略' : '新建 WAF 策略'"
       :confirm-btn="{ content: '保存' }"
       cancel-btn="取消"
       @confirm="submit"
     >
-      <div class="form-grid">
+      <div class="form-grid-vertical">
         <div class="form-row-v">
           <label class="form-label-v">名称</label>
-          <t-input v-model="form.name" class="form-input-v" />
+          <el-input v-model="form.name" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">作用域</label>
-          <t-radio-group v-model="form.scope" class="form-input-v">
-            <t-radio value="global">全局</t-radio>
-            <t-radio value="domain">域名</t-radio>
-            <t-radio value="line_group">集群</t-radio>
-          </t-radio-group>
+          <el-radio-group v-model="form.scope" class="form-input-v">
+            <el-radio value="global">全局</el-radio>
+            <el-radio value="domain">域名</el-radio>
+            <el-radio value="line_group">集群</el-radio>
+          </el-radio-group>
           <div class="form-hint-v">全局策略作用于所有请求；域名/集群策略仅作用于下方选择的目标。</div>
         </div>
         <div class="form-row-v" v-if="form.scope === 'domain'">
           <label class="form-label-v">目标域名</label>
-          <t-select v-model="form.scope_id" :options="domainOptions" filterable class="form-input-v" />
+          <EpSelect v-model="form.scope_id" :options="domainOptions" filterable class="form-input-v" />
         </div>
         <div class="form-row-v" v-if="form.scope === 'line_group'">
           <label class="form-label-v">目标集群</label>
-          <t-select v-model="form.scope_id" :options="clusterOptions" filterable class="form-input-v" />
+          <EpSelect v-model="form.scope_id" :options="clusterOptions" filterable class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">描述</label>
-          <t-textarea v-model="form.description" :autosize="{ minRows: 2 }" class="form-input-v" />
+          <el-input v-model="form.description" :autosize="{ minRows: 2 }" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">启用</label>
-          <t-switch v-model="form.enabled" />
+          <el-switch v-model="form.enabled" />
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
 
     <!-- 规则编辑对话框 -->
-    <t-dialog
-      v-model:visible="ruleDialogOpen"
-      :header="ruleEditing ? '编辑防护规则' : '添加防护规则'"
+    <EpDialog append-to-body
+      v-model="ruleDialogOpen"
+      :title="ruleEditing ? '编辑防护规则' : '添加防护规则'"
       :confirm-btn="{ content: '保存' }"
       cancel-btn="取消"
       width="640px"
       @confirm="submitRule"
     >
-      <div class="form-grid">
+      <div class="form-grid-vertical">
         <div class="form-row-v">
           <label class="form-label-v">规则类型</label>
-          <t-select v-model="ruleForm.type" :options="ruleTypeOptions" class="form-input-v" />
+          <EpSelect v-model="ruleForm.type" :options="ruleTypeOptions" class="form-input-v" />
           <div class="form-hint-v">{{ ruleTypeHint }}</div>
         </div>
 
@@ -176,16 +180,16 @@
         <template v-if="ruleForm.type === 'challenge_captcha'">
           <div class="form-row-v">
             <label class="form-label-v">验证码类型</label>
-            <t-select v-model="ruleForm.captcha_type" :options="captchaTypeOptions" class="form-input-v" />
+            <EpSelect v-model="ruleForm.captcha_type" :options="captchaTypeOptions" class="form-input-v" />
           </div>
           <div class="form-row-v">
             <label class="form-label-v">触发 QPS</label>
-            <t-input-number v-model="ruleForm.auto_challenge_qps" :min="1" :max="100000" class="form-input-v" style="max-width:200px" />
+            <el-input-number v-model="ruleForm.auto_challenge_qps" :min="1" :max="100000" class="form-input-v" style="max-width:200px" />
             <div class="form-hint-v">每 IP 每秒请求超过此值触发人机验证。</div>
           </div>
           <div class="form-row-v">
             <label class="form-label-v">失败上限</label>
-            <t-input-number v-model="ruleForm.threshold" :min="1" :max="100" class="form-input-v" style="max-width:200px" />
+            <el-input-number v-model="ruleForm.threshold" :min="1" :max="100" class="form-input-v" style="max-width:200px" />
             <div class="form-hint-v">验证失败达到此次数后直接封禁。</div>
           </div>
         </template>
@@ -194,12 +198,12 @@
         <template v-if="ruleForm.type === 'shield_5s'">
           <div class="form-row-v">
             <label class="form-label-v">触发 QPS</label>
-            <t-input-number v-model="ruleForm.auto_challenge_qps" :min="1" :max="100000" class="form-input-v" style="max-width:200px" />
+            <el-input-number v-model="ruleForm.auto_challenge_qps" :min="1" :max="100000" class="form-input-v" style="max-width:200px" />
             <div class="form-hint-v">每 IP 每秒请求超过此值触发 5 秒浏览器检测。</div>
           </div>
           <div class="form-row-v">
             <label class="form-label-v">盾持续秒数</label>
-            <t-input-number v-model="ruleForm.shield_seconds" :min="3" :max="30" class="form-input-v" style="max-width:200px" />
+            <el-input-number v-model="ruleForm.shield_seconds" :min="3" :max="30" class="form-input-v" style="max-width:200px" />
           </div>
         </template>
 
@@ -207,12 +211,12 @@
         <template v-if="ruleForm.type === 'rate_limit'">
           <div class="form-row-v">
             <label class="form-label-v">请求阈值</label>
-            <t-input-number v-model="ruleForm.threshold" :min="1" :max="100000" class="form-input-v" style="max-width:200px" />
+            <el-input-number v-model="ruleForm.threshold" :min="1" :max="100000" class="form-input-v" style="max-width:200px" />
             <div class="form-hint-v">在时间窗口内，单 IP 请求超过此数触发动作。</div>
           </div>
           <div class="form-row-v">
             <label class="form-label-v">时间窗口 (秒)</label>
-            <t-input-number v-model="ruleForm.window_seconds" :min="1" :max="86400" class="form-input-v" style="max-width:200px" />
+            <el-input-number v-model="ruleForm.window_seconds" :min="1" :max="86400" class="form-input-v" style="max-width:200px" />
           </div>
         </template>
 
@@ -220,61 +224,70 @@
         <template v-if="ruleForm.type === 'ip_cidr'">
           <div class="form-row-v">
             <label class="form-label-v">动作</label>
-            <t-radio-group v-model="ruleForm.action" class="form-input-v">
-              <t-radio value="deny">封禁</t-radio>
-              <t-radio value="allow">放行</t-radio>
-            </t-radio-group>
+            <el-radio-group v-model="ruleForm.action" class="form-input-v">
+              <el-radio value="deny">封禁</el-radio>
+              <el-radio value="allow">放行</el-radio>
+            </el-radio-group>
           </div>
           <div class="form-row-v">
             <label class="form-label-v">IP / CIDR</label>
-            <t-input v-model="ruleForm.value" placeholder="192.168.1.0/24 或单个 IP" class="form-input-v" />
+            <el-input v-model="ruleForm.value" placeholder="192.168.1.0/24 或单个 IP" class="form-input-v" />
           </div>
         </template>
 
         <!-- 通用字段 -->
         <div class="form-row-v">
           <label class="form-label-v">封禁时长 (秒)</label>
-          <t-input-number v-model="ruleForm.ban_seconds" :min="0" :max="86400" class="form-input-v" style="max-width:200px" />
+          <el-input-number v-model="ruleForm.ban_seconds" :min="0" :max="86400" class="form-input-v" style="max-width:200px" />
           <div class="form-hint-v">触发后封禁 IP 的时长，0 表示不封禁仅拦截本次。</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">封禁模式</label>
-          <t-select v-model="ruleForm.ban_mode" :options="banModeOptions" class="form-input-v" style="max-width:200px" />
+          <EpSelect v-model="ruleForm.ban_mode" :options="banModeOptions" class="form-input-v" style="max-width:200px" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">路径前缀</label>
-          <t-input v-model="ruleForm.path_prefix" placeholder="留空匹配全部路径" class="form-input-v" />
+          <el-input v-model="ruleForm.path_prefix" placeholder="留空匹配全部路径" class="form-input-v" />
           <div class="form-hint-v">仅对匹配此前缀的路径生效，如 /api/</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">优先级</label>
-          <t-input-number v-model="ruleForm.priority" :min="1" :max="10000" class="form-input-v" style="max-width:200px" />
+          <el-input-number v-model="ruleForm.priority" :min="1" :max="10000" class="form-input-v" style="max-width:200px" />
           <div class="form-hint-v">数值越小越先匹配。</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">备注</label>
-          <t-input v-model="ruleForm.note" class="form-input-v" />
+          <el-input v-model="ruleForm.note" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">仅记录</label>
-          <t-switch v-model="ruleForm.log_only" />
+          <el-switch v-model="ruleForm.log_only" />
           <div class="form-hint-v">开启后仅记录日志不执行封禁，用于调试。</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">启用</label>
-          <t-switch v-model="ruleForm.enabled" />
+          <el-switch v-model="ruleForm.enabled" />
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import { MessagePlugin } from "@/lib/ep-message"
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
+import EpIcon from "@/components/ep/EpIcon.vue"
 import { computed, h, onMounted, reactive, ref } from "vue"
-import { DialogPlugin, MessagePlugin, Switch, Button, Tag } from "tdesign-vue-next"
+import { DialogPlugin } from "@/lib/ep-dialog"
+import { ElButton, ElTag, ElSwitch } from "element-plus"
 import { api, type Cluster, type Domain, type WAFPolicy, type WAFRule } from "@/lib/api"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const loading = ref(false)
+const applyingRuleset = ref(false)
+const error = ref("")
 const policies = ref<WAFPolicy[]>([])
 const domains = ref<Domain[]>([])
 const clusters = ref<Cluster[]>([])
@@ -354,12 +367,33 @@ const ruleTypeLabel = (type: string) => {
     shield_5s: "5秒盾",
     rate_limit: "限速",
     ip_cidr: "IP规则",
+    geo_block: "地域拦截",
+    block_transparent_proxy: "透明代理拦截",
+    sql_injection: "SQL 注入",
+    xss: "XSS",
+    path_traversal: "路径穿越",
+    ua_block: "扫描器 UA",
+    method_block: "HTTP 方法",
   }
   return m[type] || type
 }
 
+const applyOWASPRuleset = async () => {
+  applyingRuleset.value = true
+  try {
+    await api.applyWAFRuleset("owasp_common", { scope: "global" })
+    MessagePlugin.success("OWASP 规则集已应用，配置将自动同步到节点")
+    await load()
+  } catch (err: any) {
+    MessagePlugin.error(err?.message || "应用规则集失败")
+  } finally {
+    applyingRuleset.value = false
+  }
+}
+
 const load = async () => {
   loading.value = true
+  error.value = ""
   try {
     const [pRes, dRes, cRes] = await Promise.all([
       api.listWAFPolicies(),
@@ -374,8 +408,9 @@ const load = async () => {
       const fresh = policies.value.find(p => p.id === detailPolicy.value!.id)
       detailPolicy.value = fresh || null
     }
-  } catch (err: any) {
-    MessagePlugin.error(err?.message || "加载失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -429,13 +464,13 @@ const submit = async () => {
 }
 
 const toggle = async (p: WAFPolicy, enabled: boolean) => {
+  const prev = p.enabled
+  p.enabled = enabled
   try {
-    // Use the dedicated enabled-toggle endpoint so we don't re-submit the
-    // full rule set (which would re-validate every legacy rule and fail for
-    // rows created before today's stricter schema).
     await api.setWAFPolicyEnabled(p.id, enabled)
     await load()
   } catch (err: any) {
+    p.enabled = prev
     MessagePlugin.error(err?.message || "更新失败")
   }
 }
@@ -529,11 +564,14 @@ const submitRule = async () => {
 const toggleRule = async (rule: WAFRule, enabled: boolean) => {
   if (!detailPolicy.value) return
   const pol = detailPolicy.value
+  const prev = rule.enabled
+  rule.enabled = enabled
   const rules = (pol.rules || []).map(r => r.id === rule.id ? { ...r, enabled } : r)
   try {
     await api.updateWAFPolicy(pol.id, { ...pol, rules } as any)
     await load()
   } catch (err: any) {
+    rule.enabled = prev
     MessagePlugin.error(err?.message || "更新失败")
   }
 }
@@ -576,6 +614,15 @@ const ruleSummary = (rule: WAFRule) => {
   if (rule.type === "ip_cidr") {
     return `${rule.action === "allow" ? "放行" : "封禁"} ${rule.value || "-"}`
   }
+  if (rule.type === "method_block") {
+    return `拦截 ${(rule.methods || []).join(", ") || rule.value || "-"}`
+  }
+  if (["sql_injection", "xss", "path_traversal", "ua_block"].includes(rule.type)) {
+    return rule.note || "正则匹配"
+  }
+  if (rule.type === "geo_block") {
+    return `拦截地域 ${(rule as any).geo_countries?.join?.(", ") || "-"}`
+  }
   return rule.type
 }
 
@@ -600,7 +647,7 @@ const columns = computed(() => [
     title: "启用",
     width: 80,
     cell: (_h: any, { row }: { row: WAFPolicy }) =>
-      h(Switch, { size: "small", modelValue: row.enabled, "onUpdate:modelValue": (v: boolean) => toggle(row, v) }),
+      h(ElSwitch, { size: "small", modelValue: row.enabled, "onUpdate:modelValue": (v: boolean) => toggle(row, v) }),
   },
   {
     colKey: "actions",
@@ -609,9 +656,9 @@ const columns = computed(() => [
     fixed: "right",
     cell: (_h: any, { row }: { row: WAFPolicy }) =>
       h("div", { style: "display:flex;gap:4px" }, [
-        h(Button, { size: "small", theme: "primary", variant: "text", onClick: () => enterDetail(row) }, () => "规则"),
-        h(Button, { size: "small", variant: "text", onClick: () => openDialog(row) }, () => "编辑"),
-        h(Button, { size: "small", theme: "danger", variant: "text", onClick: () => confirmDelete(row) }, () => "删除"),
+        h(ElButton, { size: "small", type: "primary", link: true, onClick: () => enterDetail(row) }, () => "规则"),
+        h(ElButton, { size: "small", link: true, onClick: () => openDialog(row) }, () => "编辑"),
+        h(ElButton, { size: "small", type: "danger", link: true, onClick: () => confirmDelete(row) }, () => "删除"),
       ]),
   },
 ])
@@ -623,13 +670,20 @@ const ruleColumns = computed(() => [
     title: "类型",
     width: 110,
     cell: (_h: any, { row }: { row: WAFRule }) => {
-      const themeMap: Record<string, "default" | "success" | "warning" | "primary" | "danger"> = {
+      const themeMap: Record<string, "info" | "success" | "warning" | "primary" | "danger"> = {
         challenge_captcha: "warning",
         shield_5s: "primary",
         rate_limit: "danger",
-        ip_cidr: "default",
+        ip_cidr: "info",
+        sql_injection: "danger",
+        xss: "danger",
+        path_traversal: "danger",
+        ua_block: "warning",
+        method_block: "warning",
+        geo_block: "primary",
+        block_transparent_proxy: "primary",
       }
-      return h(Tag, { theme: themeMap[row.type] || ("default" as const), size: "small", variant: "light" }, () => ruleTypeLabel(row.type))
+      return h(ElTag, { type: themeMap[row.type] || ("info" as const), size: "small", effect: "light" }, () => ruleTypeLabel(row.type))
     },
   },
   {
@@ -656,7 +710,7 @@ const ruleColumns = computed(() => [
     title: "启用",
     width: 80,
     cell: (_h: any, { row }: { row: WAFRule }) =>
-      h(Switch, { size: "small", modelValue: row.enabled, "onUpdate:modelValue": (v: boolean) => toggleRule(row, v) }),
+      h(ElSwitch, { size: "small", modelValue: row.enabled, "onUpdate:modelValue": (v: boolean) => toggleRule(row, v) }),
   },
   {
     colKey: "actions",
@@ -665,8 +719,8 @@ const ruleColumns = computed(() => [
     fixed: "right",
     cell: (_h: any, { row }: { row: WAFRule }) =>
       h("div", { style: "display:flex;gap:4px" }, [
-        h(Button, { size: "small", theme: "primary", variant: "text", onClick: () => openRuleDialog(row) }, () => "编辑"),
-        h(Button, { size: "small", theme: "danger", variant: "text", onClick: () => deleteRule(row) }, () => "删除"),
+        h(ElButton, { size: "small", type: "primary", link: true, onClick: () => openRuleDialog(row) }, () => "编辑"),
+        h(ElButton, { size: "small", type: "danger", link: true, onClick: () => deleteRule(row) }, () => "删除"),
       ]),
   },
 ])
@@ -674,135 +728,3 @@ const ruleColumns = computed(() => [
 onMounted(load)
 </script>
 
-<style scoped>
-.page {
-  padding: 24px;
-}
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-.header-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.title {
-  font-size: 20px;
-  font-weight: 600;
-  margin: 0 0 4px;
-  color: var(--app-text-strong);
-}
-.subtitle {
-  color: var(--app-text-faint);
-  margin: 0;
-  font-size: 13px;
-}
-.form-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.form-row-v {
-  display: grid;
-  grid-template-columns: 100px minmax(280px, 1fr);
-  gap: 6px 16px;
-  align-items: center;
-}
-.form-label-v {
-  color: var(--app-text-faint);
-  text-align: right;
-}
-.form-input-v {
-  width: 100%;
-}
-.form-hint-v {
-  grid-column: 2;
-  color: var(--app-text-faint);
-  font-size: 12px;
-  margin-top: 2px;
-}
-.section-card {
-  min-width: 0;
-  margin-bottom: 16px;
-}
-.section-card :deep(.t-table) {
-  min-width: 100%;
-}
-.detail-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-.detail-title {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-  color: var(--app-text-strong);
-}
-
-.loading-row {
-  text-align: center;
-  padding: 32px 0;
-}
-
-.admin-mobile-card-actions {
-  align-items: center;
-}
-
-.action-spacer {
-  flex: 1;
-}
-
-.switch-text {
-  font-size: 12px;
-  color: var(--app-text-muted);
-}
-
-@media (max-width: 768px) {
-  .page {
-    padding: 12px;
-  }
-
-  .header {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .header-actions {
-    flex-wrap: wrap;
-  }
-
-  .header-actions > * {
-    flex: 1;
-    min-width: 0 !important;
-  }
-
-  .title {
-    font-size: 16px;
-  }
-
-  .detail-title {
-    font-size: 15px;
-  }
-
-  .form-row-v {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-
-  .form-label-v {
-    text-align: left;
-  }
-
-  .form-hint-v {
-    grid-column: 1;
-  }
-}
-</style>

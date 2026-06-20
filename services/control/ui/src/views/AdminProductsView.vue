@@ -1,45 +1,41 @@
 ﻿
 <template>
   <div class="admin-page">
-    <div v-if="error" class="admin-error-box">
-      {{ error }}
-      <t-button size="small" theme="primary" @click="loadData">重试</t-button>
-    </div>
+    <ErrorState v-if="error" :message="error" @retry="loadData" />
 
-    <t-card bordered class="admin-list-card">
-      <t-tabs v-model="activeTab" class="admin-tabs">
-        <t-tab-panel value="list" label="套餐列表">
+    <el-card class="admin-list-card">
+      <el-tabs v-model="activeTab" class="admin-tabs">
+        <el-tab-pane name="list" label="套餐列表">
           <div class="admin-toolbar">
             <div class="admin-toolbar-left">
-              <t-button theme="primary" @click="openCreate">新增套餐</t-button>
-              <t-button variant="outline" @click="openGroupDialog()">管理分组</t-button>
+              <el-button type="primary" @click="openCreate">新增套餐</el-button>
+              <el-button plain @click="openGroupDialog()">管理分组</el-button>
             </div>
             <div class="admin-toolbar-right">
-              <t-select v-model="searchField" :options="searchFieldOptions" class="admin-search-select" />
-              <t-input v-model="searchText" class="admin-search-input" clearable placeholder="搜索" />
+              <EpSelect v-model="searchField" :options="searchFieldOptions" class="admin-search-select" />
+              <el-input v-model="searchText" class="admin-search-input" clearable placeholder="搜索" />
             </div>
           </div>
 
           <div class="admin-filters-row">
             <div class="admin-filters-left">
-              <t-select v-model="groupFilter" :options="groupOptions" class="admin-filter-select-large" />
-              <t-select v-model="sortKey" :options="sortOptions" class="admin-filter-select-large" />
+              <EpSelect v-model="groupFilter" :options="groupOptions" class="admin-filter-select-large" />
+              <EpSelect v-model="sortKey" :options="sortOptions" class="admin-filter-select-large" />
             </div>
-            <t-button variant="outline" @click="loadData">刷新</t-button>
+            <el-button plain @click="loadData">刷新</el-button>
           </div>
 
           <!-- Desktop: table view -->
           <div class="admin-desktop-only">
-            <t-empty v-if="filteredProducts.length === 0" :description="searchText ? '暂无匹配套餐' : '暂无套餐数据'" class="admin-empty" />
-            <t-table
+            <el-empty v-if="filteredProducts.length === 0" :description="searchText ? '暂无匹配套餐' : '暂无套餐数据'" class="admin-empty" />
+            <EpDataTable
               v-else
               :data="pagedProducts"
               :columns="columns"
               row-key="id"
-              bordered
               hover
               stripe
-              size="medium"
+              size="default"
               :loading="loading"
               :selected-row-keys="selectedRowKeys"
               :pagination="pagination"
@@ -57,12 +53,12 @@
                 <div class="admin-mobile-card-header">
                   <span class="admin-mobile-card-title">{{ product.name || '-' }}</span>
                   <div class="admin-mobile-card-tags">
-                    <t-tag :theme="product.enabled ? 'success' : 'default'" variant="light" size="small">
+                    <el-tag :type="product.enabled ? 'success' : 'info'" effect="light" size="small">
                       {{ product.enabled ? '启用' : '停用' }}
-                    </t-tag>
-                    <t-tag theme="default" variant="light" size="small">
+                    </el-tag>
+                    <el-tag type="info" effect="light" size="small">
                       {{ product.currency || 'CNY' }}
-                    </t-tag>
+                    </el-tag>
                   </div>
                 </div>
                 <div v-if="product.slug" class="admin-mobile-card-subtitle">{{ product.slug }}</div>
@@ -105,13 +101,13 @@
                   </div>
                 </div>
                 <div class="admin-mobile-card-actions">
-                  <t-button size="small" variant="outline" @click="openEdit(product)">编辑</t-button>
-                  <t-button size="small" theme="danger" variant="outline" @click="handleDelete(product)">删除</t-button>
+                  <el-button size="small" plain @click="openEdit(product)">编辑</el-button>
+                  <el-button size="small" type="danger" plain @click="handleDelete(product)">删除</el-button>
                 </div>
               </div>
             </div>
             <div v-if="filteredProducts.length > 0" class="admin-mobile-pagination">
-              <t-pagination
+              <el-pagination
                 :current="page"
                 :page-size="pageSize"
                 :total="filteredProducts.length"
@@ -123,22 +119,22 @@
               />
             </div>
           </div>
-        </t-tab-panel>
+        </el-tab-pane>
 
-        <t-tab-panel value="group" label="套餐分组">
+        <el-tab-pane name="group" label="套餐分组">
           <div class="admin-toolbar">
             <div class="admin-toolbar-left">
-              <t-button theme="primary" @click="openGroupDialog()">新增分组</t-button>
+              <el-button type="primary" @click="openGroupDialog()">新增分组</el-button>
             </div>
             <div class="admin-toolbar-right">
-              <t-button variant="outline" @click="loadData">刷新</t-button>
+              <el-button plain @click="loadData">刷新</el-button>
             </div>
           </div>
 
           <!-- Desktop: table view -->
           <div class="admin-desktop-only">
-            <t-empty v-if="groups.length === 0" description="暂无分组" class="admin-empty" />
-            <t-table v-else :data="groups" :columns="groupColumns" row-key="id" bordered hover stripe size="medium" :loading="loading" />
+            <el-empty v-if="groups.length === 0" description="暂无分组" class="admin-empty" />
+            <EpDataTable v-else :data="groups" :columns="groupColumns" row-key="id" hover stripe size="default" :loading="loading" />
           </div>
 
           <!-- Mobile: card view -->
@@ -168,140 +164,140 @@
                   </div>
                 </div>
                 <div class="admin-mobile-card-actions">
-                  <t-button size="small" variant="outline" @click="openGroupDialog(g)">编辑</t-button>
-                  <t-button size="small" theme="danger" variant="outline" @click="deleteGroup(g)">删除</t-button>
+                  <el-button size="small" plain @click="openGroupDialog(g)">编辑</el-button>
+                  <el-button size="small" type="danger" plain @click="deleteGroup(g)">删除</el-button>
                 </div>
               </div>
             </div>
           </div>
-        </t-tab-panel>
-      </t-tabs>
-    </t-card>
+        </el-tab-pane>
+      </el-tabs>
+    </el-card>
 
-    <t-dialog
-      v-model:visible="createDialogVisible"
+    <EpDialog append-to-body
+      v-model="createDialogVisible"
       header="新增套餐"
       :confirm-btn="{ content: creating ? '创建中...' : '创建', loading: creating, theme: 'primary' }"
       cancel-btn="取消"
       width="760"
       @confirm="handleCreate"
     >
-      <t-form layout="vertical" label-align="top" class="admin-form-grid">
-        <t-form-item label="套餐名称">
-          <t-input v-model="createForm.name" />
-        </t-form-item>
-        <t-form-item label="标识">
-          <t-input v-model="createForm.slug" />
-        </t-form-item>
-        <t-form-item label="分组">
-          <t-select v-model="createForm.group_id" :options="[{ label: '未分组', value: '' }, ...groups.map((g) => ({ label: g.name, value: g.id }))]" />
-        </t-form-item>
-        <t-form-item label="排序">
-          <t-input-number v-model="createForm.sort" :min="1" :step="1" />
-        </t-form-item>
-        <t-form-item label="集群">
-          <t-select v-model="createForm.cluster_id" :options="[{ label: '无集群', value: '' }, ...clusterOptions]" />
-        </t-form-item>
-        <t-form-item label="币种">
-          <t-select v-model="createForm.currency" :options="[{ label: 'CNY', value: 'CNY' }]" />
-        </t-form-item>
-        <t-form-item label="描述" style="grid-column: 1 / -1">
-          <t-textarea v-model="createForm.description" :autosize="{ minRows: 3, maxRows: 6 }" />
-        </t-form-item>
+      <el-form label-position="top" class="admin-form-grid">
+        <el-form-item label="套餐名称">
+          <el-input v-model="createForm.name" />
+        </el-form-item>
+        <el-form-item label="标识">
+          <el-input v-model="createForm.slug" />
+        </el-form-item>
+        <el-form-item label="分组">
+          <EpSelect v-model="createForm.group_id" :options="[{ label: '未分组', value: '' }, ...groups.map((g) => ({ label: g.name, value: g.id }))]" />
+        </el-form-item>
+        <el-form-item label="排序">
+          <el-input-number v-model="createForm.sort" :min="1" :step="1" />
+        </el-form-item>
+        <el-form-item label="集群">
+          <EpSelect v-model="createForm.cluster_id" :options="[{ label: '无集群', value: '' }, ...clusterOptions]" />
+        </el-form-item>
+        <el-form-item label="币种">
+          <EpSelect v-model="createForm.currency" :options="[{ label: 'CNY', value: 'CNY' }]" />
+        </el-form-item>
+        <el-form-item label="描述" style="grid-column: 1 / -1">
+          <el-input v-model="createForm.description" :autosize="{ minRows: 3, maxRows: 6 }" />
+        </el-form-item>
 
-        <t-form-item label="月流量 (GB)">
-          <div class="form-row">
-            <t-switch :model-value="createForm.monthly_traffic_gb === null" @change="(v) => (createForm.monthly_traffic_gb = v ? null : 0)" />
+        <el-form-item label="月流量 (GB)">
+          <div class="form-row-inline">
+            <el-switch :model-value="createForm.monthly_traffic_gb === null" @change="(v) => (createForm.monthly_traffic_gb = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="createForm.monthly_traffic_gb" :min="0" :step="1" :disabled="createForm.monthly_traffic_gb === null" />
+            <el-input-number v-model="createForm.monthly_traffic_gb" :min="0" :step="1" :disabled="createForm.monthly_traffic_gb === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="带宽 (Mbps)">
-          <div class="form-row">
-            <t-switch :model-value="createForm.bandwidth_mbps === null" @change="(v) => (createForm.bandwidth_mbps = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="带宽 (Mbps)">
+          <div class="form-row-inline">
+            <el-switch :model-value="createForm.bandwidth_mbps === null" @change="(v) => (createForm.bandwidth_mbps = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="createForm.bandwidth_mbps" :min="0" :step="1" :disabled="createForm.bandwidth_mbps === null" />
+            <el-input-number v-model="createForm.bandwidth_mbps" :min="0" :step="1" :disabled="createForm.bandwidth_mbps === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="连接数">
-          <div class="form-row">
-            <t-switch :model-value="createForm.conn_limit === null" @change="(v) => (createForm.conn_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="连接数">
+          <div class="form-row-inline">
+            <el-switch :model-value="createForm.conn_limit === null" @change="(v) => (createForm.conn_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="createForm.conn_limit" :min="0" :step="1" :disabled="createForm.conn_limit === null" />
+            <el-input-number v-model="createForm.conn_limit" :min="0" :step="1" :disabled="createForm.conn_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="域名数">
-          <div class="form-row">
-            <t-switch :model-value="createForm.domain_limit === null" @change="(v) => (createForm.domain_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="域名数">
+          <div class="form-row-inline">
+            <el-switch :model-value="createForm.domain_limit === null" @change="(v) => (createForm.domain_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="createForm.domain_limit" :min="0" :step="1" :disabled="createForm.domain_limit === null" />
+            <el-input-number v-model="createForm.domain_limit" :min="0" :step="1" :disabled="createForm.domain_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="主域名数">
-          <div class="form-row">
-            <t-switch :model-value="createForm.primary_domain_limit === null" @change="(v) => (createForm.primary_domain_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="主域名数">
+          <div class="form-row-inline">
+            <el-switch :model-value="createForm.primary_domain_limit === null" @change="(v) => (createForm.primary_domain_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="createForm.primary_domain_limit" :min="0" :step="1" :disabled="createForm.primary_domain_limit === null" />
+            <el-input-number v-model="createForm.primary_domain_limit" :min="0" :step="1" :disabled="createForm.primary_domain_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="HTTP 端口数">
-          <div class="form-row">
-            <t-switch :model-value="createForm.http_port_limit === null" @change="(v) => (createForm.http_port_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="HTTP 端口数">
+          <div class="form-row-inline">
+            <el-switch :model-value="createForm.http_port_limit === null" @change="(v) => (createForm.http_port_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="createForm.http_port_limit" :min="0" :step="1" :disabled="createForm.http_port_limit === null" />
+            <el-input-number v-model="createForm.http_port_limit" :min="0" :step="1" :disabled="createForm.http_port_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="转发端口数">
-          <div class="form-row">
-            <t-switch :model-value="createForm.stream_port_limit === null" @change="(v) => (createForm.stream_port_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="转发端口数">
+          <div class="form-row-inline">
+            <el-switch :model-value="createForm.stream_port_limit === null" @change="(v) => (createForm.stream_port_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="createForm.stream_port_limit" :min="0" :step="1" :disabled="createForm.stream_port_limit === null" />
+            <el-input-number v-model="createForm.stream_port_limit" :min="0" :step="1" :disabled="createForm.stream_port_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="非标准端口数">
-          <div class="form-row">
-            <t-switch :model-value="createForm.non_std_port_limit === null" @change="(v) => (createForm.non_std_port_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="非标准端口数">
+          <div class="form-row-inline">
+            <el-switch :model-value="createForm.non_std_port_limit === null" @change="(v) => (createForm.non_std_port_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="createForm.non_std_port_limit" :min="0" :step="1" :disabled="createForm.non_std_port_limit === null" />
+            <el-input-number v-model="createForm.non_std_port_limit" :min="0" :step="1" :disabled="createForm.non_std_port_limit === null" />
           </div>
-        </t-form-item>
+        </el-form-item>
 
-        <t-form-item label="Websocket">
-          <t-switch v-model="createForm.websocket" />
-        </t-form-item>
-        <t-form-item label="自定义 CC 规则">
-          <t-switch v-model="createForm.custom_cc_rules" />
-        </t-form-item>
-        <t-form-item label="HTTP3">
-          <t-switch v-model="createForm.http3" />
-        </t-form-item>
-        <t-form-item label="L2 节点回源">
-          <t-switch v-model="createForm.l2_origin" />
-        </t-form-item>
-        <t-form-item label="CC 防护">
-          <t-input v-model="createForm.cc_protection" />
-        </t-form-item>
-        <t-form-item label="DDoS 防护">
-          <t-input v-model="createForm.ddos_protection" />
-        </t-form-item>
+        <el-form-item label="Websocket">
+          <el-switch v-model="createForm.websocket" />
+        </el-form-item>
+        <el-form-item label="自定义 CC 规则">
+          <el-switch v-model="createForm.custom_cc_rules" />
+        </el-form-item>
+        <el-form-item label="HTTP3">
+          <el-switch v-model="createForm.http3" />
+        </el-form-item>
+        <el-form-item label="L2 节点回源">
+          <el-switch v-model="createForm.l2_origin" />
+        </el-form-item>
+        <el-form-item label="CC 防护">
+          <el-input v-model="createForm.cc_protection" />
+        </el-form-item>
+        <el-form-item label="DDoS 防护">
+          <el-input v-model="createForm.ddos_protection" />
+        </el-form-item>
 
-        <t-form-item label="月付 (元)">
-          <t-input-number v-model="createForm.price_month" :min="0" :step="1" />
-        </t-form-item>
-        <t-form-item label="季度付 (元)">
-          <t-input-number v-model="createForm.price_quarter" :min="0" :step="1" />
-        </t-form-item>
-        <t-form-item label="年付 (元)">
-          <t-input-number v-model="createForm.price_year" :min="0" :step="1" />
-        </t-form-item>
-        <t-form-item label="启用">
-          <t-switch v-model="createForm.enabled" />
-        </t-form-item>
-      </t-form>
-    </t-dialog>
+        <el-form-item label="月付 (元)">
+          <el-input-number v-model="createForm.price_month" :min="0" :step="1" />
+        </el-form-item>
+        <el-form-item label="季度付 (元)">
+          <el-input-number v-model="createForm.price_quarter" :min="0" :step="1" />
+        </el-form-item>
+        <el-form-item label="年付 (元)">
+          <el-input-number v-model="createForm.price_year" :min="0" :step="1" />
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="createForm.enabled" />
+        </el-form-item>
+      </el-form>
+    </EpDialog>
 
-    <t-dialog
-      v-model:visible="editDialogVisible"
+    <EpDialog append-to-body
+      v-model="editDialogVisible"
       header="编辑套餐"
       :confirm-btn="{ content: updating ? '保存中...' : '保存', loading: updating, theme: 'primary' }"
       cancel-btn="取消"
@@ -309,148 +305,153 @@
       @confirm="handleUpdate"
       @close="closeEdit"
     >
-      <t-form layout="vertical" label-align="top" class="admin-form-grid">
-        <t-form-item label="套餐名称">
-          <t-input v-model="editForm.name" />
-        </t-form-item>
-        <t-form-item label="标识">
-          <t-input v-model="editForm.slug" />
-        </t-form-item>
-        <t-form-item label="分组">
-          <t-select v-model="editForm.group_id" :options="[{ label: '未分组', value: '' }, ...groups.map((g) => ({ label: g.name, value: g.id }))]" />
-        </t-form-item>
-        <t-form-item label="排序">
-          <t-input-number v-model="editForm.sort" :min="1" :step="1" />
-        </t-form-item>
-        <t-form-item label="集群">
-          <t-select v-model="editForm.cluster_id" :options="[{ label: '无集群', value: '' }, ...clusterOptions]" />
-        </t-form-item>
-        <t-form-item label="币种">
-          <t-select v-model="editForm.currency" :options="[{ label: 'CNY', value: 'CNY' }]" />
-        </t-form-item>
-        <t-form-item label="描述" style="grid-column: 1 / -1">
-          <t-textarea v-model="editForm.description" :autosize="{ minRows: 3, maxRows: 6 }" />
-        </t-form-item>
+      <el-form label-position="top" class="admin-form-grid">
+        <el-form-item label="套餐名称">
+          <el-input v-model="editForm.name" />
+        </el-form-item>
+        <el-form-item label="标识">
+          <el-input v-model="editForm.slug" />
+        </el-form-item>
+        <el-form-item label="分组">
+          <EpSelect v-model="editForm.group_id" :options="[{ label: '未分组', value: '' }, ...groups.map((g) => ({ label: g.name, value: g.id }))]" />
+        </el-form-item>
+        <el-form-item label="排序">
+          <el-input-number v-model="editForm.sort" :min="1" :step="1" />
+        </el-form-item>
+        <el-form-item label="集群">
+          <EpSelect v-model="editForm.cluster_id" :options="[{ label: '无集群', value: '' }, ...clusterOptions]" />
+        </el-form-item>
+        <el-form-item label="币种">
+          <EpSelect v-model="editForm.currency" :options="[{ label: 'CNY', value: 'CNY' }]" />
+        </el-form-item>
+        <el-form-item label="描述" style="grid-column: 1 / -1">
+          <el-input v-model="editForm.description" :autosize="{ minRows: 3, maxRows: 6 }" />
+        </el-form-item>
 
-        <t-form-item label="月流量 (GB)">
-          <div class="form-row">
-            <t-switch :model-value="editForm.monthly_traffic_gb === null" @change="(v) => (editForm.monthly_traffic_gb = v ? null : 0)" />
+        <el-form-item label="月流量 (GB)">
+          <div class="form-row-inline">
+            <el-switch :model-value="editForm.monthly_traffic_gb === null" @change="(v) => (editForm.monthly_traffic_gb = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="editForm.monthly_traffic_gb" :min="0" :step="1" :disabled="editForm.monthly_traffic_gb === null" />
+            <el-input-number v-model="editForm.monthly_traffic_gb" :min="0" :step="1" :disabled="editForm.monthly_traffic_gb === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="带宽 (Mbps)">
-          <div class="form-row">
-            <t-switch :model-value="editForm.bandwidth_mbps === null" @change="(v) => (editForm.bandwidth_mbps = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="带宽 (Mbps)">
+          <div class="form-row-inline">
+            <el-switch :model-value="editForm.bandwidth_mbps === null" @change="(v) => (editForm.bandwidth_mbps = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="editForm.bandwidth_mbps" :min="0" :step="1" :disabled="editForm.bandwidth_mbps === null" />
+            <el-input-number v-model="editForm.bandwidth_mbps" :min="0" :step="1" :disabled="editForm.bandwidth_mbps === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="连接数">
-          <div class="form-row">
-            <t-switch :model-value="editForm.conn_limit === null" @change="(v) => (editForm.conn_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="连接数">
+          <div class="form-row-inline">
+            <el-switch :model-value="editForm.conn_limit === null" @change="(v) => (editForm.conn_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="editForm.conn_limit" :min="0" :step="1" :disabled="editForm.conn_limit === null" />
+            <el-input-number v-model="editForm.conn_limit" :min="0" :step="1" :disabled="editForm.conn_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="域名数">
-          <div class="form-row">
-            <t-switch :model-value="editForm.domain_limit === null" @change="(v) => (editForm.domain_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="域名数">
+          <div class="form-row-inline">
+            <el-switch :model-value="editForm.domain_limit === null" @change="(v) => (editForm.domain_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="editForm.domain_limit" :min="0" :step="1" :disabled="editForm.domain_limit === null" />
+            <el-input-number v-model="editForm.domain_limit" :min="0" :step="1" :disabled="editForm.domain_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="主域名数">
-          <div class="form-row">
-            <t-switch :model-value="editForm.primary_domain_limit === null" @change="(v) => (editForm.primary_domain_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="主域名数">
+          <div class="form-row-inline">
+            <el-switch :model-value="editForm.primary_domain_limit === null" @change="(v) => (editForm.primary_domain_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="editForm.primary_domain_limit" :min="0" :step="1" :disabled="editForm.primary_domain_limit === null" />
+            <el-input-number v-model="editForm.primary_domain_limit" :min="0" :step="1" :disabled="editForm.primary_domain_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="HTTP 端口数">
-          <div class="form-row">
-            <t-switch :model-value="editForm.http_port_limit === null" @change="(v) => (editForm.http_port_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="HTTP 端口数">
+          <div class="form-row-inline">
+            <el-switch :model-value="editForm.http_port_limit === null" @change="(v) => (editForm.http_port_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="editForm.http_port_limit" :min="0" :step="1" :disabled="editForm.http_port_limit === null" />
+            <el-input-number v-model="editForm.http_port_limit" :min="0" :step="1" :disabled="editForm.http_port_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="转发端口数">
-          <div class="form-row">
-            <t-switch :model-value="editForm.stream_port_limit === null" @change="(v) => (editForm.stream_port_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="转发端口数">
+          <div class="form-row-inline">
+            <el-switch :model-value="editForm.stream_port_limit === null" @change="(v) => (editForm.stream_port_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="editForm.stream_port_limit" :min="0" :step="1" :disabled="editForm.stream_port_limit === null" />
+            <el-input-number v-model="editForm.stream_port_limit" :min="0" :step="1" :disabled="editForm.stream_port_limit === null" />
           </div>
-        </t-form-item>
-        <t-form-item label="非标准端口数">
-          <div class="form-row">
-            <t-switch :model-value="editForm.non_std_port_limit === null" @change="(v) => (editForm.non_std_port_limit = v ? null : 0)" />
+        </el-form-item>
+        <el-form-item label="非标准端口数">
+          <div class="form-row-inline">
+            <el-switch :model-value="editForm.non_std_port_limit === null" @change="(v) => (editForm.non_std_port_limit = v ? null : 0)" />
             <span class="admin-table-muted">不限</span>
-            <t-input-number v-model="editForm.non_std_port_limit" :min="0" :step="1" :disabled="editForm.non_std_port_limit === null" />
+            <el-input-number v-model="editForm.non_std_port_limit" :min="0" :step="1" :disabled="editForm.non_std_port_limit === null" />
           </div>
-        </t-form-item>
+        </el-form-item>
 
-        <t-form-item label="Websocket">
-          <t-switch v-model="editForm.websocket" />
-        </t-form-item>
-        <t-form-item label="自定义 CC 规则">
-          <t-switch v-model="editForm.custom_cc_rules" />
-        </t-form-item>
-        <t-form-item label="HTTP3">
-          <t-switch v-model="editForm.http3" />
-        </t-form-item>
-        <t-form-item label="L2 节点回源">
-          <t-switch v-model="editForm.l2_origin" />
-        </t-form-item>
-        <t-form-item label="CC 防护">
-          <t-input v-model="editForm.cc_protection" />
-        </t-form-item>
-        <t-form-item label="DDoS 防护">
-          <t-input v-model="editForm.ddos_protection" />
-        </t-form-item>
+        <el-form-item label="Websocket">
+          <el-switch v-model="editForm.websocket" />
+        </el-form-item>
+        <el-form-item label="自定义 CC 规则">
+          <el-switch v-model="editForm.custom_cc_rules" />
+        </el-form-item>
+        <el-form-item label="HTTP3">
+          <el-switch v-model="editForm.http3" />
+        </el-form-item>
+        <el-form-item label="L2 节点回源">
+          <el-switch v-model="editForm.l2_origin" />
+        </el-form-item>
+        <el-form-item label="CC 防护">
+          <el-input v-model="editForm.cc_protection" />
+        </el-form-item>
+        <el-form-item label="DDoS 防护">
+          <el-input v-model="editForm.ddos_protection" />
+        </el-form-item>
 
-        <t-form-item label="月付 (元)">
-          <t-input-number v-model="editForm.price_month" :min="0" :step="1" />
-        </t-form-item>
-        <t-form-item label="季度付 (元)">
-          <t-input-number v-model="editForm.price_quarter" :min="0" :step="1" />
-        </t-form-item>
-        <t-form-item label="年付 (元)">
-          <t-input-number v-model="editForm.price_year" :min="0" :step="1" />
-        </t-form-item>
-        <t-form-item label="启用">
-          <t-switch v-model="editForm.enabled" />
-        </t-form-item>
-      </t-form>
-    </t-dialog>
+        <el-form-item label="月付 (元)">
+          <el-input-number v-model="editForm.price_month" :min="0" :step="1" />
+        </el-form-item>
+        <el-form-item label="季度付 (元)">
+          <el-input-number v-model="editForm.price_quarter" :min="0" :step="1" />
+        </el-form-item>
+        <el-form-item label="年付 (元)">
+          <el-input-number v-model="editForm.price_year" :min="0" :step="1" />
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="editForm.enabled" />
+        </el-form-item>
+      </el-form>
+    </EpDialog>
 
-    <t-dialog
-      v-model:visible="groupDialogVisible"
-      :header="groupEditing ? '编辑分组' : '新增分组'"
+    <EpDialog append-to-body
+      v-model="groupDialogVisible"
+      :title="groupEditing ? '编辑分组' : '新增分组'"
       :confirm-btn="{ content: groupSaving ? '保存中...' : '保存', loading: groupSaving, theme: 'primary' }"
       cancel-btn="取消"
       width="520"
       @confirm="saveGroup"
       @close="closeGroupDialog"
     >
-      <t-form layout="vertical" label-align="top">
-        <t-form-item label="分组名称">
-          <t-input v-model="groupName" />
-        </t-form-item>
-        <t-form-item label="排序">
-          <t-input-number v-model="groupSort" :min="1" :step="1" />
-        </t-form-item>
-        <t-form-item label="描述">
-          <t-textarea v-model="groupDescription" :autosize="{ minRows: 3, maxRows: 6 }" />
-        </t-form-item>
-      </t-form>
-    </t-dialog>
+      <el-form label-position="top">
+        <el-form-item label="分组名称">
+          <el-input v-model="groupName" />
+        </el-form-item>
+        <el-form-item label="排序">
+          <el-input-number v-model="groupSort" :min="1" :step="1" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="groupDescription" :autosize="{ minRows: 3, maxRows: 6 }" />
+        </el-form-item>
+      </el-form>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
 import { computed, h, onMounted, ref, watch } from "vue"
-import { MessagePlugin, Tag, Button } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
+import { ElTag, ElButton } from "element-plus"
 import { api, type Cluster, type Product, type ProductGroup } from "@/lib/api"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 type SearchField = "keyword" | "name" | "slug" | "description"
 
@@ -954,15 +955,13 @@ const columns = computed(() => [
     minWidth: 200,
     cell: (_h: any, { row }: { row: Product }) =>
       h("div", { style: "display:flex;flex-direction:column;gap:4px" }, [
-        h("span", { style: "font-weight:600;color:#0f172a;font-size:14px" }, row.name || "-"),
+        h("span", { style: "font-weight:600;color:var(--app-text-strong);font-size:14px" }, row.name || "-"),
         h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, [
-          h(Tag, { theme: row.enabled ? "success" : "default", variant: "light", size: "small" }, () =>
+          h(ElTag, { type: row.enabled ? "success" : "info", effect: "light", size: "small" }, () =>
             row.enabled ? "启用" : "停用"
           ),
-          h(Tag, { theme: "default", variant: "light", size: "small" }, () => row.currency || "CNY"),
-          h(
-            Tag,
-            { theme: "default", variant: "light", size: "small" },
+          h(ElTag, { type: "info", effect: "light", size: "small" }, () => row.currency || "CNY"),
+          h(ElTag, { type: "info", effect: "light", size: "small" },
             () => groupNameMap.value[row.group_id || ""] || "未分组"
           ),
         ]),
@@ -1029,7 +1028,7 @@ const columns = computed(() => [
     title: "Websocket",
     width: 120,
     cell: (_h: any, { row }: { row: Product }) =>
-      h(Tag, { theme: row.websocket ? "success" : "default", variant: "light", size: "small" }, () =>
+      h(ElTag, { type: row.websocket ? "success" : "info", effect: "light", size: "small" }, () =>
         row.websocket ? "允许" : "禁止"
       ),
   },
@@ -1076,8 +1075,8 @@ const columns = computed(() => [
     fixed: "right",
     cell: (_h: any, { row }: { row: Product }) =>
       h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, [
-        h(Button, { size: "small", variant: "text", onClick: () => openEdit(row) }, () => "编辑"),
-        h(Button, { size: "small", theme: "danger", variant: "text", onClick: () => handleDelete(row) }, () => "删除"),
+        h(ElButton, { size: "small", link: true, onClick: () => openEdit(row) }, () => "编辑"),
+        h(ElButton, { size: "small", type: "danger", link: true, onClick: () => handleDelete(row) }, () => "删除"),
       ]),
   },
 ])
@@ -1109,8 +1108,8 @@ const groupColumns = computed(() => [
     width: 160,
     cell: (_h: any, { row }: { row: ProductGroup }) =>
       h("div", { style: "display:flex;gap:6px" }, [
-        h(Button, { size: "small", variant: "text", onClick: () => openGroupDialog(row) }, () => "编辑"),
-        h(Button, { size: "small", theme: "danger", variant: "text", onClick: () => deleteGroup(row) }, () => "删除"),
+        h(ElButton, { size: "small", link: true, onClick: () => openGroupDialog(row) }, () => "编辑"),
+        h(ElButton, { size: "small", type: "danger", link: true, onClick: () => deleteGroup(row) }, () => "删除"),
       ]),
   },
 ])
@@ -1136,13 +1135,4 @@ onMounted(() => {
   loadData()
 })
 </script>
-
-<style scoped>
-.form-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-</style>
 

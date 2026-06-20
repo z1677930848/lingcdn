@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // Content-delivery admin handlers: origins, cache rules, config-version
 // history, one-shot publish, and cache purge (dispatch + query by request
@@ -131,6 +131,12 @@ func (s *Servers) handleCacheRules(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, "create cache rule", err)
 			return
 		}
+		actor, _ := ctx.Value(ctxKeyUserID).(string)
+		if actor == "" {
+			actor = "system"
+		}
+		s.auditConfigChange(ctx, actor, "create", "cache_rule:"+rule.ID, nil, rule)
+		_ = s.startPublishTask(ctx, "auto", "", "cache.rule.create:"+rule.ID, "", nil)
 		writeJSON(w, http.StatusCreated, rule)
 
 	default:
@@ -156,6 +162,7 @@ func (s *Servers) handleCacheRuleByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rule)
 
 	case http.MethodPut:
+		before, _ := s.store.GetCacheRule(ctx, id)
 		var rule store.CacheRule
 		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
@@ -168,13 +175,26 @@ func (s *Servers) handleCacheRuleByID(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, "update cache rule", err)
 			return
 		}
+		actor, _ := ctx.Value(ctxKeyUserID).(string)
+		if actor == "" {
+			actor = "system"
+		}
+		s.auditConfigChange(ctx, actor, "update", "cache_rule:"+id, before, rule)
+		_ = s.startPublishTask(ctx, "auto", "", "cache.rule.update:"+id, "", nil)
 		writeJSON(w, http.StatusOK, rule)
 
 	case http.MethodDelete:
+		before, _ := s.store.GetCacheRule(ctx, id)
 		if err := s.store.DeleteCacheRule(ctx, id); err != nil {
 			writeInternalError(w, "delete cache rule", err)
 			return
 		}
+		actor, _ := ctx.Value(ctxKeyUserID).(string)
+		if actor == "" {
+			actor = "system"
+		}
+		s.auditConfigChange(ctx, actor, "delete", "cache_rule:"+id, before, nil)
+		_ = s.startPublishTask(ctx, "auto", "", "cache.rule.delete:"+id, "", nil)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 
 	default:
@@ -195,7 +215,10 @@ func (s *Servers) handlePublish(w http.ResponseWriter, r *http.Request) {
 		Version string   `json:"version"`
 		NodeIDs []string `json:"node_ids"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+		return
+	}
 
 	task := s.startPublishTask(ctx, "manual", "", "manual.publish", req.Version, req.NodeIDs)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -240,21 +263,48 @@ func (s *Servers) handlePurge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	if getUserRole(ctx) != "admin" && !s.requireUserPermission(w, ctx, PermPurgeExecute) {
+		return
+	}
 
 	var req struct {
-		URLs []string `json:"urls"`
+		URLs      []string `json:"urls"`
+		Type      string   `json:"type"`
+		Prefixes  []string `json:"prefixes"`
+		Tags      []string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
 		return
 	}
 
-	if len(req.URLs) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "URL列表不能为空"})
+	purgeType := strings.TrimSpace(strings.ToLower(req.Type))
+	if purgeType == "" {
+		purgeType = "url"
+	}
+
+	switch purgeType {
+	case "url":
+		if len(req.URLs) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "URL列表不能为空"})
+			return
+		}
+	case "prefix":
+		if len(req.Prefixes) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "目录前缀列表不能为空"})
+			return
+		}
+	case "tag":
+		if len(req.Tags) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "标签列表不能为空"})
+			return
+		}
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "不支持的刷新类型"})
 		return
 	}
 
-	requestID, err := s.purge.PurgeURLsWithID(ctx, req.URLs)
+	requestID, err := s.purge.PurgeWithOptions(ctx, purgeType, req.URLs, req.Prefixes, req.Tags)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"ok":         false,
@@ -267,6 +317,7 @@ func (s *Servers) handlePurge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"request_id": requestID,
+		"type":       purgeType,
 		"message":    "purge dispatched",
 	})
 }
@@ -297,6 +348,91 @@ func (s *Servers) handlePurgeByID(w http.ResponseWriter, r *http.Request) {
 			"node_id":   nodeID,
 			"ok":        res.OK,
 			"reason":    res.Reason,
+			"timestamp": res.Timestamp,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":           req.ID,
+		"urls":         req.URLs,
+		"started_at":   req.StartedAt,
+		"completed_at": req.CompletedAt,
+		"total_nodes":  req.TotalNodes,
+		"results":      results,
+	})
+}
+
+func (s *Servers) handlePreload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+		return
+	}
+	if s.preload == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "preload service unavailable"})
+		return
+	}
+
+	ctx := r.Context()
+	var req struct {
+		URLs []string `json:"urls"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+		return
+	}
+	if len(req.URLs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "URL列表不能为空"})
+		return
+	}
+
+	requestID, err := s.preload.PreloadURLs(ctx, req.URLs)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok":         false,
+			"request_id": requestID,
+			"message":    err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"request_id": requestID,
+		"message":    "preload dispatched",
+	})
+}
+
+func (s *Servers) handlePreloadByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+		return
+	}
+	if s.preload == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "preload service unavailable"})
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/preload/")
+	id = strings.TrimSpace(id)
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求ID不能为空"})
+		return
+	}
+	req, ok := s.preload.GetRequest(id)
+	if !ok || req == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "预热请求不存在"})
+		return
+	}
+
+	results := make([]map[string]any, 0, len(req.Results))
+	for nodeID, res := range req.Results {
+		if res == nil {
+			continue
+		}
+		results = append(results, map[string]any{
+			"node_id":   nodeID,
+			"ok":        res.OK,
+			"reason":    res.Reason,
+			"loaded":    res.Loaded,
 			"timestamp": res.Timestamp,
 		})
 	}

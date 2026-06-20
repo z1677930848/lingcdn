@@ -37,6 +37,14 @@ type NodeConfig struct {
 	License      *LicenseConfig             `json:"license,omitempty"`
 	UserLimits   map[string]UserLimitConfig `json:"user_limits,omitempty"`
 	Templates    *GlobalTemplatesConfig     `json:"templates,omitempty"`
+	StreamForwards []StreamForwardConfig    `json:"stream_forwards,omitempty"`
+	L2Peers        []L2PeerConfig           `json:"l2_peers,omitempty"`
+}
+
+// L2PeerConfig identifies a sibling node for L2 cache fetch.
+type L2PeerConfig struct {
+	NodeID  string `json:"node_id"`
+	Address string `json:"address"`
 }
 
 // GlobalTemplatesConfig carries admin-editable HTML/JSON templates that
@@ -55,11 +63,12 @@ type GlobalTemplatesConfig struct {
 
 // DomainConfig represents a domain in the node config.
 type DomainConfig struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	UserID   string `json:"user_id,omitempty"`
-	OriginID string `json:"origin_id"`
-	CertID   string `json:"cert_id,omitempty"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	UserID     string `json:"user_id,omitempty"`
+	OriginID   string `json:"origin_id"`
+	CertID     string `json:"cert_id,omitempty"`
+	ListenPort int32  `json:"listen_port,omitempty"`
 	// HTTPSEnabled tells the node whether to terminate TLS on 443 for this
 	// domain. Distinct from CertID: a domain may have a cert on file but
 	// want HTTPS temporarily off, or have HTTPS explicitly on while ACME
@@ -68,6 +77,8 @@ type DomainConfig struct {
 	CacheEnabled           bool   `json:"cache_enabled"`
 	HTTP2Enabled           bool   `json:"http2_enabled"`
 	WebsocketEnabled       bool   `json:"websocket_enabled"`
+	HTTP3Enabled           bool   `json:"http3_enabled,omitempty"`
+	L2OriginEnabled        bool   `json:"l2_origin_enabled,omitempty"`
 	OriginScheme           string `json:"origin_scheme,omitempty"`
 	OriginPort             int32  `json:"origin_port,omitempty"`
 	OriginHostMode         string `json:"origin_host_mode,omitempty"`
@@ -95,6 +106,14 @@ type DomainConfig struct {
 	// the candidate pool for new requests until they pass `PassThreshold`
 	// consecutive probes again. nil/zero means health check disabled.
 	OriginHealthCheck *OriginHealthCheckConfig `json:"origin_health_check,omitempty"`
+	// SignedURLSecret enables HMAC URL signing validation on the node.
+	SignedURLSecret string `json:"signed_url_secret,omitempty"`
+	BotScoreEnabled          bool   `json:"bot_score_enabled,omitempty"`
+	ResponseCompressEnabled  bool   `json:"response_compress_enabled,omitempty"`
+	EdgeScriptEnabled        bool   `json:"edge_script_enabled,omitempty"`
+	EdgeScriptRules          string `json:"edge_script_rules,omitempty"`
+	ImageTransformEnabled    bool   `json:"image_transform_enabled,omitempty"`
+	VideoSegmentCacheEnabled bool   `json:"video_segment_cache_enabled,omitempty"`
 }
 
 // OriginHealthCheckConfig is the wire-format mirror of
@@ -142,6 +161,21 @@ type UserLimitConfig struct {
 	BandwidthBps        int64 `json:"bandwidth_bps,omitempty"`
 	ConnLimit           int64 `json:"conn_limit,omitempty"`
 	MonthlyTrafficBytes int64 `json:"monthly_traffic_bytes,omitempty"`
+	StreamPortLimit     int32 `json:"stream_port_limit,omitempty"`
+	HTTP3               bool  `json:"http3,omitempty"`
+	L2Origin            bool  `json:"l2_origin,omitempty"`
+}
+
+// StreamForwardConfig is an L4 TCP/UDP forwarding rule delivered to nodes.
+type StreamForwardConfig struct {
+	ID                 string `json:"id"`
+	UserID             string `json:"user_id"`
+	Protocol           string `json:"protocol"`
+	ListenPort         int32  `json:"listen_port"`
+	OriginHost         string `json:"origin_host"`
+	OriginPort         int32  `json:"origin_port"`
+	Enabled            bool   `json:"enabled"`
+	HealthCheckEnabled bool   `json:"health_check_enabled"`
 }
 
 // OriginConfig represents an origin server in the node config.
@@ -182,9 +216,11 @@ type CacheRuleConfig struct {
 	HostPattern      string   `json:"host_pattern"`
 	PathPattern      string   `json:"path_pattern"`
 	Methods          []string `json:"methods"`
-	TTLSeconds       int64    `json:"ttl_seconds"`
-	CacheQueryParams bool     `json:"cache_query_params"`
-	Priority         int32    `json:"priority"`
+	TTLSeconds                  int64    `json:"ttl_seconds"`
+	CacheQueryParams            bool     `json:"cache_query_params"`
+	StaleWhileRevalidateSeconds int64    `json:"stale_while_revalidate_seconds,omitempty"`
+	StaleIfErrorSeconds         int64    `json:"stale_if_error_seconds,omitempty"`
+	Priority                    int32    `json:"priority"`
 }
 
 // WAFPolicyConfig represents a WAF policy delivered to nodes.
@@ -370,6 +406,19 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 
 	neededCertIDs := make(map[string]struct{})
 
+	// Preload orders per user for product feature resolution.
+	ordersByUser := make(map[string][]*store.Order)
+	for _, d := range domains {
+		if !d.Enabled || strings.TrimSpace(d.UserID) == "" {
+			continue
+		}
+		if _, ok := ordersByUser[d.UserID]; !ok {
+			if list, err := c.store.ListOrders(ctx, d.UserID); err == nil {
+				ordersByUser[d.UserID] = list
+			}
+		}
+	}
+
 	// Convert domains (only enabled ones)
 	for _, d := range domains {
 		if !d.Enabled {
@@ -415,16 +464,42 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 			}
 		}
 
+		http3Enabled := false
+		l2OriginEnabled := false
+		botScoreEnabled := false
+		responseCompress := false
+		edgeScriptEnabled := false
+		edgeScriptRules := ""
+		imageTransform := false
+		videoSegmentCache := false
+		if p := pickActiveProduct(ordersByUser[d.UserID], d.LineGroupID, func(pid string) (*store.Product, error) {
+			return c.store.GetProduct(ctx, pid)
+		}); p != nil {
+			http3Enabled = p.HTTP3
+			l2OriginEnabled = p.L2Origin
+		}
+		if d.Security != nil {
+			botScoreEnabled = d.Security.BotScoreEnabled
+			responseCompress = d.Security.ResponseCompressEnabled
+			edgeScriptEnabled = d.Security.EdgeScriptEnabled
+			edgeScriptRules = strings.TrimSpace(d.Security.EdgeScriptRules)
+			imageTransform = d.Security.ImageTransformEnabled
+			videoSegmentCache = d.Security.VideoSegmentCacheEnabled
+		}
+
 		nodeConfig.Domains = append(nodeConfig.Domains, DomainConfig{
 			ID:                     d.ID,
 			Name:                   d.Name,
 			UserID:                 d.UserID,
 			OriginID:               d.OriginID,
 			CertID:                 d.CertID,
+			ListenPort:             normalizeDomainListenPort(d.ListenPort),
 			HTTPSEnabled:           d.HTTPSEnabled,
 			CacheEnabled:           d.CacheEnabled,
 			HTTP2Enabled:           d.HTTP2Enabled,
 			WebsocketEnabled:       d.WebsocketEnabled,
+			HTTP3Enabled:           http3Enabled,
+			L2OriginEnabled:        l2OriginEnabled,
 			OriginScheme:           defaultOriginScheme(d.OriginScheme),
 			OriginPort:             defaultOriginPort(d.OriginPort),
 			OriginHostMode:         defaultOriginHostMode(d.OriginHostMode),
@@ -436,6 +511,13 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 			ErrorPages:             errorPages,
 			LoadBalanceMethod:      compileLoadBalanceMethod(d.LoadBalanceMethod),
 			OriginHealthCheck:      compileOriginHealthCheck(d.OriginHealthCheck),
+			SignedURLSecret:        signedURLSecret(d.Security),
+			BotScoreEnabled:          botScoreEnabled,
+			ResponseCompressEnabled:  responseCompress,
+			EdgeScriptEnabled:        edgeScriptEnabled,
+			EdgeScriptRules:          edgeScriptRules,
+			ImageTransformEnabled:    imageTransform,
+			VideoSegmentCacheEnabled: videoSegmentCache,
 		})
 	}
 
@@ -476,14 +558,16 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 			continue
 		}
 		nodeConfig.CacheRules = append(nodeConfig.CacheRules, CacheRuleConfig{
-			ID:               r.ID,
-			Name:             r.Name,
-			HostPattern:      r.HostPattern,
-			PathPattern:      r.PathPattern,
-			Methods:          r.Methods,
-			TTLSeconds:       r.TTLSeconds,
-			CacheQueryParams: r.CacheQueryParams,
-			Priority:         r.Priority,
+			ID:                          r.ID,
+			Name:                        r.Name,
+			HostPattern:                 r.HostPattern,
+			PathPattern:                 r.PathPattern,
+			Methods:                     r.Methods,
+			TTLSeconds:                  r.TTLSeconds,
+			CacheQueryParams:            r.CacheQueryParams,
+			StaleWhileRevalidateSeconds: r.StaleWhileRevalidateSeconds,
+			StaleIfErrorSeconds:         r.StaleIfErrorSeconds,
+			Priority:                    r.Priority,
 		})
 	}
 
@@ -615,6 +699,10 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 		if banSeconds <= 0 {
 			banSeconds = 300
 		}
+		failLimit := int64(sec.FailLimit)
+		if failLimit <= 0 {
+			failLimit = 3
+		}
 
 		// IP whitelist — evaluated first, short-circuits everything.
 		for _, ip := range sec.IPWhitelist {
@@ -714,7 +802,10 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 			if !r.Enabled {
 				continue
 			}
-			action, captcha := secModeToAction(r.Mode)
+			action, captcha := secCCRuleAction(r.Filter, r.Mode)
+			if action == "" && captcha == "" {
+				continue
+			}
 			rid := r.ID
 			if rid == "" {
 				rid = fmt.Sprintf("%s-cr-%d", d.ID, i)
@@ -731,6 +822,7 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 				Action:      action,
 				Value:       r.Match,
 				CaptchaType: captcha,
+				Threshold:   failLimit,
 				Priority:    700,
 				Note:        r.Note,
 				BanSeconds:  banSeconds,
@@ -744,6 +836,7 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 				Type:          "default",
 				Action:        action,
 				CaptchaType:   captcha,
+				Threshold:     failLimit,
 				Priority:      100,
 				BanSeconds:    banSeconds,
 				BanMode:       "ipset",
@@ -797,6 +890,8 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 	if len(userIDs) > 0 {
 		userLimits := make(map[string]UserLimitConfig)
 		for uid := range userIDs {
+			var best *store.Product
+			var bestEnd *time.Time
 			orders, err := c.store.ListOrders(ctx, uid)
 			if err != nil {
 				continue
@@ -812,24 +907,66 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 				if err != nil || p == nil {
 					continue
 				}
-				var lc UserLimitConfig
-				if p.BandwidthBps != nil && *p.BandwidthBps > 0 {
-					lc.BandwidthBps = *p.BandwidthBps
+				if best == nil {
+					best = p
+					if o.EndsAt != nil {
+						t := o.EndsAt.UTC()
+						bestEnd = &t
+					}
+					continue
 				}
-				if p.ConnLimit != nil && *p.ConnLimit > 0 {
-					lc.ConnLimit = *p.ConnLimit
+				if o.EndsAt == nil {
+					continue
 				}
-				if p.MonthlyTrafficBytes != nil && *p.MonthlyTrafficBytes > 0 {
-					lc.MonthlyTrafficBytes = *p.MonthlyTrafficBytes
+				if bestEnd == nil || o.EndsAt.After(*bestEnd) {
+					cp := o.EndsAt.UTC()
+					bestEnd = &cp
+					best = p
 				}
-				if lc.BandwidthBps > 0 || lc.ConnLimit > 0 || lc.MonthlyTrafficBytes > 0 {
-					userLimits[uid] = lc
-				}
-				break // use first active product
+			}
+			if best == nil {
+				continue
+			}
+			var lc UserLimitConfig
+			if best.BandwidthBps != nil && *best.BandwidthBps > 0 {
+				lc.BandwidthBps = *best.BandwidthBps
+			}
+			if best.ConnLimit != nil && *best.ConnLimit > 0 {
+				lc.ConnLimit = *best.ConnLimit
+			}
+			if best.MonthlyTrafficBytes != nil && *best.MonthlyTrafficBytes > 0 {
+				lc.MonthlyTrafficBytes = *best.MonthlyTrafficBytes
+			}
+			if best.StreamPortLimit != nil && *best.StreamPortLimit > 0 {
+				lc.StreamPortLimit = *best.StreamPortLimit
+			}
+			lc.HTTP3 = best.HTTP3
+			lc.L2Origin = best.L2Origin
+			if lc.BandwidthBps > 0 || lc.ConnLimit > 0 || lc.MonthlyTrafficBytes > 0 || lc.StreamPortLimit > 0 || lc.HTTP3 || lc.L2Origin {
+				userLimits[uid] = lc
 			}
 		}
 		if len(userLimits) > 0 {
 			nodeConfig.UserLimits = userLimits
+		}
+	}
+
+	// L4 stream forwarding rules
+	if forwards, err := c.store.ListAllStreamForwards(ctx); err == nil {
+		for _, sf := range forwards {
+			if sf == nil || !sf.Enabled {
+				continue
+			}
+			nodeConfig.StreamForwards = append(nodeConfig.StreamForwards, StreamForwardConfig{
+				ID:                 sf.ID,
+				UserID:             sf.UserID,
+				Protocol:           sf.Protocol,
+				ListenPort:         sf.ListenPort,
+				OriginHost:         sf.OriginHost,
+				OriginPort:         sf.OriginPort,
+				Enabled:            sf.Enabled,
+				HealthCheckEnabled: sf.HealthCheckEnabled,
+			})
 		}
 	}
 
@@ -855,6 +992,26 @@ func (c *Compiler) Compile(ctx context.Context) (version string, payload []byte,
 		gt.ErrorPages = nil
 	}
 	nodeConfig.Templates = gt
+
+	// Sibling nodes for L2 cache fetch (online nodes with a public IP).
+	if nodes, err := c.store.ListNodes(ctx); err == nil {
+		for _, n := range nodes {
+			if n == nil {
+				continue
+			}
+			if strings.ToLower(strings.TrimSpace(n.Status)) != "online" {
+				continue
+			}
+			ip := strings.TrimSpace(n.PublicIP)
+			if ip == "" {
+				continue
+			}
+			nodeConfig.L2Peers = append(nodeConfig.L2Peers, L2PeerConfig{
+				NodeID:  n.ID,
+				Address: "http://" + ip,
+			})
+		}
+	}
 
 	// Serialize to JSON
 	payload, err = json.Marshal(nodeConfig)
@@ -902,11 +1059,18 @@ func defaultOriginScheme(s string) string {
 	return s
 }
 
-func defaultOriginPort(p int32) int32 {
-	if p <= 0 {
+func defaultOriginPort(port int32) int32 {
+	if port <= 0 {
 		return 80
 	}
-	return p
+	return port
+}
+
+func normalizeDomainListenPort(port int32) int32 {
+	if port < 0 || port > 65535 {
+		return 0
+	}
+	return port
 }
 
 func defaultOriginHostMode(mode string) string {
@@ -928,6 +1092,62 @@ func defaultOriginConnectTimeout(v int64) int64 {
 		return 10000
 	}
 	return v
+}
+
+func signedURLSecret(sec *store.DomainSecurity) string {
+	if sec == nil {
+		return ""
+	}
+	return strings.TrimSpace(sec.SignedURLSecret)
+}
+
+type productFetcher func(productID string) (*store.Product, error)
+
+// pickActiveProduct mirrors control-plane getUserActiveProduct: when
+// lineGroupID is set, return the paid product bound to that cluster; otherwise
+// return the product tied to the order with the latest EndsAt.
+func pickActiveProduct(orders []*store.Order, lineGroupID string, fetch productFetcher) *store.Product {
+	now := time.Now()
+	lineGroupID = strings.TrimSpace(lineGroupID)
+	var best *store.Product
+	var bestEnd *time.Time
+	for _, o := range orders {
+		if o == nil || o.Status != "paid" {
+			continue
+		}
+		if o.EndsAt != nil && o.EndsAt.Before(now) {
+			continue
+		}
+		p, err := fetch(o.ProductID)
+		if err != nil || p == nil {
+			continue
+		}
+		productLineGroupID := p.LineGroupID
+		if productLineGroupID == "" {
+			productLineGroupID = p.ClusterID
+		}
+		if lineGroupID != "" {
+			if productLineGroupID == lineGroupID {
+				return p
+			}
+			continue
+		}
+		if o.EndsAt == nil {
+			if best == nil {
+				best = p
+			}
+			continue
+		}
+		if bestEnd == nil || o.EndsAt.After(*bestEnd) {
+			cp := o.EndsAt.UTC()
+			bestEnd = &cp
+			best = p
+		}
+	}
+	if lineGroupID != "" {
+		return nil
+	}
+	return best
 }
 
 // compileOriginAuth converts the store OriginAuth into the node-facing
@@ -1262,6 +1482,21 @@ func (c *Compiler) GetConfig(ctx context.Context, version string) (*store.Config
 func hashString(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:4])
+}
+
+// secCCRuleAction maps a custom-rule filter + mode onto edge actions.
+// Filter uses UI labels (放行/拦截/验证) or canonical values.
+func secCCRuleAction(filter, mode string) (action, captcha string) {
+	switch strings.TrimSpace(filter) {
+	case "放行", "allow":
+		return "allow", ""
+	case "拦截", "deny":
+		return "deny", ""
+	case "验证", "验证码", "challenge":
+		return secModeToAction(mode)
+	default:
+		return secModeToAction(mode)
+	}
 }
 
 // secModeToAction maps a DomainSecurity preset key onto (action, captcha_type)

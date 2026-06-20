@@ -20,18 +20,25 @@ export interface NodeMetricsSnapshot {
 export function useNodeListSSE() {
   const metricsMap = ref<Record<string, NodeMetricsSnapshot>>({})
   const connected = ref(false)
+  const reconnecting = ref(false)
 
   let es: EventSource | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  // See `useMonitorSSE` for the rationale: clearTimeout cannot cancel
+  // a callback that has already been queued, so we need a sticky
+  // "disposed" flag to keep `connect()` from spinning up a new
+  // EventSource after the view has unmounted.
+  let disposed = false
 
   function connect() {
-    if (es) return
+    if (disposed || es) return
     es = new EventSource("/api/nodes/monitor/stream")
 
     es.addEventListener("monitor", (e: MessageEvent) => {
       try {
         const payload: MonitorSSEPayload = JSON.parse(e.data)
         connected.value = true
+        reconnecting.value = false
         if (payload.rank?.nodes) {
           const m: Record<string, NodeMetricsSnapshot> = {}
           for (const n of payload.rank.nodes) {
@@ -55,17 +62,22 @@ export function useNodeListSSE() {
 
     es.onopen = () => {
       connected.value = true
+      reconnecting.value = false
     }
 
     es.onerror = () => {
       connected.value = false
+      reconnecting.value = true
       es?.close()
       es = null
-      reconnectTimer = setTimeout(connect, 5000)
+      if (!disposed) {
+        reconnectTimer = setTimeout(connect, 5000)
+      }
     }
   }
 
   function disconnect() {
+    disposed = true
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
@@ -73,9 +85,10 @@ export function useNodeListSSE() {
     es?.close()
     es = null
     connected.value = false
+    reconnecting.value = false
   }
 
   onUnmounted(disconnect)
 
-  return { metricsMap, connected, connect, disconnect }
+  return { metricsMap, connected, reconnecting, connect, disconnect }
 }

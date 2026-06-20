@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "updated_at": "2026-06-19T00:00:00Z",
+  "licenses": [
+    {
+      "key_hash": "50424e99595089e9e74faca58eb950f5a7b853ec70e263d721df77322041aa54",
+      "key_hint": "LOCAL-DEV-LICENSE-2026",
+      "customer_name": "Local Development",
+      "status": "active",
+      "type": "dev",
+      "plan": "unlimited",
+      "max_nodes": 100,
+      "expires_at": "2099-12-31T23:59:59Z",
+      "reason": "",
+      "features": ["all"]
+    }
+  ]
+}

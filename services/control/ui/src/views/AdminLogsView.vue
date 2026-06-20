@@ -1,32 +1,29 @@
 ﻿<template>
   <div class="admin-page">
-    <div v-if="error" class="admin-error-box">
-      {{ error }}
-      <t-button size="small" theme="primary" @click="loadData">重试</t-button>
-    </div>
+    <ErrorState v-if="error && logs.length === 0" :message="error" @retry="loadData" />
 
-    <t-card bordered class="admin-list-card">
-      <t-tabs v-model="activeTab" class="admin-tabs" @change="handleTabChange">
-        <t-tab-panel v-for="tabItem in tabs" :key="tabItem.value" :value="tabItem.value" :label="tabItem.label">
+    <el-card class="admin-list-card">
+      <el-tabs v-model="activeTab" class="admin-tabs" @tab-change="handleTabChange">
+        <el-tab-pane v-for="tabItem in tabs" :key="tabItem.value" :name="tabItem.value" :label="tabItem.label">
           <div class="admin-toolbar">
             <div class="admin-toolbar-left">
-              <t-select v-model="status" :options="statusOptions" class="admin-filter-select-large" />
+              <EpSelect v-model="status" :options="statusOptions" class="admin-filter-select-large" />
             </div>
             <div class="admin-toolbar-right">
-              <t-input v-model="query" class="admin-search-input" clearable placeholder="搜索" />
-              <t-button variant="outline" @click="loadData">刷新</t-button>
+              <el-input v-model="query" class="admin-search-input" clearable placeholder="搜索" />
+              <el-button plain @click="loadData">刷新</el-button>
             </div>
           </div>
 
           <!-- Desktop: table view -->
           <div class="admin-desktop-only">
-            <t-empty v-if="logs.length === 0" description="暂无日志" class="admin-empty" />
-            <t-table
+            <LoadingState v-if="loading && logs.length === 0" />
+            <el-empty v-else-if="logs.length === 0" description="暂无日志" class="admin-empty" />
+            <EpDataTable
               v-else
               :data="logs"
               :columns="columns"
               row-key="id"
-              bordered
               hover
               stripe
               :loading="loading"
@@ -44,13 +41,13 @@
                 <div class="admin-mobile-card-header">
                   <div class="admin-mobile-card-title">{{ row.username || row.user_id || '-' }}</div>
                   <div class="admin-mobile-card-tags">
-                    <t-tag
-                      :theme="row.status === 'failed' ? 'danger' : 'success'"
-                      variant="light"
+                    <el-tag
+                      :type="row.status === 'failed' ? 'danger' : 'success'"
+                      effect="light"
                       size="small"
                     >
                       {{ row.status === 'failed' ? '失败' : '成功' }}
-                    </t-tag>
+                    </el-tag>
                   </div>
                 </div>
                 <div class="admin-mobile-card-subtitle">{{ row.message || '-' }}</div>
@@ -71,7 +68,7 @@
               </div>
             </div>
             <div v-if="total > 0" class="admin-mobile-pagination">
-              <t-pagination
+              <el-pagination
                 :current="page"
                 :page-size="pageSize"
                 :total="total"
@@ -83,16 +80,21 @@
               />
             </div>
           </div>
-        </t-tab-panel>
-      </t-tabs>
-    </t-card>
+        </el-tab-pane>
+      </el-tabs>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
 import { computed, h, onMounted, ref } from "vue"
-import { MessagePlugin, Tag } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
+import { ElTag } from "element-plus"
 import { api, type SystemLog } from "@/lib/api"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const tabs = [
   { label: "登录日志", value: "login" },
@@ -140,8 +142,8 @@ const loadData = async () => {
 }
 
 const renderStatusTag = (value: string) => {
-  if (value === "failed") return h(Tag, { theme: "danger" }, () => "失败")
-  return h(Tag, { theme: "success" }, () => "成功")
+  if (value === "failed") return h(ElTag, { type: "danger" }, () => "失败")
+  return h(ElTag, { type: "success" }, () => "成功")
 }
 
 const columns = computed(() => [

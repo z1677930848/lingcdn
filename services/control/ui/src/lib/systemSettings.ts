@@ -6,14 +6,18 @@ export type FooterLink = {
   href: string
 }
 
+export type SidebarBrandMode = "name" | "logo"
+
 export type SystemSettings = {
   system_name: string
   footer_links: string
   footer_copyright: string
   favicon: string
   logo: string
+  sidebar_brand_mode: SidebarBrandMode
   register_enabled: boolean
   register_email_verification: boolean
+  renewal_before_expiry_days: number
 }
 
 const DEFAULT_SETTINGS: SystemSettings = {
@@ -22,8 +26,10 @@ const DEFAULT_SETTINGS: SystemSettings = {
   footer_copyright: `(c) ${new Date().getFullYear()} LingCDN. All rights reserved.`,
   favicon: "",
   logo: "",
+  sidebar_brand_mode: "name",
   register_enabled: true,
   register_email_verification: false,
+  renewal_before_expiry_days: 30,
 }
 
 let cachedSettings: SystemSettings | null = null
@@ -49,6 +55,10 @@ function persistSystemName(name: string) {
   }
 }
 
+function normalizeSidebarBrandMode(value: unknown): SidebarBrandMode {
+  return String(value || "").trim().toLowerCase() === "logo" ? "logo" : "name"
+}
+
 function normalizeSettings(input: any): SystemSettings {
   const source = input || {}
   return {
@@ -57,9 +67,13 @@ function normalizeSettings(input: any): SystemSettings {
     footer_copyright: String(source.footer_copyright || DEFAULT_SETTINGS.footer_copyright),
     favicon: String(source.favicon || ""),
     logo: String(source.logo || ""),
+    sidebar_brand_mode: normalizeSidebarBrandMode(source.sidebar_brand_mode),
     register_enabled: Boolean(source.register_enabled ?? DEFAULT_SETTINGS.register_enabled),
     register_email_verification: Boolean(
       source.register_email_verification ?? DEFAULT_SETTINGS.register_email_verification
+    ),
+    renewal_before_expiry_days: Number(
+      source.renewal_before_expiry_days ?? DEFAULT_SETTINGS.renewal_before_expiry_days
     ),
   }
 }
@@ -138,7 +152,11 @@ export function useSystemSettings() {
 
   const brand = computed(() => {
     const title = settings.value.system_name || DEFAULT_SETTINGS.system_name
-    return { title, logo: settings.value.logo }
+    return {
+      title,
+      logo: settings.value.logo,
+      display: settings.value.sidebar_brand_mode,
+    }
   })
 
   const footerCopyright = computed(() =>

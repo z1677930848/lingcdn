@@ -1,147 +1,102 @@
 <template>
   <div class="page">
-    <div v-if="loading" class="loading-wrap">
-      <t-loading />
-    </div>
+    <SkeletonPage v-if="loading" />
+    <ErrorState v-else-if="error" :message="error" @retry="load" />
 
     <template v-else-if="domain">
-      <!-- 页面 hero：渐变品牌底 + 域名 + CNAME 操作 + 健康摘要 chip。
-           把高频操作（复制 CNAME / 重新生成）和"看一眼就懂"的健康状态
-           上提到顶部，避免用户为了校验状态在 7 个 tab 里来回跳。 -->
-      <section class="hero">
-        <div class="hero-aurora" aria-hidden="true"></div>
-        <div class="hero-grid" aria-hidden="true"></div>
-        <div class="hero-content">
-          <div class="hero-top">
-            <button class="hero-back" type="button" @click="goBack">
-              <ArrowLeft :size="16" />
-              <span>返回域名列表</span>
-            </button>
-            <div class="hero-status">
-              <t-tag
-                shape="round"
-                :theme="domain.enabled ? 'success' : 'default'"
-                variant="light"
-                size="medium"
-              >
-                <template #icon>
-                  <CheckCircle2 v-if="domain.enabled" :size="14" />
-                  <CircleSlash v-else :size="14" />
-                </template>
-                {{ domain.enabled ? '正常运行' : '已停用' }}
-              </t-tag>
-            </div>
-          </div>
+      <div class="domain-page-head">
+        <el-button link type="primary" class="domain-page-back" aria-label="返回域名列表" @click="goBack">
+          <ArrowLeft :size="18" />
+        </el-button>
+        <h1 class="domain-page-title">{{ domain.name }}</h1>
+      </div>
 
-          <div class="hero-main">
-            <div class="hero-icon">
-              <Globe2 :size="30" />
-            </div>
-            <div class="hero-title-wrap">
-              <div class="hero-eyebrow">域名详情</div>
-              <h1 class="hero-title">{{ domain.name }}</h1>
-              <div class="hero-cname">
-                <code>{{ domain.cname || '尚未生成 CNAME' }}</code>
-                <button
-                  v-if="domain.cname"
-                  class="hero-icon-btn"
-                  type="button"
-                  title="复制 CNAME"
-                  @click="copyCname"
-                >
-                  <Copy :size="14" />
-                </button>
-                <button
-                  class="hero-icon-btn"
-                  type="button"
-                  title="重新生成 CNAME"
-                  :disabled="saving === 'regen-cname'"
-                  @click="regenCname"
-                >
-                  <RefreshCw :size="14" :class="{ 'spin': saving === 'regen-cname' }" />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div class="hero-chips">
-            <div
-              v-for="chip in healthChips"
-              :key="chip.key"
-              :class="['hchip', chip.on ? 'hchip-on' : 'hchip-off']"
-            >
-              <component :is="chip.icon" :size="14" />
-              <span>{{ chip.label }}</span>
-              <span class="hchip-state">{{ chip.on ? '已启用' : '已关闭' }}</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 基本信息：用 TDescriptions 替换原来手写的 info-grid，
-           标签/值对齐更自然，bordered 模式与下方配置卡的视觉层级一致。 -->
-      <t-card class="info-card" :bordered="true" :body-style="{ padding: '0' }">
-        <template #header>
-          <div class="info-card-header">
-            <Sparkles :size="16" class="info-card-icon" />
-            <span>基本信息</span>
-          </div>
-        </template>
-        <t-descriptions
-          :column="2"
-          layout="horizontal"
-          bordered
-          size="medium"
-          class="info-desc"
-        >
-          <t-descriptions-item label="CNAME">
-            <code class="cn-code">{{ domain.cname || '-' }}</code>
-          </t-descriptions-item>
-          <t-descriptions-item label="套餐">{{ clusterName || '-' }}</t-descriptions-item>
-          <t-descriptions-item label="源站">{{ originSummary || '-' }}</t-descriptions-item>
-          <t-descriptions-item label="创建时间">
-            <span :title="formatTimeFull(domain.created_at)">{{ formatTime(domain.created_at) }}</span>
-          </t-descriptions-item>
-          <t-descriptions-item label="更新时间">
-            <span :title="formatTimeFull(domain.updated_at)">{{ formatTime(domain.updated_at) }}</span>
-          </t-descriptions-item>
-        </t-descriptions>
-      </t-card>
-
-      <!-- 配置分区（对标截图顶部 tabs） -->
-      <t-card class="section-card" bordered>
-        <t-tabs v-model="activeTab" class="admin-tabs domain-detail-tabs">
-          <!-- 基本配置 — renamed inner section to "调度与域名" to avoid
-               the near-dup "基本配置 → 基本设置" that made scanning noisy. -->
-          <t-tab-panel value="basic">
-            <template #label>
-              <span class="tab-label"><Server :size="14" /><span>基本配置</span></span>
-            </template>
+      <PermissionNotice
+        v-if="!isAdmin && hasRestrictions && (!canEditDomain || !canEditSecurity)"
+        :message="readonlyNotice"
+      />
+      <el-card class="section-card domain-detail-tabs-wrap" shadow="never">
+        <el-tabs v-model="activeTab" class="admin-tabs domain-detail-tabs">
+          <el-tab-pane label="基本配置" name="basic">
             <div class="tab-body">
-              <!-- Section: 调度与域名 — cluster / domain -->
               <section class="config-section">
-                <h3 class="section-title">调度与域名</h3>
+                <h3 class="section-title">基本信息</h3>
+                <div class="sec-form sec-form--info">
+                  <div class="sec-row">
+                    <label class="sec-label">状态</label>
+                    <div class="sec-value">
+                      <span class="domain-status-line">
+                        <span class="status-dot" :class="domain.enabled ? 'status-ok' : 'status-off'" />
+                        {{ domain.enabled ? "正常" : "已停用" }}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">CNAME</label>
+                    <div class="sec-value">
+                      <div class="cname-inline">
+                        <code class="cn-code">{{ domain.cname || "尚未生成" }}</code>
+                        <el-button v-if="domain.cname" link type="primary" title="复制 CNAME" @click="copyCname">
+                          <Copy :size="14" />
+                        </el-button>
+                        <el-button
+                          v-if="canEditDomain"
+                          link
+                          type="primary"
+                          :loading="saving === 'regen-cname'"
+                          @click="regenCname"
+                        >
+                          更改 CNAME
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">套餐</label>
+                    <div class="sec-value sec-value--text">{{ clusterName || "-" }}</div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">源站</label>
+                    <div class="sec-value sec-value--text">{{ originSummary || "-" }}</div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">创建时间</label>
+                    <div class="sec-value sec-value--text">
+                      <span :title="formatTimeFull(domain.created_at)">{{ formatTime(domain.created_at) }}</span>
+                    </div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">更新时间</label>
+                    <div class="sec-value sec-value--text">
+                      <span :title="formatTimeFull(domain.updated_at)">{{ formatTime(domain.updated_at) }}</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="config-section">
+                <h3 class="section-title">基本设置</h3>
                 <div class="sec-form">
                   <div class="sec-row">
-                    <label class="sec-label">套餐（集群）</label>
+                    <label class="sec-label">套餐</label>
                     <div class="sec-value">
-                      <t-select v-model="form.line_group_id" :options="clusterOptions" placeholder="请选择" class="fld-default" />
-                      <div class="sec-hint">切换套餐/集群只影响新请求的调度节点，不会改动 CNAME。</div>
+                      <EpSelect v-model="form.line_group_id" :options="clusterOptions" placeholder="请选择" class="fld-default" />
+                      <div class="sec-hint">切换套餐并不会导致 CNAME 地址变动，只是会指向新的节点服务器。</div>
                     </div>
                   </div>
                   <div class="sec-row">
                     <label class="sec-label">域名</label>
                     <div class="sec-value">
-                      <t-input v-model="form.name" class="fld-default" />
-                      <div class="sec-hint">修改后 CNAME 可能重新生成，如需多个域名共用同一组回源请使用多条记录。</div>
+                      <el-input v-model="form.name" class="fld-default" />
+                      <div class="sec-hint">多个域名请用空格分隔；修改后 CNAME 可能重新生成。</div>
                     </div>
                   </div>
                   <div class="sec-row">
                     <label class="sec-label">网站启停</label>
                     <div class="sec-value">
                       <div class="sec-switch">
-                        <t-switch v-model="form.enabled" size="large" />
-                        <span class="switch-text">{{ form.enabled ? '已启用' : '已停用' }}</span>
+                        <el-switch v-model="form.enabled" />
+                        <span class="switch-text">{{ form.enabled ? "已启用" : "已停用" }}</span>
                       </div>
                       <div class="sec-hint">关闭后节点将拒绝本域名的所有请求。</div>
                     </div>
@@ -153,34 +108,41 @@
                 <h3 class="section-title">HTTP 设置</h3>
                 <div class="sec-form">
                   <div class="sec-row">
+                    <label class="sec-label">开关</label>
+                    <div class="sec-value">
+                      <div class="sec-switch">
+                        <el-switch v-model="httpAccessEnabled" />
+                        <span class="switch-text">{{ httpAccessEnabled ? "已启用" : "已关闭" }}</span>
+                      </div>
+                      <div class="sec-hint">如果关闭，网站将无法使用 HTTP 访问；建议同时开启 HTTPS。</div>
+                    </div>
+                  </div>
+                  <div v-show="httpAccessEnabled" class="sec-row">
                     <label class="sec-label">监听端口</label>
                     <div class="sec-value">
                       <div class="port-wrap">
-                        <t-input v-model="listenPortText" type="number" class="fld-port" placeholder="0 (默认)" />
-                        <t-button variant="outline" size="small" @click="setListenPort(80)">80</t-button>
-                        <t-button variant="outline" size="small" @click="setListenPort(443)">443</t-button>
-                        <t-button variant="outline" size="small" @click="setListenPort(8080)">8080</t-button>
-                        <t-button variant="text" size="small" @click="setListenPort(0)">默认</t-button>
+                        <el-input v-model="listenPortText" type="number" class="fld-port" placeholder="80" />
+                        <el-button plain size="small" @click="setListenPort(80)">80</el-button>
+                        <el-button plain size="small" @click="setListenPort(443)">443</el-button>
+                        <el-button plain size="small" @click="setListenPort(8080)">8080</el-button>
+                        <el-button link size="small" @click="setListenPort(0)">默认</el-button>
                       </div>
-                      <div class="sec-hint">留空或 0 使用默认端口 80；如需关闭明文 HTTP，请在「HTTPS 设置」中强制启用 HTTPS。</div>
+                      <div class="sec-hint">留空或 0 使用默认端口 80。</div>
                     </div>
                   </div>
                 </div>
               </section>
 
               <div class="form-actions">
-                <t-button theme="primary" :loading="saving === 'basic'" :disabled="!basicDirty" @click="saveBasic">保存基本配置</t-button>
-                <t-button variant="outline" :disabled="!basicDirty || saving === 'basic'" @click="resetBasic">重置</t-button>
+                <el-button v-if="canEditDomain" type="primary" :loading="saving === 'basic'" :disabled="!basicDirty" @click="saveBasic">保存</el-button>
+                <el-button plain :disabled="!basicDirty || saving === 'basic'" @click="resetBasic">重置</el-button>
                 <span v-if="basicDirty" class="dirty-hint">有未保存的修改</span>
               </div>
             </div>
-          </t-tab-panel>
+          </el-tab-pane>
 
           <!-- 回源设置 -->
-          <t-tab-panel value="origin">
-            <template #label>
-              <span class="tab-label"><CloudUpload :size="14" /><span>回源设置</span></span>
-            </template>
+          <el-tab-pane label="回源设置" name="origin">
             <div class="tab-body">
               <section class="config-section">
                 <h3 class="section-title">源站</h3>
@@ -203,13 +165,13 @@
                           <div class="origin-handle" aria-hidden="true">
                             <GripVertical :size="14" />
                           </div>
-                          <t-input
+                          <el-input
                             v-model="entry.address"
                             placeholder="1.2.3.4 或 origin.example.com:8080"
                             class="origin-address"
                           />
                           <div class="origin-weight">
-                            <t-input-number
+                            <el-input-number
                               v-model="entry.weight"
                               :min="1"
                               :max="100"
@@ -217,7 +179,7 @@
                             />
                           </div>
                           <div class="origin-enabled">
-                            <t-switch v-model="entry.enabled" size="small" />
+                            <el-switch v-model="entry.enabled" size="small" />
                             <span class="switch-hint">{{ entry.enabled ? "启用" : "停用" }}</span>
                           </div>
                           <button
@@ -242,10 +204,10 @@
                   <div class="sec-row">
                     <label class="sec-label">负载方式</label>
                     <div class="sec-value">
-                      <t-radio-group v-model="form.load_balance_method">
-                        <t-radio value="round_robin">轮循</t-radio>
-                        <t-radio value="ip_hash">定源</t-radio>
-                      </t-radio-group>
+                      <el-radio-group v-model="form.load_balance_method">
+                        <el-radio value="round_robin">轮循</el-radio>
+                        <el-radio value="ip_hash">定源</el-radio>
+                      </el-radio-group>
                       <div class="sec-hint">当添加多个源站时，负载方式为轮循时，请求平均地转发到各个源站，当为 IP Hash 时，同一个用户的请求固定发往一个源站，一般用于会话保持。</div>
                     </div>
                   </div>
@@ -254,7 +216,7 @@
                     <label class="sec-label">源站健康检查</label>
                     <div class="sec-value">
                       <div class="sec-switch">
-                        <t-switch v-model="form.origin_health_check!.enabled" />
+                        <el-switch v-model="form.origin_health_check!.enabled" />
                         <span class="switch-text">{{ form.origin_health_check?.enabled ? '已启用' : '已关闭' }}</span>
                       </div>
                       <div class="sec-hint">添加多个源站时，开启此检查后，节点会定期探测每个源站的健康状态：连续探测失败时自动从可选池中下线，恢复后再重新上线。当所有源站都不健康时会回退到全部源站，以避免出现"无源站可选"的故障。</div>
@@ -266,7 +228,7 @@
                       <label class="sec-label">探测间隔</label>
                       <div class="sec-value">
                         <div class="timeout-wrap">
-                          <t-input-number
+                          <el-input-number
                             v-model="form.origin_health_check!.interval_sec"
                             :min="5"
                             :max="600"
@@ -280,7 +242,7 @@
                     <div class="sec-row">
                       <label class="sec-label">探测路径</label>
                       <div class="sec-value">
-                        <t-input v-model="form.origin_health_check!.path" placeholder="/" class="fld-default" />
+                        <el-input v-model="form.origin_health_check!.path" placeholder="/" class="fld-default" />
                         <div class="sec-hint">节点会向 <code>http://源站地址{{ form.origin_health_check?.path || '/' }}</code> 发送 GET 请求。建议使用源站上的轻量级健康检查端点（例如 <code>/healthz</code>）。</div>
                       </div>
                     </div>
@@ -288,7 +250,7 @@
                       <label class="sec-label">超时时间</label>
                       <div class="sec-value">
                         <div class="timeout-wrap">
-                          <t-input-number
+                          <el-input-number
                             v-model="form.origin_health_check!.timeout_ms"
                             :min="100"
                             :max="60000"
@@ -304,7 +266,7 @@
                       <label class="sec-label">失败下线阈值</label>
                       <div class="sec-value">
                         <div class="timeout-wrap">
-                          <t-input-number
+                          <el-input-number
                             v-model="form.origin_health_check!.fail_threshold"
                             :min="1"
                             :max="20"
@@ -319,7 +281,7 @@
                       <label class="sec-label">恢复上线阈值</label>
                       <div class="sec-value">
                         <div class="timeout-wrap">
-                          <t-input-number
+                          <el-input-number
                             v-model="form.origin_health_check!.pass_threshold"
                             :min="1"
                             :max="20"
@@ -340,11 +302,11 @@
                   <div class="sec-row">
                     <label class="sec-label">协议</label>
                     <div class="sec-value">
-                      <t-radio-group v-model="form.origin_scheme">
-                        <t-radio value="http">HTTP</t-radio>
-                        <t-radio value="https">HTTPS</t-radio>
-                        <t-radio value="follow_protocol">跟随客户端</t-radio>
-                      </t-radio-group>
+                      <el-radio-group v-model="form.origin_scheme">
+                        <el-radio value="http">HTTP</el-radio>
+                        <el-radio value="https">HTTPS</el-radio>
+                        <el-radio value="follow_protocol">跟随客户端</el-radio>
+                      </el-radio-group>
                       <div class="sec-hint">"跟随客户端"表示节点会根据请求来源协议自动选择回源 HTTP 或 HTTPS。</div>
                     </div>
                   </div>
@@ -352,10 +314,10 @@
                     <label class="sec-label">回源端口</label>
                     <div class="sec-value">
                       <div class="port-wrap">
-                        <t-input v-model="originPortText" type="number" class="fld-port" />
-                        <t-button variant="outline" size="small" @click="form.origin_port = 80">80</t-button>
-                        <t-button variant="outline" size="small" @click="form.origin_port = 443">443</t-button>
-                        <t-button variant="outline" size="small" @click="form.origin_port = 8080">8080</t-button>
+                        <el-input v-model="originPortText" type="number" class="fld-port" />
+                        <el-button plain size="small" @click="form.origin_port = 80">80</el-button>
+                        <el-button plain size="small" @click="form.origin_port = 443">443</el-button>
+                        <el-button plain size="small" @click="form.origin_port = 8080">8080</el-button>
                       </div>
                       <div class="sec-hint">通常 HTTP 是 80，HTTPS 是 443。</div>
                     </div>
@@ -369,18 +331,18 @@
                   <div class="sec-row">
                     <label class="sec-label">回源域名</label>
                     <div class="sec-value">
-                      <t-radio-group v-model="form.origin_host_mode">
-                        <t-radio value="request_host">访问域名</t-radio>
-                        <t-radio value="request_host_port">访问域名:访问端口</t-radio>
-                        <t-radio value="custom">自定义</t-radio>
-                      </t-radio-group>
+                      <el-radio-group v-model="form.origin_host_mode">
+                        <el-radio value="request_host">访问域名</el-radio>
+                        <el-radio value="request_host_port">访问域名:访问端口</el-radio>
+                        <el-radio value="custom">自定义</el-radio>
+                      </el-radio-group>
                       <div class="sec-hint">控制回源请求的 Host 头。多数源站匹配"访问域名"即可；当源站用不同端口区分虚拟主机时选"访问域名:访问端口"；需要固定 Host（例如对象存储 bucket 域名）时选"自定义"。</div>
                     </div>
                   </div>
                   <div class="sec-row" v-if="form.origin_host_mode === 'custom'">
                     <label class="sec-label">自定义 Host</label>
                     <div class="sec-value">
-                      <t-input v-model="form.origin_host" placeholder="api.example.com" class="fld-default" />
+                      <el-input v-model="form.origin_host" placeholder="api.example.com" class="fld-default" />
                     </div>
                   </div>
                 </div>
@@ -393,7 +355,7 @@
                     <label class="sec-label">回源超时</label>
                     <div class="sec-value">
                       <div class="timeout-wrap">
-                        <t-input-number
+                        <el-input-number
                           v-model="originTimeoutSec"
                           :min="1"
                           :max="600"
@@ -408,7 +370,7 @@
                     <label class="sec-label">连接超时</label>
                     <div class="sec-value">
                       <div class="timeout-wrap">
-                        <t-input-number
+                        <el-input-number
                           v-model="originConnectTimeoutSec"
                           :min="1"
                           :max="60"
@@ -429,7 +391,7 @@
                     <label class="sec-label">开关</label>
                     <div class="sec-value">
                       <div class="sec-switch">
-                        <t-switch v-model="form.origin_auth!.enabled" />
+                        <el-switch v-model="form.origin_auth!.enabled" />
                         <span class="switch-text">{{ form.origin_auth?.enabled ? '已启用' : '已关闭' }}</span>
                       </div>
                       <div class="sec-hint">开启后，节点会在回源时携带鉴权凭证，防止源站被直接访问（绕过 CDN）。</div>
@@ -440,10 +402,10 @@
                     <div class="sec-row">
                       <label class="sec-label">鉴权方式</label>
                       <div class="sec-value">
-                        <t-radio-group v-model="form.origin_auth!.mode">
-                          <t-radio value="header">自定义 Header</t-radio>
-                          <t-radio value="basic">HTTP Basic Auth</t-radio>
-                        </t-radio-group>
+                        <el-radio-group v-model="form.origin_auth!.mode">
+                          <el-radio value="header">自定义 Header</el-radio>
+                          <el-radio value="basic">HTTP Basic Auth</el-radio>
+                        </el-radio-group>
                         <div class="sec-hint">
                           自定义 Header：在回源请求中添加一个或多个自定义 HTTP 头（例如 <code>X-CDN-Auth: secret123</code>），源站校验该头即可拦截非 CDN 请求。<br>
                           HTTP Basic Auth：节点携带 <code>Authorization: Basic</code> 标准认证头，适用于源站已配置 Basic 认证的场景。
@@ -462,28 +424,28 @@
                               :key="idx"
                               class="origin-auth-header-row"
                             >
-                              <t-input
+                              <el-input
                                 v-model="h.name"
                                 placeholder="Header 名称 (如 X-CDN-Auth)"
                                 class="fld-grow"
                               />
-                              <t-input
+                              <el-input
                                 v-model="h.value"
                                 placeholder="Header 值 (如 secret123)"
                                 class="fld-grow"
                                 type="password"
                               />
-                              <t-button
-                                variant="text"
-                                theme="danger"
+                              <el-button
+                                link
+                                type="danger"
                                 :disabled="(form.origin_auth!.headers?.length ?? 0) <= 1"
                                 @click="form.origin_auth!.headers!.splice(idx, 1)"
-                              >删除</t-button>
+                              >删除</el-button>
                             </div>
-                            <t-button variant="outline" size="small" @click="form.origin_auth!.headers!.push({ name: '', value: '' })">
-                              <template #icon><t-icon name="add" /></template>
+                            <el-button plain size="small" @click="form.origin_auth!.headers!.push({ name: '', value: '' })">
+                              <template #icon><EpIcon name="add" /></template>
                               添加 Header
-                            </t-button>
+                            </el-button>
                           </div>
                           <div class="sec-hint">每行一组 Header，名称不区分大小写。值可包含任意字符串——建议使用随机密钥。</div>
                         </div>
@@ -495,13 +457,13 @@
                       <div class="sec-row">
                         <label class="sec-label">用户名</label>
                         <div class="sec-value">
-                          <t-input v-model="form.origin_auth!.basic_user" placeholder="用户名" class="fld-creds" />
+                          <el-input v-model="form.origin_auth!.basic_user" placeholder="用户名" class="fld-creds" />
                         </div>
                       </div>
                       <div class="sec-row">
                         <label class="sec-label">密码</label>
                         <div class="sec-value">
-                          <t-input v-model="form.origin_auth!.basic_pass" placeholder="密码" type="password" class="fld-creds" />
+                          <el-input v-model="form.origin_auth!.basic_pass" placeholder="密码" type="password" class="fld-creds" />
                         </div>
                       </div>
                     </template>
@@ -510,18 +472,14 @@
               </section>
 
               <div class="form-actions">
-                <t-button theme="primary" :loading="saving === 'origin'" :disabled="!originDirty" @click="saveOrigin">保存回源设置</t-button>
-                <t-button variant="outline" :disabled="!originDirty || saving === 'origin'" @click="resetOrigin">重置</t-button>
+                <el-button v-if="canEditDomain" type="primary" :loading="saving === 'origin'" :disabled="!originDirty" @click="saveOrigin">保存回源设置</el-button>
+                <el-button plain :disabled="!originDirty || saving === 'origin'" @click="resetOrigin">重置</el-button>
                 <span v-if="originDirty" class="dirty-hint">有未保存的修改</span>
               </div>
             </div>
-          </t-tab-panel>
+          </el-tab-pane>
 
-          <!-- HTTPS设置 -->
-          <t-tab-panel value="https">
-            <template #label>
-              <span class="tab-label"><ShieldCheck :size="14" /><span>HTTPS 设置</span></span>
-            </template>
+          <el-tab-pane label="HTTPS 设置" name="https">
             <div class="tab-body">
               <section class="config-section">
                 <h3 class="section-title">协议</h3>
@@ -530,7 +488,7 @@
                     <label class="sec-label">HTTPS 开关</label>
                     <div class="sec-value">
                       <div class="sec-switch">
-                        <t-switch v-model="form.https_enabled" />
+                        <el-switch v-model="form.https_enabled" />
                         <span class="switch-text">{{ form.https_enabled ? '已启用' : '已关闭' }}</span>
                       </div>
                       <div class="sec-hint">开启后节点会监听 443 端口并使用下方证书完成 TLS 握手。</div>
@@ -540,7 +498,7 @@
                     <label class="sec-label">HTTP/2</label>
                     <div class="sec-value">
                       <div class="sec-switch">
-                        <t-switch v-model="form.http2_enabled" :disabled="!form.https_enabled" />
+                        <el-switch v-model="form.http2_enabled" :disabled="!form.https_enabled" />
                         <span class="switch-text">{{ form.http2_enabled ? '已启用' : '已关闭' }}</span>
                       </div>
                       <div class="sec-hint">HTTP/2 依赖 HTTPS，启用 HTTPS 后自动可切换。</div>
@@ -555,7 +513,7 @@
                   <div class="sec-row">
                     <label class="sec-label">证书选择</label>
                     <div class="sec-value">
-                      <t-select v-model="form.cert_id" :options="certOptions" class="fld-default" clearable />
+                      <EpSelect v-model="form.cert_id" :options="certOptions" class="fld-default" clearable />
                       <div class="sec-hint">未选择证书时，HTTPS 请求会返回默认证书或被拒绝。</div>
                     </div>
                   </div>
@@ -563,10 +521,10 @@
                     <label class="sec-label">自动申请</label>
                     <div class="sec-value">
                       <div>
-                        <t-button theme="primary" variant="outline" :loading="saving === 'acme'" @click="requestACME">
-                          <template #icon><t-icon name="download" /></template>
+                        <el-button type="primary" plain :loading="saving === 'acme'" @click="requestACME">
+                          <template #icon><EpIcon name="download" /></template>
                           一键申请 Let's Encrypt 证书
-                        </t-button>
+                        </el-button>
                       </div>
                       <div class="sec-hint">会为本域名申请 ACME 证书；需确认域名已正确 CNAME 到本 CDN。</div>
                     </div>
@@ -575,87 +533,14 @@
               </section>
 
               <div class="form-actions">
-                <t-button theme="primary" :loading="saving === 'https'" :disabled="!httpsDirty" @click="saveHTTPS">保存 HTTPS 设置</t-button>
-                <t-button variant="outline" :disabled="!httpsDirty || saving === 'https'" @click="resetHttps">重置</t-button>
+                <el-button v-if="canEditDomain" type="primary" :loading="saving === 'https'" :disabled="!httpsDirty" @click="saveHTTPS">保存 HTTPS 设置</el-button>
+                <el-button plain :disabled="!httpsDirty || saving === 'https'" @click="resetHttps">重置</el-button>
                 <span v-if="httpsDirty" class="dirty-hint">有未保存的修改</span>
               </div>
             </div>
-          </t-tab-panel>
+          </el-tab-pane>
 
-          <!-- 缓存设置 -->
-          <t-tab-panel value="cache">
-            <template #label>
-              <span class="tab-label"><HardDrive :size="14" /><span>缓存设置</span></span>
-            </template>
-            <div class="tab-body">
-              <section class="config-section">
-                <h3 class="section-title">缓存开关</h3>
-                <div class="sec-form">
-                  <div class="sec-row">
-                    <label class="sec-label">全局缓存</label>
-                    <div class="sec-value">
-                      <div class="sec-switch">
-                        <t-switch v-model="form.cache_enabled" />
-                        <span class="switch-text">{{ form.cache_enabled ? '已启用' : '已关闭' }}</span>
-                      </div>
-                      <div class="sec-hint">关闭后本站所有响应都不会在边缘节点缓存。</div>
-                    </div>
-                  </div>
-                </div>
-                <div class="form-actions">
-                  <t-button theme="primary" :loading="saving === 'cache'" :disabled="!cacheDirty" @click="saveCache">保存缓存开关</t-button>
-                  <t-button variant="outline" :disabled="!cacheDirty || saving === 'cache'" @click="resetCache">重置</t-button>
-                  <span v-if="cacheDirty" class="dirty-hint">有未保存的修改</span>
-                </div>
-              </section>
-
-              <section class="config-section">
-                <h3 class="section-title">命中本域名的缓存规则</h3>
-                <t-alert theme="info" class="tab-alert">
-                  <template #message>
-                    {{ brand.title }} 的缓存规则按 <code>host_pattern</code> 匹配生效；
-                    下表仅显示与「{{ domain?.name }}」匹配的规则（包含 <code>*</code> 通配）。
-                    完整列表与跨域名规则请前往<t-link theme="primary" @click="goToCacheRulesPage">缓存规则页</t-link>。
-                  </template>
-                </t-alert>
-                <t-table
-                  :data="matchedCacheRules"
-                  :columns="cacheRuleColumns"
-                  row-key="id"
-                  size="small"
-                  bordered
-                  empty="暂无命中规则"
-                />
-                <div class="form-actions">
-                  <t-button theme="primary" variant="outline" @click="openCacheRuleDialog()">
-                    <template #icon><t-icon name="add" /></template>
-                    新增规则（预填本域名）
-                  </t-button>
-                </div>
-              </section>
-            </div>
-          </t-tab-panel>
-
-          <!-- 安全设置
-               Layout follows the cdnfly-style screenshot:
-                 · 默认防护 (single-choice radio card grid)
-                 · 自动切换 (switch)
-                 · 自定义规则 (table + bulk toolbar)
-                 · 搜索引擎爬虫 (allow / deny / off)
-                 · 更多设置 (collapse)
-                 · 黑白名单 IP (two textareas)
-               The backend today only persists the four Quick-CC fields
-               (level/action/ban_seconds/fail_limit) globally; all new
-               per-domain fields below are kept in local reactive state
-               and a "保存" button calls saveCC which maps the chosen
-               protection preset back onto the existing API. Extra fields
-               (auto_switch / search_bot_action / custom rules / IP
-               black/white lists) surface a 提示 so users know they are
-               staged locally until the matching backend lands. -->
-          <t-tab-panel value="security">
-            <template #label>
-              <span class="tab-label"><Shield :size="14" /><span>安全设置</span></span>
-            </template>
+          <el-tab-pane label="安全设置" name="security">
             <div class="tab-body security-tab">
               <!-- No master switch: each sub-field below is its own
                    independent toggle, so an empty form means no edge
@@ -668,9 +553,9 @@
                   <div class="sec-row">
                     <label class="sec-label">默认防护</label>
                     <div class="sec-value">
-                      <t-radio-group v-model="secForm.default_mode" class="sec-mode-group">
-                        <t-radio v-for="opt in ccDefaultModes" :key="opt.value" :value="opt.value">{{ opt.label }}</t-radio>
-                      </t-radio-group>
+                      <el-radio-group v-model="secForm.default_mode" class="sec-mode-group">
+                        <el-radio v-for="opt in ccDefaultModes" :key="opt.value" :value="opt.value">{{ opt.label }}</el-radio>
+                      </el-radio-group>
                       <div class="sec-hint">当自动切换没有生效和下面的自定义规则没有匹配到时，就使用此处指定的默认防护</div>
                     </div>
                   </div>
@@ -679,10 +564,10 @@
                     <label class="sec-label">自动切换</label>
                     <div class="sec-value">
                       <div class="sec-switch">
-                        <t-switch v-model="secForm.auto_switch" />
+                        <el-switch v-model="secForm.auto_switch" />
                         <span class="switch-text">{{ secForm.auto_switch ? '已启用' : '已关闭' }}</span>
                       </div>
-                      <div class="sec-hint">开启后，节点会根据实时 QPS / 异常率自动在上面的防护等级间切换</div>
+                      <div class="sec-hint">自动切换功能开发中，当前仅保存默认防护模式；请手动选择并保存。</div>
                     </div>
                   </div>
 
@@ -690,20 +575,19 @@
                     <label class="sec-label">自定义规则</label>
                     <div class="sec-value">
                       <div class="sec-toolbar">
-                        <t-button theme="primary" @click="openCustomRule()">
-                          <template #icon><t-icon name="add" /></template>
+                        <el-button type="primary" @click="openCustomRule()">
+                          <template #icon><EpIcon name="add" /></template>
                           新增规则
-                        </t-button>
-                        <t-button variant="outline" @click="toggleAllCustomRules(true)" :disabled="secForm.custom_rules.length === 0">启用所有规则</t-button>
-                        <t-button variant="outline" @click="toggleAllCustomRules(false)" :disabled="secForm.custom_rules.length === 0">关闭所有规则</t-button>
+                        </el-button>
+                        <el-button plain @click="toggleAllCustomRules(true)" :disabled="secForm.custom_rules.length === 0">启用所有规则</el-button>
+                        <el-button plain @click="toggleAllCustomRules(false)" :disabled="secForm.custom_rules.length === 0">关闭所有规则</el-button>
                       </div>
-                      <t-table
+                      <EpDataTable
                         :data="secForm.custom_rules"
                         :columns="customRuleColumns"
                         row-key="id"
                         size="small"
-                        bordered
-                        empty="暂无数据"
+                        empty-text="暂无数据"
                         class="sec-rule-table"
                       />
                       <ol class="sec-hint sec-hint-list">
@@ -717,11 +601,11 @@
                   <div class="sec-row">
                     <label class="sec-label">搜索引擎爬虫</label>
                     <div class="sec-value">
-                      <t-radio-group v-model="secForm.search_bot">
-                        <t-radio value="off">不设置</t-radio>
-                        <t-radio value="allow">放行</t-radio>
-                        <t-radio value="deny">拦截</t-radio>
-                      </t-radio-group>
+                      <el-radio-group v-model="secForm.search_bot">
+                        <el-radio value="off">不设置</el-radio>
+                        <el-radio value="allow">放行</el-radio>
+                        <el-radio value="deny">拦截</el-radio>
+                      </el-radio-group>
                       <div class="sec-hint">爬虫包括谷歌、百度、搜狗、360 等</div>
                     </div>
                   </div>
@@ -729,25 +613,25 @@
                   <div class="sec-row sec-row--top">
                     <label class="sec-label">更多设置</label>
                     <div class="sec-value">
-                      <t-collapse
+                      <el-collapse
                         v-model="secMoreExpanded"
                         :default-value="[]"
                         expand-icon-placement="right"
                         class="sec-more-collapse"
                       >
-                        <t-collapse-panel header="封禁时长 / 挑战失败上限" :value="'more'">
+                        <el-collapse-item header="封禁时长 / 挑战失败上限" :name="'more'">
                           <div class="sec-more">
                             <div class="sec-more-row">
                               <label>封禁时长 (秒)</label>
-                              <t-input-number v-model="secForm.ban_seconds" :min="60" :max="86400" class="fld-mid" />
+                              <el-input-number v-model="secForm.ban_seconds" :min="60" :max="86400" class="fld-mid" />
                             </div>
                             <div class="sec-more-row">
                               <label>挑战失败上限</label>
-                              <t-input-number v-model="secForm.fail_limit" :min="1" :max="100" class="fld-mid" />
+                              <el-input-number v-model="secForm.fail_limit" :min="1" :max="100" class="fld-mid" />
                             </div>
                           </div>
-                        </t-collapse-panel>
-                      </t-collapse>
+                        </el-collapse-item>
+                      </el-collapse>
                     </div>
                   </div>
                 </div>
@@ -760,7 +644,7 @@
                   <div class="sec-row sec-row--top">
                     <label class="sec-label">黑名单</label>
                     <div class="sec-value">
-                      <t-textarea
+                      <el-input
                         v-model="secForm.ip_blacklist"
                         placeholder="请输入 IP"
                         :autosize="{ minRows: 5, maxRows: 10 }"
@@ -771,7 +655,7 @@
                   <div class="sec-row sec-row--top">
                     <label class="sec-label">白名单</label>
                     <div class="sec-value">
-                      <t-textarea
+                      <el-input
                         v-model="secForm.ip_whitelist"
                         placeholder="请输入 IP"
                         :autosize="{ minRows: 5, maxRows: 10 }"
@@ -790,7 +674,7 @@
                     <label class="sec-label">屏蔽透明代理</label>
                     <div class="sec-value">
                       <div class="sec-switch">
-                        <t-switch v-model="secForm.block_transparent_proxy" />
+                        <el-switch v-model="secForm.block_transparent_proxy" />
                         <span class="switch-text">{{ secForm.block_transparent_proxy ? '已启用' : '已关闭' }}</span>
                       </div>
                       <div class="sec-hint">透明代理即网上免费公开的代理，带有 x-forwarded-for 请求头的</div>
@@ -799,16 +683,16 @@
                   <div class="sec-row sec-row--top">
                     <label class="sec-label">区域屏蔽</label>
                     <div class="sec-value">
-                      <t-radio-group v-model="secForm.region_block_mode" class="region-mode-group">
-                        <t-radio value="off">不设置</t-radio>
-                        <t-radio value="foreign_exclude_hkmo_tw">国外（不包括港澳台）</t-radio>
-                        <t-radio value="foreign_include_hkmo_tw">国外（包括港澳台）</t-radio>
-                        <t-radio value="cn_include_hkmo_tw">中国（包括港澳台）</t-radio>
-                        <t-radio value="cn_exclude_hkmo_tw">中国（不包括港澳台）</t-radio>
-                        <t-radio value="custom">自定义</t-radio>
-                      </t-radio-group>
+                      <el-radio-group v-model="secForm.region_block_mode" class="region-mode-group">
+                        <el-radio value="off">不设置</el-radio>
+                        <el-radio value="foreign_exclude_hkmo_tw">国外（不包括港澳台）</el-radio>
+                        <el-radio value="foreign_include_hkmo_tw">国外（包括港澳台）</el-radio>
+                        <el-radio value="cn_include_hkmo_tw">中国（包括港澳台）</el-radio>
+                        <el-radio value="cn_exclude_hkmo_tw">中国（不包括港澳台）</el-radio>
+                        <el-radio value="custom">自定义</el-radio>
+                      </el-radio-group>
                       <div v-if="secForm.region_block_mode === 'custom'" class="region-custom-wrap">
-                        <t-textarea
+                        <el-input
                           v-model="secForm.custom_blocked_regions"
                           placeholder="请输入国家/地区代码，一行一个，例如：&#10;US&#10;JP&#10;KR&#10;RU"
                           :autosize="{ minRows: 4, maxRows: 10 }"
@@ -820,46 +704,123 @@
                 </div>
               </section>
 
+              <section class="config-section">
+                <h3 class="section-title">边缘增强</h3>
+                <div class="sec-form">
+                  <div class="sec-row">
+                    <label class="sec-label">Bot 评分</label>
+                    <div class="sec-value"><el-switch v-model="secForm.bot_score_enabled" /></div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">响应压缩</label>
+                    <div class="sec-value"><el-switch v-model="secForm.response_compress_enabled" /></div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">图片变换</label>
+                    <div class="sec-value"><el-switch v-model="secForm.image_transform_enabled" /></div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">视频分片缓存</label>
+                    <div class="sec-value"><el-switch v-model="secForm.video_segment_cache_enabled" /></div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">Edge Script</label>
+                    <div class="sec-value"><el-switch v-model="secForm.edge_script_enabled" /></div>
+                  </div>
+                  <div v-if="secForm.edge_script_enabled" class="sec-row align-top">
+                    <label class="sec-label">脚本规则 (JSON)</label>
+                    <div class="sec-value">
+                      <el-input v-model="secForm.edge_script_rules" :autosize="{ minRows: 3 }" placeholder='[{"match":"path:/api/*","action":"block"}]' />
+                    </div>
+                  </div>
+                  <div class="sec-row">
+                    <label class="sec-label">签名 URL 密钥</label>
+                    <div class="sec-value">
+                      <el-input v-model="secForm.signed_url_secret" type="password" placeholder="留空则关闭签名 URL 访问" class="fld-default" />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
               <div class="form-actions">
-                <t-button theme="primary" :loading="saving === 'cc'" @click="saveCC">保存安全设置</t-button>
+                <el-button v-if="canEditSecurity" type="primary" :loading="saving === 'cc'" @click="saveCC">保存安全设置</el-button>
               </div>
             </div>
-          </t-tab-panel>
+          </el-tab-pane>
 
 
-          <!-- 访问控制 -->
-          <t-tab-panel value="access">
-            <template #label>
-              <span class="tab-label"><UserCheck :size="14" /><span>访问控制</span></span>
-            </template>
+          <el-tab-pane label="缓存设置" name="cache">
+            <div class="tab-body">
+              <section class="config-section">
+                <h3 class="section-title">缓存开关</h3>
+                <div class="sec-form">
+                  <div class="sec-row">
+                    <label class="sec-label">全局缓存</label>
+                    <div class="sec-value">
+                      <div class="sec-switch">
+                        <el-switch v-model="form.cache_enabled" />
+                        <span class="switch-text">{{ form.cache_enabled ? '已启用' : '已关闭' }}</span>
+                      </div>
+                      <div class="sec-hint">关闭后本站所有响应都不会在边缘节点缓存。</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <el-button v-if="canEditDomain" type="primary" :loading="saving === 'cache'" :disabled="!cacheDirty" @click="saveCache">保存缓存开关</el-button>
+                  <el-button plain :disabled="!cacheDirty || saving === 'cache'" @click="resetCache">重置</el-button>
+                  <span v-if="cacheDirty" class="dirty-hint">有未保存的修改</span>
+                </div>
+              </section>
+
+              <section class="config-section">
+                <h3 class="section-title">命中本域名的缓存规则</h3>
+                <el-alert theme="info" class="tab-alert">
+                  <template #message>
+                    {{ brand.title }} 的缓存规则按 <code>host_pattern</code> 匹配生效；
+                    下表仅显示与「{{ domain?.name }}」匹配的规则（包含 <code>*</code> 通配）。
+                    完整列表与跨域名规则请前往<el-link type="primary" @click="goToCacheRulesPage">缓存规则页</el-link>。
+                  </template>
+                </el-alert>
+                <EpDataTable
+                  :data="matchedCacheRules"
+                  :columns="cacheRuleColumns"
+                  row-key="id"
+                  size="small"
+                  empty-text="暂无命中规则"
+                />
+                <div class="form-actions">
+                  <el-button type="primary" plain @click="openCacheRuleDialog()">
+                    <template #icon><EpIcon name="add" /></template>
+                    新增规则（预填本域名）
+                  </el-button>
+                </div>
+              </section>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="访问控制" name="access">
             <div class="tab-body">
               <section class="config-section">
                 <h3 class="section-title">全局 IP 白名单</h3>
-                <t-alert theme="info" class="tab-alert">
+                <el-alert theme="info" class="tab-alert">
                   <template #message>
-                    目前 {{ brand.title }} 的 IP 白名单为 <b>全局作用域</b>——加入后所有域名一同生效。
-                    单域名维度的黑/白名单与地域、UA 过滤将在后续版本提供。
-                    管理请前往
-                    <t-link theme="primary" @click="goToWAFPage">WAF 策略页</t-link>。
+                    全局 WAF IP 白名单（所有域名生效）请在
+                    <el-link type="primary" @click="goToWAFPage">WAF 策略页</el-link>
+                    管理。单域名的 IP 黑/白名单、地域封锁与 CC 规则请在「安全防护」Tab 配置并保存。
                   </template>
-                </t-alert>
-                <t-table
+                </el-alert>
+                <EpDataTable
                   :data="whitelistEntries"
                   :columns="whitelistColumns"
                   row-key="id"
                   size="small"
-                  bordered
-                  empty="暂无白名单 IP"
+                  empty-text="暂无白名单 IP"
                 />
               </section>
             </div>
-          </t-tab-panel>
+          </el-tab-pane>
 
-          <!-- 高级设置 — listen_port moved to the basic tab. -->
-          <t-tab-panel value="advanced">
-            <template #label>
-              <span class="tab-label"><Settings2 :size="14" /><span>高级设置</span></span>
-            </template>
+          <el-tab-pane label="高级设置" name="advanced">
             <div class="tab-body">
               <section class="config-section">
                 <h3 class="section-title">协议特性</h3>
@@ -868,7 +829,7 @@
                     <label class="sec-label">WebSocket</label>
                     <div class="sec-value">
                       <div class="sec-switch">
-                        <t-switch v-model="form.websocket_enabled" />
+                        <el-switch v-model="form.websocket_enabled" />
                         <span class="switch-text">{{ form.websocket_enabled ? '已启用' : '已关闭' }}</span>
                       </div>
                       <div class="sec-hint">允许 WS/WSS 连接升级（Upgrade: websocket）穿过 CDN 回源。</div>
@@ -885,86 +846,86 @@
                     :key="idx"
                     class="error-page-row"
                   >
-                    <t-input-number v-model="page.status" :min="100" :max="599" class="fld-status" />
-                    <t-select v-model="page.mode" :options="errorPageModeOptions" class="fld-mode" />
-                    <t-input v-model="page.content" placeholder="URL 或 HTML 内容" class="fld-flex" />
-                    <t-button variant="outline" theme="danger" size="small" @click="removeErrorPage(idx)">删除</t-button>
+                    <el-input-number v-model="page.status" :min="100" :max="599" class="fld-status" />
+                    <EpSelect v-model="page.mode" :options="errorPageModeOptions" class="fld-mode" />
+                    <el-input v-model="page.content" placeholder="URL 或 HTML 内容" class="fld-flex" />
+                    <el-button plain type="danger" size="small" @click="removeErrorPage(idx)">删除</el-button>
                   </div>
-                  <t-button variant="outline" size="small" @click="addErrorPage">+ 添加错误页规则</t-button>
+                  <el-button plain size="small" @click="addErrorPage">+ 添加错误页规则</el-button>
                 </div>
               </section>
 
               <div class="form-actions">
-                <t-button theme="primary" :loading="saving === 'advanced'" :disabled="!advancedDirty" @click="saveAdvanced">保存高级设置</t-button>
-                <t-button variant="outline" :disabled="!advancedDirty || saving === 'advanced'" @click="resetAdvanced">重置</t-button>
+                <el-button v-if="canEditDomain" type="primary" :loading="saving === 'advanced'" :disabled="!advancedDirty" @click="saveAdvanced">保存高级设置</el-button>
+                <el-button plain :disabled="!advancedDirty || saving === 'advanced'" @click="resetAdvanced">重置</el-button>
                 <span v-if="advancedDirty" class="dirty-hint">有未保存的修改</span>
               </div>
             </div>
-          </t-tab-panel>
-        </t-tabs>
-      </t-card>
+          </el-tab-pane>
+        </el-tabs>
+      </el-card>
     </template>
 
-    <t-card v-else class="section-card" bordered>
+    <el-card v-else class="section-card">
       <div class="empty-state">未找到该域名，可能已被删除。</div>
-    </t-card>
+    </el-card>
 
     <!-- Cache rule editor dialog (from 缓存 tab) -->
-    <t-dialog
-      v-model:visible="cacheRuleDialogOpen"
-      :header="cacheRuleEditing ? '编辑缓存规则' : '新建缓存规则'"
+    <EpDialog append-to-body
+      v-model="cacheRuleDialogOpen"
+      :title="cacheRuleEditing ? '编辑缓存规则' : '新建缓存规则'"
       :confirm-btn="{ content: '保存' }"
       cancel-btn="取消"
       @confirm="submitCacheRule"
     >
-      <div class="form-grid">
+      <div class="domain-form-grid">
         <div class="form-row-v">
           <label class="form-label-v">名称</label>
-          <t-input v-model="cacheRuleForm.name" class="form-input-v" />
+          <el-input v-model="cacheRuleForm.name" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">Host 模式</label>
-          <t-input v-model="cacheRuleForm.host_pattern" placeholder="example.com 或 *.example.com 或 *" class="form-input-v" />
+          <el-input v-model="cacheRuleForm.host_pattern" placeholder="example.com 或 *.example.com 或 *" class="form-input-v" />
           <div class="form-hint-v">预填为当前域名。支持精确、单级通配（*.name）与全局（*）。</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">路径模式</label>
-          <t-input v-model="cacheRuleForm.path_pattern" placeholder="/* 或 /api/*" class="form-input-v" />
+          <el-input v-model="cacheRuleForm.path_pattern" placeholder="/* 或 /api/*" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">TTL (秒)</label>
-          <t-input-number v-model="cacheRuleForm.ttl_seconds" :min="0" :max="31536000" class="form-input-v fld-cap-200" />
+          <el-input-number v-model="cacheRuleForm.ttl_seconds" :min="0" :max="31536000" class="form-input-v fld-cap-200" />
           <div class="form-hint-v">0 表示不缓存；建议静态资源 >= 3600。</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">优先级</label>
-          <t-input-number v-model="cacheRuleForm.priority" :min="1" :max="10000" class="form-input-v fld-cap-200" />
+          <el-input-number v-model="cacheRuleForm.priority" :min="1" :max="10000" class="form-input-v fld-cap-200" />
           <div class="form-hint-v">数值越大越先匹配。</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">缓存 Query</label>
-          <t-switch v-model="cacheRuleForm.cache_query_params" />
+          <el-switch v-model="cacheRuleForm.cache_query_params" />
           <div class="form-hint-v">开启后 <code>?key=val</code> 会参与缓存键计算；否则按路径聚合命中。</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">启用</label>
-          <t-switch v-model="cacheRuleForm.enabled" />
+          <el-switch v-model="cacheRuleForm.enabled" />
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
 
     <!-- Custom CC rule dialog (from 安全设置 tab) -->
-    <t-dialog
-      v-model:visible="customRuleDialog.open"
-      :header="customRuleDialog.editingId ? '编辑自定义规则' : '新增自定义规则'"
+    <EpDialog append-to-body
+      v-model="customRuleDialog.open"
+      :title="customRuleDialog.editingId ? '编辑自定义规则' : '新增自定义规则'"
       :confirm-btn="{ content: '保存' }"
       cancel-btn="取消"
       @confirm="submitCustomRule"
     >
-      <div class="form-grid">
+      <div class="domain-form-grid">
         <div class="form-row-v">
           <label class="form-label-v">匹配条件</label>
-          <t-input
+          <el-input
             v-model="customRuleDialog.form.match"
             placeholder="路径如 /api/*，或 header:X-Key=val，或 ua:bot"
             class="form-input-v"
@@ -975,54 +936,47 @@
         </div>
         <div class="form-row-v">
           <label class="form-label-v">执行过滤</label>
-          <t-radio-group v-model="customRuleDialog.form.filter">
-            <t-radio value="放行">放行</t-radio>
-            <t-radio value="拦截">拦截</t-radio>
-            <t-radio value="验证">验证</t-radio>
-          </t-radio-group>
+          <el-radio-group v-model="customRuleDialog.form.filter">
+            <el-radio value="放行">放行</el-radio>
+            <el-radio value="拦截">拦截</el-radio>
+            <el-radio value="验证">验证</el-radio>
+          </el-radio-group>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">匹配模式</label>
-          <t-select v-model="customRuleDialog.form.mode" class="fld-narrow-cap">
-            <t-option v-for="opt in ccDefaultModes" :key="opt.value" :value="opt.value" :label="opt.label" />
-          </t-select>
+          <el-select v-model="customRuleDialog.form.mode" class="fld-narrow-cap">
+            <el-option v-for="opt in ccDefaultModes" :key="opt.value" :value="opt.value" :label="opt.label" />
+          </el-select>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">备注</label>
-          <t-input v-model="customRuleDialog.form.note" class="form-input-v" />
+          <el-input v-model="customRuleDialog.form.note" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">启用</label>
-          <t-switch v-model="customRuleDialog.form.enabled" />
+          <el-switch v-model="customRuleDialog.form.enabled" />
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import { MessagePlugin } from "@/lib/ep-message"
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
+import EpIcon from "@/components/ep/EpIcon.vue"
 import { computed, h, onMounted, reactive, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
-import { DialogPlugin, MessagePlugin, Switch, Button } from "tdesign-vue-next"
+import { DialogPlugin } from "@/lib/ep-dialog"
+import { ElButton, ElSwitch } from "element-plus"
 import {
   ArrowLeft,
   Copy,
-  RefreshCw,
-  Globe2,
-  Server,
-  CloudUpload,
-  ShieldCheck,
-  HardDrive,
-  Shield,
-  UserCheck,
-  Settings2,
-  CheckCircle2,
-  CircleSlash,
-  Plug,
   Plus,
   Trash2,
   GripVertical,
-  Sparkles,
 } from "lucide-vue-next"
 import {
   api,
@@ -1034,16 +988,22 @@ import {
   type WAFWhitelistEntry,
 } from "@/lib/api"
 import { useAuthStore } from "@/stores/auth"
+import PermissionNotice from "@/components/common/PermissionNotice.vue"
+import { useUserPermissions } from "@/composables/useUserPermissions"
 import { copyText } from "@/lib/clipboard"
 import { useSystemSettings } from "@/lib/systemSettings"
+import ErrorState from "@/components/common/ErrorState.vue"
+import SkeletonPage from "@/components/common/SkeletonPage.vue"
 
 const { brand } = useSystemSettings()
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const { canDomainsWrite, canWAFEdit, hasRestrictions } = useUserPermissions()
 
 const loading = ref(true)
+const error = ref("")
 const saving = ref<string>("")
 
 const domain = ref<Domain | null>(null)
@@ -1051,6 +1011,8 @@ const clusters = ref<Cluster[]>([])
 const certs = ref<Certificate[]>([])
 
 const activeTab = ref("basic")
+const httpAccessEnabled = ref(true)
+const httpAccessPortBackup = ref(0)
 
 // Editable form snapshot of the domain. We keep `domain.value` as the
 // server-confirmed copy and only diff it back on save; per-tab saves patch
@@ -1158,6 +1120,13 @@ const secForm = reactive<{
   block_transparent_proxy: boolean
   region_block_mode: string
   custom_blocked_regions: string
+  signed_url_secret: string
+  bot_score_enabled: boolean
+  response_compress_enabled: boolean
+  edge_script_enabled: boolean
+  edge_script_rules: string
+  image_transform_enabled: boolean
+  video_segment_cache_enabled: boolean
 }>({
   default_mode: "off",
   auto_switch: false,
@@ -1170,8 +1139,15 @@ const secForm = reactive<{
   block_transparent_proxy: false,
   region_block_mode: "off",
   custom_blocked_regions: "",
+  signed_url_secret: "",
+  bot_score_enabled: false,
+  response_compress_enabled: false,
+  edge_script_enabled: false,
+  edge_script_rules: "",
+  image_transform_enabled: false,
+  video_segment_cache_enabled: false,
 })
-// "更多设置" 的展开状态由 <t-collapse v-model> 维护，默认收起。
+// "更多设置" 的展开状态由 <el-collapse v-model> 维护，默认收起。
 // 绑数组以兼容 TCollapse 的多面板模式。
 const secMoreExpanded = ref<string[]>([])
 
@@ -1245,20 +1221,23 @@ function hydrateRegionBlock(regions: string[]) {
 // (low / medium / high) + challenge action, so saving the new UI still
 // produces a sensible server-side effect until the backend grows real
 // per-domain fields.
-const secModeToLegacyCC = (mode: string): { level: string; action: string } => {
+const secModeToLegacyCC = (mode: string): { level: string; action: string; captcha_type?: string } => {
   switch (mode) {
     case "off":
       return { level: "low", action: "challenge" }
     case "loose":
     case "js":
-      return { level: "low", action: "challenge" }
+      return { level: "low", action: "challenge", captcha_type: "js_challenge" }
     case "click":
     case "click_easy":
+      return { level: "medium", action: "challenge", captcha_type: "click" }
     case "slide":
     case "slide_easy":
+      return { level: "medium", action: "challenge", captcha_type: "slide" }
     case "captcha":
+      return { level: "medium", action: "challenge", captcha_type: "slide_region" }
     case "rotate":
-      return { level: "medium", action: "challenge" }
+      return { level: "medium", action: "challenge", captcha_type: "rotate" }
     case "shield5s":
       return { level: "high", action: "shield" }
     case "custom":
@@ -1357,7 +1336,7 @@ const customRuleColumns = computed(() => [
     title: "状态",
     width: 90,
     cell: (_h: any, { row }: { row: SecCustomRule }) =>
-      h(Switch, {
+      h(ElSwitch, {
         size: "small",
         modelValue: Boolean(row.enabled),
         "onUpdate:modelValue": (v: boolean) => (row.enabled = Boolean(v)),
@@ -1369,22 +1348,16 @@ const customRuleColumns = computed(() => [
     width: 140,
     cell: (_h: any, { row }: { row: SecCustomRule }) =>
       h("div", { style: "display:flex;gap:4px" }, [
-        h(
-          Button,
-          {
-            size: "small",
-            theme: "primary",
-            variant: "text",
+        h(ElButton, { size: "small",
+            type: "primary",
+            link: true,
             onClick: () => openCustomRule(row),
           },
           () => "编辑",
         ),
-        h(
-          Button,
-          {
-            size: "small",
-            theme: "danger",
-            variant: "text",
+        h(ElButton, { size: "small",
+            type: "danger",
+            link: true,
             onClick: () => removeCustomRule(row.id),
           },
           () => "删除",
@@ -1480,6 +1453,7 @@ const load = async () => {
     return
   }
   loading.value = true
+  error.value = ""
   try {
     // Pull the main context in parallel. Secondary data (cache rules, WAF
     // policies, whitelist, cc) are loaded in a second wave so a primary-
@@ -1506,30 +1480,30 @@ const load = async () => {
       } catch {
         applyDomainOriginsSnapshot([])
       }
-      await loadSecondary(hit.id)
+      await ensureTabData(activeTab.value, hit.id)
     }
-  } catch (err: any) {
-    MessagePlugin.error(err?.message || "加载失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
 }
 
-// Secondary-tab data. Each sub-fetch is independently try/catch'd so a
-// backend quirk (e.g. empty policies table) doesn't paint the whole
-// page broken. Failures are logged but surfaced as empty lists.
-const loadSecondary = async (domainId: string) => {
-  // The list endpoint (domainView) omits origin_auth. Fetch the full
-  // domain so origin_auth is hydrated correctly — otherwise saving
-  // origin settings silently resets auth to disabled defaults.
+// Secondary-tab data is loaded lazily per tab group to reduce first-paint
+// API pressure. Each sub-fetch is independently try/catch'd so a backend
+// quirk doesn't paint the whole page broken.
+const loadedTabGroups = reactive({
+  domainFull: false,
+  cache: false,
+  security: false,
+})
+
+const loadDomainFull = async (domainId: string) => {
   try {
     const full = await api.getDomain(domainId)
     if (full) {
-      // Merge: full domain fills in missing fields (origin_auth, security)
-      // while preserving display-only fields from the list view
-      // (listen_port, origin_name, cert_name, etc.).
       domain.value = { ...domain.value, ...full }
-      // Re-hydrate only the fields the list endpoint was missing.
       const auth = full.origin_auth
       form.origin_auth = {
         enabled: auth?.enabled ?? false,
@@ -1542,18 +1516,18 @@ const loadSecondary = async (domainId: string) => {
   } catch {
     // Non-fatal: the form keeps its list-endpoint values.
   }
+}
+
+const loadCacheTabData = async () => {
   try {
     const res = await api.listCacheRules()
     cacheRules.value = res.cache_rules || []
   } catch {
     cacheRules.value = []
   }
-  try {
-    const res = await api.listWAFWhitelist()
-    whitelistEntries.value = res.whitelist || []
-  } catch {
-    whitelistEntries.value = []
-  }
+}
+
+const loadSecurityTabData = async (domainId: string) => {
   try {
     const cc = await api.getCCPolicy()
     ccForm.level = cc.level || "medium"
@@ -1564,9 +1538,6 @@ const loadSecondary = async (domainId: string) => {
     // keep defaults
   }
   try {
-    // Pull the rich per-domain security blob and hydrate secForm so the
-    // cdnfly-style 安全设置 tab reflects what's actually stored on the
-    // domain (not just the legacy global CC policy).
     const sec = await api.getDomainSecurity(domainId)
     secForm.default_mode = sec.default_mode || "off"
     secForm.auto_switch = Boolean(sec.auto_switch)
@@ -1584,10 +1555,52 @@ const loadSecondary = async (domainId: string) => {
     secForm.ip_blacklist = (sec.ip_blacklist || []).join("\n")
     secForm.ip_whitelist = (sec.ip_whitelist || []).join("\n")
     secForm.block_transparent_proxy = Boolean(sec.block_transparent_proxy)
+    secForm.signed_url_secret = sec.signed_url_secret || ""
+    secForm.bot_score_enabled = Boolean(sec.bot_score_enabled)
+    secForm.response_compress_enabled = Boolean(sec.response_compress_enabled)
+    secForm.edge_script_enabled = Boolean(sec.edge_script_enabled)
+    secForm.edge_script_rules = sec.edge_script_rules || ""
+    secForm.image_transform_enabled = Boolean(sec.image_transform_enabled)
+    secForm.video_segment_cache_enabled = Boolean(sec.video_segment_cache_enabled)
     hydrateRegionBlock(sec.blocked_regions || [])
   } catch {
-    // first-save case: no security row yet — secForm keeps its reactive defaults.
+    // first-save case: no security row yet
   }
+  try {
+    const res = await api.listWAFWhitelist()
+    whitelistEntries.value = res.whitelist || []
+  } catch {
+    whitelistEntries.value = []
+  }
+}
+
+const ensureTabData = async (tab: string, domainId: string) => {
+  if (["basic", "origin", "https", "advanced"].includes(tab) && !loadedTabGroups.domainFull) {
+    await loadDomainFull(domainId)
+    loadedTabGroups.domainFull = true
+  }
+  if (tab === "cache" && !loadedTabGroups.cache) {
+    await loadCacheTabData()
+    loadedTabGroups.cache = true
+  }
+  if (["security", "access"].includes(tab) && !loadedTabGroups.security) {
+    await loadSecurityTabData(domainId)
+    loadedTabGroups.security = true
+  }
+}
+
+const resetLoadedTabGroups = () => {
+  loadedTabGroups.domainFull = false
+  loadedTabGroups.cache = false
+  loadedTabGroups.security = false
+}
+
+// Kept for any call sites that still expect a full secondary refresh.
+const loadSecondary = async (domainId: string) => {
+  resetLoadedTabGroups()
+  await ensureTabData("basic", domainId)
+  await ensureTabData("cache", domainId)
+  await ensureTabData("security", domainId)
 }
 
 const hydrateForm = (d: Domain) => {
@@ -1633,6 +1646,8 @@ const hydrateForm = (d: Domain) => {
   form.enabled = d.enabled !== false
   form.cache_enabled = d.cache_enabled !== false
   form.cname = d.cname
+  httpAccessEnabled.value = true
+  httpAccessPortBackup.value = d.listen_port ?? 0
 }
 
 const applyPatch = async (tab: string, patch: Partial<Domain>) => {
@@ -1683,7 +1698,20 @@ const resetBasic = () => {
   form.line_group_id = d.line_group_id || ""
   form.enabled = d.enabled !== false
   form.listen_port = d.listen_port ?? 0
+  httpAccessEnabled.value = true
+  httpAccessPortBackup.value = form.listen_port
 }
+
+watch(httpAccessEnabled, (on) => {
+  if (on) {
+    if (!form.listen_port && httpAccessPortBackup.value) {
+      form.listen_port = httpAccessPortBackup.value
+    }
+    return
+  }
+  httpAccessPortBackup.value = form.listen_port || 80
+  form.listen_port = 0
+})
 
 // --- Listen-port helpers ---
 // The native <input type="number"> uses string models; we coerce through
@@ -1927,6 +1955,7 @@ const saveOrigin = async () => {
     const originsRes = await api.replaceDomainOrigins(
       domain.value.id,
       entries as DomainOrigin[],
+      { publish: false },
     )
     applyDomainOriginsSnapshot(originsRes.origins || [])
     MessagePlugin.success("已保存")
@@ -2020,6 +2049,13 @@ const saveCC = async () => {
       ip_whitelist: splitList(secForm.ip_whitelist),
       block_transparent_proxy: secForm.block_transparent_proxy,
       blocked_regions: resolveBlockedRegions(),
+      signed_url_secret: secForm.signed_url_secret.trim(),
+      bot_score_enabled: secForm.bot_score_enabled,
+      response_compress_enabled: secForm.response_compress_enabled,
+      edge_script_enabled: secForm.edge_script_enabled,
+      edge_script_rules: secForm.edge_script_rules.trim(),
+      image_transform_enabled: secForm.image_transform_enabled,
+      video_segment_cache_enabled: secForm.video_segment_cache_enabled,
     })
     // Also update the legacy global CC policy so the global CC dashboard
     // reflects the domain's protection level in the same click — but
@@ -2032,6 +2068,7 @@ const saveCC = async () => {
         await api.setCCPolicy({
           level: legacy.level,
           action: legacy.action,
+          captcha_type: legacy.captcha_type,
           ban_seconds: secForm.ban_seconds,
           fail_limit: secForm.fail_limit,
         })
@@ -2044,6 +2081,9 @@ const saveCC = async () => {
       }
     }
     MessagePlugin.success("安全设置已保存")
+    if (id) {
+      await loadSecurityTabData(id)
+    }
   } catch (err: any) {
     MessagePlugin.error(err?.message || "保存失败")
   } finally {
@@ -2083,7 +2123,7 @@ const cacheRuleColumns = computed(() => [
     title: "启用",
     width: 90,
     cell: (_h: any, { row }: { row: CacheRule }) =>
-      h(Switch, {
+      h(ElSwitch, {
         size: "small",
         modelValue: row.enabled,
         "onUpdate:modelValue": (v: boolean) => toggleCacheRule(row, v),
@@ -2095,8 +2135,8 @@ const cacheRuleColumns = computed(() => [
     width: 130,
     cell: (_h: any, { row }: { row: CacheRule }) =>
       h("div", { class: "row-actions" }, [
-        h(Button, { size: "small", theme: "primary", variant: "text", onClick: () => openCacheRuleDialog(row) }, () => "编辑"),
-        h(Button, { size: "small", theme: "danger", variant: "text", onClick: () => confirmDeleteCacheRule(row) }, () => "删除"),
+        h(ElButton, { size: "small", type: "primary", link: true, onClick: () => openCacheRuleDialog(row) }, () => "编辑"),
+        h(ElButton, { size: "small", type: "danger", link: true, onClick: () => confirmDeleteCacheRule(row) }, () => "删除"),
       ]),
   },
 ])
@@ -2237,33 +2277,20 @@ const regenCname = async () => {
 }
 
 const isAdmin = computed(() => auth.user?.role === "admin")
+const canEditDomain = computed(() => isAdmin.value || canDomainsWrite.value)
+const canEditSecurity = computed(() => isAdmin.value || canWAFEdit.value)
+const readonlyNotice = computed(() => {
+  const parts: string[] = []
+  if (!canEditDomain.value) parts.push("域名配置")
+  if (!canEditSecurity.value) parts.push("安全/WAF 设置")
+  return `当前分组对${parts.join("与")}为只读，保存按钮已隐藏。`
+})
 
 // Hero 健康摘要：把 4 个最关键的开关（HTTPS / 缓存 / 安全策略 / WS）
 // 聚合成一组只读 chip，让用户进入页面就能扫到当前接入网站的整体健康度，
 // 不必再点开每个 tab 才知道。
 // `security` chip considers the policy effective when at least one
 // sub-field is configured: a non-"off" CC mode, any custom rule, any
-// black/white-list IP, or a region block. Mirrors the compiler's view
-// of "is anything actually being applied at the edge".
-const securityActive = computed(
-  () =>
-    (secForm.default_mode && secForm.default_mode !== "off") ||
-    secForm.auto_switch ||
-    (secForm.search_bot && secForm.search_bot !== "off") ||
-    secForm.custom_rules.length > 0 ||
-    secForm.ip_blacklist.trim() !== "" ||
-    secForm.ip_whitelist.trim() !== "" ||
-    secForm.block_transparent_proxy ||
-    (secForm.region_block_mode && secForm.region_block_mode !== "off") ||
-    secForm.custom_blocked_regions.trim() !== "",
-)
-const healthChips = computed(() => [
-  { key: "https", label: "HTTPS", on: !!form.https_enabled, icon: ShieldCheck },
-  { key: "cache", label: "缓存", on: !!form.cache_enabled, icon: HardDrive },
-  { key: "security", label: "安全策略", on: !!securityActive.value, icon: Shield },
-  { key: "ws", label: "WebSocket", on: !!form.websocket_enabled, icon: Plug },
-])
-
 const goBack = () => {
   router.push(isAdmin.value ? "/admin/dashboard/domains" : "/dashboard/domains")
 }
@@ -2302,848 +2329,16 @@ const formatTimeFull = (v?: string) => {
   return `${local} (UTC${sign}${hh}:${mm})`
 }
 
+watch(activeTab, (tab) => {
+  const id = domain.value?.id
+  if (id) void ensureTabData(tab, id)
+})
+
+watch(() => route.params.id, () => {
+  resetLoadedTabGroups()
+  void load()
+})
+
 onMounted(load)
 </script>
 
-<style scoped>
-.page {
-  padding: 24px;
-  max-width: 1280px;
-  margin: 0 auto;
-}
-
-/* Width utility classes for form fields. Centralizes the width
- * literals previously inlined as `style="width:XXXpx"` across the 7
- * config tabs, so spacing stays coherent and easy to retune. */
-.fld-port { width: 140px; }
-.fld-status { width: 120px; }
-.fld-mid { width: 200px; }
-.fld-mode { width: 160px; }
-.fld-timeout { width: 240px; }
-.fld-creds { max-width: 320px; }
-.fld-default { max-width: 420px; }
-.fld-narrow-cap { max-width: 260px; }
-.fld-cap-200 { max-width: 200px; }
-.fld-grow { flex: 1; min-width: 160px; }
-.fld-flex { flex: 1; }
-
-.loading-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 320px;
-}
-
-/* ─── Hero ──────────────────────────────────────────────────────────────
- * Gradient brand banner that anchors the page. The two aria-hidden
- * children (.hero-aurora + .hero-grid) layer a subtle radial glow and a
- * fine grid pattern over the gradient so the header feels alive without
- * needing background images. All colors come from tokens.css.
- */
-.hero {
-  position: relative;
-  overflow: hidden;
-  border-radius: var(--app-card-radius, 12px);
-  background: linear-gradient(135deg, #2D2899 0%, #4D44E0 45%, #8E5BFF 100%);
-  color: #ffffff;
-  padding: 24px 28px 22px;
-  margin-bottom: var(--app-page-gap, 20px);
-  box-shadow: var(--app-brand-shadow-md, 0 4px 14px rgba(99, 91, 255, 0.22));
-  isolation: isolate;
-}
-.hero-aurora {
-  position: absolute;
-  inset: -40% -10% auto -10%;
-  height: 220%;
-  background:
-    radial-gradient(50% 60% at 80% 20%, rgba(125, 211, 252, 0.45), transparent 60%),
-    radial-gradient(40% 50% at 15% 90%, rgba(99, 91, 255, 0.55), transparent 60%);
-  filter: blur(20px);
-  pointer-events: none;
-  z-index: 0;
-}
-.hero-grid {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(to right, rgba(255, 255, 255, 0.06) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
-  background-size: 32px 32px;
-  mask-image: radial-gradient(ellipse at top right, #000 30%, transparent 75%);
-  -webkit-mask-image: radial-gradient(ellipse at top right, #000 30%, transparent 75%);
-  pointer-events: none;
-  z-index: 0;
-}
-.hero-content {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.hero-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.hero-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.15s, transform 0.15s;
-}
-.hero-back:hover {
-  background: rgba(255, 255, 255, 0.2);
-  transform: translateX(-2px);
-}
-.hero-status :deep(.t-tag) {
-  font-weight: 500;
-}
-.hero-main {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  min-width: 0;
-}
-.hero-icon {
-  flex: 0 0 auto;
-  width: 56px;
-  height: 56px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.14);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  color: #e0f2fe;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
-}
-.hero-title-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  flex: 1;
-}
-.hero-eyebrow {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.66);
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-}
-.hero-title {
-  font-size: 24px;
-  font-weight: 600;
-  line-height: 1.2;
-  margin: 0;
-  word-break: break-all;
-}
-.hero-cname {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 2px;
-}
-.hero-cname code {
-  background: rgba(15, 23, 42, 0.32);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  color: #e0f2fe;
-  padding: 3px 10px;
-  border-radius: 6px;
-  font-size: 13px;
-  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
-  word-break: break-all;
-}
-.hero-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: rgba(255, 255, 255, 0.86);
-  cursor: pointer;
-  transition: background 0.15s, transform 0.15s;
-}
-.hero-icon-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.22);
-  transform: translateY(-1px);
-}
-.hero-icon-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.spin {
-  animation: spin 1s linear infinite;
-}
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* Health chips: at-a-glance status row beneath the title. Each chip is
- * a brand-tinted pill that changes background based on its on/off state
- * so users can scan the row in <1s without parsing labels. */
-.hero-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 4px;
-}
-.hchip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(6px);
-}
-.hchip-on {
-  background: rgba(16, 185, 129, 0.22);
-  border-color: rgba(110, 231, 183, 0.45);
-  color: #d1fae5;
-}
-.hchip-off {
-  background: rgba(15, 23, 42, 0.28);
-  border-color: rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.62);
-}
-.hchip-state {
-  font-weight: 500;
-  opacity: 0.92;
-}
-
-/* ─── Info card (TDescriptions) ───────────────────────────────────── */
-.info-card {
-  margin-bottom: var(--app-page-gap, 20px);
-  border-radius: var(--app-card-radius, 12px) !important;
-  box-shadow: var(--app-shadow-card, 0 1px 3px rgba(15, 23, 42, 0.04));
-}
-.info-card-header {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 15px;
-  color: var(--app-text-strong);
-}
-.info-card-icon {
-  color: var(--app-brand);
-}
-.info-desc :deep(.t-descriptions__header),
-.info-desc :deep(.t-descriptions__label) {
-  font-weight: 500;
-}
-.cn-code {
-  background: var(--td-bg-color-component, #f6f7fa);
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
-  font-size: 13px;
-  color: var(--app-text-strong);
-  word-break: break-all;
-}
-
-/* ─── Tab labels with icon ───────────────────────────────────────── */
-.tab-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 500;
-}
-.tab-label svg {
-  color: currentColor;
-  opacity: 0.85;
-}
-
-.section-card {
-  margin-bottom: 16px;
-  border-radius: var(--app-card-radius, 12px) !important;
-}
-
-.info-grid,
-.info-row,
-.info-label,
-.info-value,
-.cname-value,
-.cname-value code,
-.status-dot,
-.status-dot.status-ok {
-  /* Legacy info-grid superseded by <t-descriptions>; kept as no-op selectors
-   * so any rogue references in older snapshots compile cleanly. */
-}
-
-/* Grouped section + stacked form style to match the CDNfly basic-config
- * layout screenshot: a section title, then each field stacked vertically
- * with its own hint directly underneath instead of inline. Reserved the
- * existing .form-row / .form-label / .form-hint rules for the older tabs
- * (origin / https / advanced) which don't need the new layout yet. */
-.config-section {
-  padding: 8px 4px 4px;
-  border-bottom: 1px solid var(--td-border-level-1-color, #e7e7e7);
-  margin-bottom: 16px;
-}
-.config-section:last-of-type {
-  border-bottom: none;
-  margin-bottom: 0;
-}
-.section-title {
-  font-size: 15px;
-  font-weight: 600;
-  margin: 0 0 16px;
-  padding: 2px 0 2px 12px;
-  position: relative;
-  color: var(--app-text-strong, #0f172a);
-  letter-spacing: 0.2px;
-}
-.section-title::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 4px;
-  bottom: 4px;
-  width: 4px;
-  border-radius: 4px;
-  background: linear-gradient(180deg, #9385FE 0%, #4D44E0 100%);
-  box-shadow: 0 1px 4px rgba(99, 91, 255, 0.4);
-}
-.form-grid {
-  /* Two-column form on desktop. Each child is a .form-row-v cell.
-   * Users reading the previous single-column layout on wide screens
-   * complained that the page "looked like a phone" — all fields were
-   * stacked vertically and the right half of the card stayed blank.
-   * Switching to auto-fit gives the desktop a proper two-column form
-   * while the @media block below collapses back to one column on
-   * narrow viewports. */
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 16px 32px;
-}
-.form-row-v {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
-  gap: 6px 16px;
-  align-items: center;
-  min-width: 0;
-}
-.form-label-v {
-  color: var(--td-text-color-secondary, #94a3b8);
-  text-align: right;
-  font-size: 14px;
-}
-.form-input-v {
-  width: 100%;
-  min-width: 0;
-  max-width: 420px;
-}
-.form-hint-v {
-  grid-column: 2;
-  color: var(--td-text-color-placeholder, #a9a9a9);
-  font-size: 12px;
-  margin-top: 2px;
-}
-
-.tab-body {
-  padding: 16px 4px 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.tab-alert {
-  margin-bottom: 8px;
-}
-
-.form-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.form-label {
-  width: 120px;
-  flex-shrink: 0;
-  padding-top: 6px;
-  color: var(--td-text-color-secondary, #666);
-}
-
-.form-hint {
-  flex-basis: 100%;
-  margin-left: 132px;
-  color: var(--td-text-color-placeholder, #999);
-  font-size: 12px;
-}
-
-.form-actions {
-  display: flex;
-  gap: 12px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--app-divider, #f1f5f9);
-  margin-top: 16px;
-  align-items: center;
-  position: sticky;
-  bottom: 0;
-  /* Frosted backdrop so the sticky bar stays readable when content
-   * scrolls underneath it (long tabs like 安全设置 / 回源设置). */
-  background: linear-gradient(to top, var(--app-surface, #fff) 70%, rgba(255, 255, 255, 0.85));
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border-radius: 0 0 var(--app-card-radius, 12px) var(--app-card-radius, 12px);
-  z-index: 5;
-}
-
-/* Switch row: compact switch + caption, so it stops visually reading as
- * a progress bar when placed inside a stretchy grid cell. */
-.switch-wrap {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.switch-caption {
-  color: var(--td-text-color-secondary, #94a3b8);
-  font-size: 13px;
-}
-
-/* Port row: numeric input + preset buttons inline. Presets save users
- * from stepper-clicking 80 → 443 → 8080. */
-.port-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* Timeout inputs show the unit ("秒") inline to the right of the input so
- * the operator can scan 60 + 秒 at a glance without reading the hint text. */
-.timeout-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.unit-suffix {
-  color: var(--td-text-color-secondary, #666);
-  font-size: 14px;
-  user-select: none;
-}
-
-/* Inline note next to the disabled origin-auth switch so the UI makes it
- * obvious this is an upcoming feature rather than a broken control. */
-.switch-hint {
-  margin-left: 10px;
-  color: var(--td-text-color-placeholder, #999);
-  font-size: 12px;
-  user-select: none;
-}
-
-/* Dirty hint next to the 保存 button so the user sees unsaved state
- * without needing a toast. */
-.dirty-hint {
-  color: var(--td-warning-color, #e37318);
-  font-size: 12px;
-}
-
-.error-pages {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex: 1;
-}
-
-.error-page-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.empty-state {
-  padding: 48px;
-  text-align: center;
-  color: var(--app-text-faint);
-}
-
-@media (max-width: 768px) {
-  .page {
-    padding: 12px;
-  }
-
-  /* Hero collapses to a single column with smaller title and tighter
-   * padding; chips wrap to two rows on phones without overflowing. */
-  .hero {
-    padding: 18px 18px 16px;
-  }
-  .hero-title {
-    font-size: 19px;
-  }
-  .hero-icon {
-    width: 44px;
-    height: 44px;
-  }
-  .hero-main {
-    gap: 12px;
-  }
-  .hero-cname {
-    width: 100%;
-  }
-
-  /* Origin list collapses to a vertical card on phones — the 5-column
-   * grid is too tight at <420px. We drop the head row and stack each
-   * field with its label tag inline. */
-  .origin-list-head {
-    display: none;
-  }
-  .origin-row {
-    grid-template-columns: 1fr;
-    gap: 8px;
-    padding: 10px;
-    border: 1px solid var(--app-divider, #f1f5f9);
-  }
-  .origin-handle {
-    display: none;
-  }
-
-  .form-row-v {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-
-  .form-label-v {
-    text-align: left;
-  }
-
-  .form-hint-v {
-    grid-column: 1;
-  }
-
-  .form-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .form-label {
-    width: auto;
-    padding-top: 0;
-  }
-
-  .form-hint {
-    margin-left: 0;
-  }
-
-  .form-actions {
-    flex-wrap: wrap;
-  }
-
-  .error-page-row {
-    flex-wrap: wrap;
-  }
-}
-
-/* ─── Security-style horizontal form layout ────────────────────────────
- * Used in the security tab and now unified across all config tabs.
- * Each .sec-row is a horizontal label‒value pair:
- *   .sec-label (fixed left)  |  .sec-value (fluid right)
- * This mirrors the CDNfly / Aliyun / Tencent Cloud detail-page style:
- * labels on the left, controls on the right, hints beneath the control.
- */
-.sec-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-.sec-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 14px 8px;
-  border-bottom: 1px solid var(--td-border-level-1-color, #f0f0f0);
-}
-.sec-row:last-child {
-  border-bottom: none;
-}
-.sec-row--top {
-  align-items: flex-start;
-}
-.sec-label {
-  width: 120px;
-  min-width: 120px;
-  flex-shrink: 0;
-  color: var(--td-text-color-secondary, #94a3b8);
-  font-size: 14px;
-  text-align: right;
-  padding-top: 2px;
-}
-.sec-value {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.sec-hint {
-  color: var(--td-text-color-placeholder, #a9a9a9);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.sec-hint-list {
-  padding-left: 18px;
-  margin: 4px 0 0;
-}
-
-/* Region blocking radio group + custom textarea */
-.region-mode-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.region-custom-wrap {
-  margin-top: 8px;
-}
-
-.sec-mode-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.sec-toolbar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-.sec-rule-table {
-  margin-bottom: 4px;
-}
-.sec-more {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 8px;
-  padding: 12px;
-  background: var(--td-bg-color-component, #f6f7fa);
-  border-radius: 6px;
-}
-.sec-more-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.sec-more-row label {
-  min-width: 100px;
-  color: var(--td-text-color-secondary, #94a3b8);
-  font-size: 13px;
-  text-align: right;
-}
-/* Origin auth header editor */
-.origin-auth-headers {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.origin-auth-header-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* ─── Origin list (回源地址) ──────────────────────────────────────────
- * Bug fix: the template referenced these classes but the previous CSS
- * file never defined them, so the rows collapsed to default block
- * layout — input, weight, switch and 删除 stacked vertically with no
- * spacing. We now lay them out as a 5-column grid mirroring the head
- * row, with a left drag handle (visual cue only — drag to reorder is
- * a future enhancement) and a polished inline 删除 icon button.
- */
-.origin-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  border: 1px solid var(--app-border, #e2e8f0);
-  border-radius: 10px;
-  background: var(--app-surface, #ffffff);
-  padding: 6px;
-}
-.origin-list-head,
-.origin-row {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 110px 130px 36px;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  border-radius: 8px;
-}
-.origin-list-head {
-  padding: 6px 8px 4px;
-  border-bottom: 1px dashed var(--app-divider, #f1f5f9);
-}
-.origin-col {
-  font-size: 12px;
-  color: var(--app-text-faint, #94a3b8);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-.origin-col-addr { grid-column: 2; }
-.origin-col-weight { grid-column: 3; }
-.origin-col-enabled { grid-column: 4; }
-.origin-col-action { grid-column: 5; }
-.origin-row {
-  background: var(--app-surface, #ffffff);
-  transition: background 0.15s var(--app-easing-standard, cubic-bezier(0.4, 0, 0.2, 1));
-}
-.origin-row:hover {
-  background: var(--app-surface-hover, #f1f5f9);
-}
-.origin-handle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--app-text-faint, #94a3b8);
-  cursor: grab;
-  user-select: none;
-}
-.origin-address {
-  width: 100%;
-}
-.origin-weight {
-  display: flex;
-  align-items: center;
-}
-.origin-enabled {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--app-text-muted, #64748b);
-  font-size: 12px;
-}
-.origin-del {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--app-text-muted, #64748b);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-.origin-del:hover:not(:disabled) {
-  background: var(--app-danger-soft-bg, #fef2f2);
-  color: var(--app-danger, #ef4444);
-  border-color: var(--app-danger-soft-bg, #fef2f2);
-}
-.origin-del:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.origin-add {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  margin-top: 4px;
-  padding: 7px 14px;
-  border-radius: 8px;
-  background: var(--app-brand-soft-bg, rgba(99, 91, 255, 0.08));
-  color: var(--app-brand-strong, #4D44E0);
-  border: 1px dashed var(--app-brand-soft-border, rgba(99, 91, 255, 0.35));
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
-.origin-add:hover {
-  background: rgba(99, 91, 255, 0.14);
-  border-style: solid;
-}
-
-/* Cache rule action cells: bug fix — the cell renderer used `.row-actions`
- * (1855) without a matching style, so 编辑/删除 buttons sat with no gap. */
-.row-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-/* TDesign collapse used inside the security tab (更多设置). Dim the
- * default arrow color and tighten padding so it visually sits inside our
- * sec-row label/value grid. */
-.sec-more-collapse :deep(.t-collapse-panel) {
-  border-radius: 8px;
-  background: var(--app-surface-muted, #f8fafc);
-  border: 1px solid var(--app-border, #e2e8f0);
-  padding: 0 12px;
-}
-.sec-more-collapse :deep(.t-collapse-panel__header) {
-  padding: 10px 0;
-  font-size: 14px;
-}
-.sec-more-collapse :deep(.t-collapse-panel__body) {
-  padding-bottom: 12px;
-}
-
-/* Switch control: consistent wrap + caption for all toggles */
-.sec-switch {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.sec-switch .switch-text {
-  color: var(--td-text-color-secondary, #94a3b8);
-  font-size: 13px;
-  user-select: none;
-}
-
-@media (max-width: 768px) {
-  .sec-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
-    padding: 10px 4px;
-  }
-  .sec-label {
-    width: auto;
-    min-width: auto;
-    text-align: left;
-  }
-  .sec-more-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .sec-more-row label {
-    text-align: left;
-  }
-}
-
-/*
- * Domain detail tabs — 7 tabs with Chinese labels need ~700px of horizontal
- * space. On narrow/mid viewports TDesign's default can drop the active tab
- * off-screen because of how its resize observer measures a sibling wrapper.
- * Force horizontal scrolling explicitly.
- */
-@media (max-width: 1080px) {
-  .domain-detail-tabs .t-tabs__nav-scroll,
-  .domain-detail-tabs .t-tabs__nav {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    -webkit-overflow-scrolling: touch;
-  }
-  .domain-detail-tabs .t-tabs__nav-item {
-    flex: 0 0 auto;
-  }
-}
-</style>

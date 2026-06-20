@@ -194,12 +194,3 @@ onUnmounted(() => {
 export default { name: "TrafficMap" }
 </script>
 
-<style scoped>
-.traffic-map {
-  width: 100%;
-  border-radius: var(--app-card-radius);
-  overflow: hidden;
-  background: var(--app-surface-muted);
-  transition: background var(--app-anim-base) var(--app-easing-standard);
-}
-</style>

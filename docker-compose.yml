@@ -1,0 +1,98 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lingcdn
+      POSTGRES_PASSWORD: lingcdn
+      POSTGRES_DB: lingcdn
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lingcdn -d lingcdn"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  control:
+    build:
+      context: .
+      dockerfile: deployment/docker/Dockerfile.control
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+      - "9443:9443"
+      - "9100:9100"
+    restart: unless-stopped
+
+  node:
+    build:
+      context: .
+      dockerfile: deployment/docker/Dockerfile.node
+    depends_on:
+      control:
+        condition: service_started
+    environment:
+      CONTROL_HTTP: http://control:8080
+      ADMIN_USER: admin
+      ADMIN_PASS: admin123456
+    ports:
+      - "8088:8088"
+      - "9101:9101"
+    volumes:
+      - node_logs:/var/log/lingcdn
+      - node_data:/var/lib/lingcdn-node
+    restart: unless-stopped
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.15.0
+    user: root
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      node:
+        condition: service_started
+    volumes:
+      - ./deployment/docker/filebeat.docker.yml:/usr/share/filebeat/filebeat.yml:ro
+      - node_logs:/var/log/lingcdn:ro
+    command: ["filebeat", "-e", "-strict.perms=false"]
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  es_data:
+  node_logs:
+  node_data:

@@ -93,11 +93,11 @@ func (s *Servers) licenseMode() string {
 }
 
 func (s *Servers) isOpenLicenseMode() bool {
-	return false
+	return s.licenseMode() == "open"
 }
 
 func (s *Servers) isOfflineLicenseMode() bool {
-	return false
+	return s.licenseMode() == "offline"
 }
 
 func normalizeOpenLicenseState(st licenseState, now time.Time) licenseState {
@@ -119,7 +119,7 @@ func (s *Servers) currentLicenseStatus() licenseState {
 }
 
 func (s *Servers) staticLicenseIndexURL() string {
-	return ""
+	return strings.TrimSpace(s.cfg.LicenseStaticIndexURL)
 }
 
 // setLicenseState atomically updates the in-memory license, persists it to
@@ -288,6 +288,12 @@ func fromStoreLicense(st store.LicenseState) licenseState {
 
 // licenseVerifyLoop periodically verifies current license with portal.
 func (s *Servers) licenseVerifyLoop(ctx context.Context) {
+	if s.isOpenLicenseMode() {
+		return
+	}
+	if s.isOfflineLicenseMode() && s.staticLicenseIndexURL() == "" {
+		return
+	}
 	interval := s.cfg.LicenseVerifyInterval
 	if interval <= 0 {
 		interval = 5 * time.Minute
@@ -317,6 +323,9 @@ func (s *Servers) licenseVerifyLoop(ctx context.Context) {
 // returns a short status string for the bg-task log and an error for callers
 // that wish to surface the failure.
 func (s *Servers) verifyLicenseOnce(ctx context.Context) (string, error) {
+	if s.isOpenLicenseMode() {
+		return "skip: license mode open", nil
+	}
 	st := s.currentLicenseStatus()
 	if st.LicenseKey == "" {
 		return "skip: license key missing", nil
@@ -324,6 +333,9 @@ func (s *Servers) verifyLicenseOnce(ctx context.Context) (string, error) {
 
 	if indexURL := s.staticLicenseIndexURL(); indexURL != "" {
 		return s.verifyLicenseOnceFromStaticIndex(ctx, indexURL, st)
+	}
+	if s.isOfflineLicenseMode() {
+		return "skip: offline license mode without static index", nil
 	}
 
 	respStatus, data, err := s.requestPortalLicenseVerify(ctx, st.LicenseKey)

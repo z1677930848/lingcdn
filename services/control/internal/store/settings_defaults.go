@@ -14,6 +14,7 @@ const (
 	defaultElasticsearchBytesField  = "bytes"
 	defaultUpgradeChannel           = "stable"
 	defaultNotifyInterval           = 5
+	defaultRenewalBeforeExpiryDays  = 30
 	defaultRetentionSystemLogs      = 90
 	defaultRetentionESLogs          = 7
 	defaultRetentionWafBans         = 7
@@ -29,6 +30,7 @@ func DefaultSettings() *Settings {
 		FooterCopyright:           defaultFooterCopyright,
 		Favicon:                   "",
 		Logo:                      "",
+		SidebarBrandMode:          "name",
 		SMTPHost:                  "",
 		SMTPPort:                  defaultSMTPPort,
 		SMTPUsername:              "",
@@ -48,6 +50,7 @@ func DefaultSettings() *Settings {
 		UpgradeChannel:            defaultUpgradeChannel,
 		NotifyNewBuild:            true,
 		RegisterEmailVerification: false,
+		RenewalBeforeExpiryDays:   defaultRenewalBeforeExpiryDays,
 		EmailEnabled:              false,
 		DingtalkEnabled:           false,
 		DingtalkWebhook:           "",

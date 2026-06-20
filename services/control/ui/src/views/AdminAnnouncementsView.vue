@@ -7,32 +7,28 @@
       </div>
     </div>
 
-    <div v-if="error" class="admin-error-box">
-      {{ error }}
-      <t-button size="small" theme="primary" @click="loadData">重试</t-button>
-    </div>
+    <ErrorState v-if="error" :message="error" @retry="loadData" />
 
-    <t-card bordered class="admin-list-card">
+    <el-card class="admin-list-card">
       <div class="admin-toolbar">
         <div class="admin-toolbar-left">
-          <t-button theme="primary" @click="createOpen = true">新增公告</t-button>
-          <t-button variant="outline" @click="loadData">刷新</t-button>
+          <el-button type="primary" @click="createOpen = true">新增公告</el-button>
+          <el-button plain @click="loadData">刷新</el-button>
         </div>
         <div class="admin-toolbar-right">
-          <t-select v-model="statusFilter" :options="statusOptions" class="admin-filter-select" />
-          <t-input v-model="query" class="admin-search-input" clearable placeholder="搜索" />
+          <EpSelect v-model="statusFilter" :options="statusOptions" class="admin-filter-select" />
+          <el-input v-model="query" class="admin-search-input" clearable placeholder="搜索" />
         </div>
       </div>
 
-      <t-empty v-if="announcements.length === 0" :description="query ? '未找到匹配的公告' : '暂无公告数据'" class="admin-empty">
-        <t-button v-if="!query" theme="primary" @click="createOpen = true">创建第一条公告</t-button>
-      </t-empty>
+      <el-empty v-if="announcements.length === 0" :description="query ? '未找到匹配的公告' : '暂无公告数据'" class="admin-empty">
+        <el-button v-if="!query" type="primary" @click="createOpen = true">创建第一条公告</el-button>
+      </el-empty>
       <div v-else class="admin-desktop-only">
-        <t-table
+        <EpDataTable
           :data="announcements"
           :columns="columns"
           row-key="id"
-          bordered
           hover
           stripe
           :loading="loading"
@@ -40,15 +36,15 @@
         />
       </div>
       <div v-if="announcements.length > 0" class="admin-mobile-only">
-        <div v-if="loading" style="text-align:center;padding:32px 0"><t-loading /></div>
+        <div v-if="loading" style="text-align:center;padding:32px 0"><div v-loading="true" style="min-height:48px" /></div>
         <div v-else-if="announcements.length === 0" class="admin-mobile-card-empty">暂无数据</div>
         <div v-else class="admin-mobile-cards">
           <div v-for="item in announcements" :key="item.id" class="admin-mobile-card">
             <div class="admin-mobile-card-header">
               <div class="admin-mobile-card-title">{{ item.title }}</div>
               <div class="admin-mobile-card-tags">
-                <t-tag v-if="item.pinned" size="small" theme="primary">置顶</t-tag>
-                <t-tag :theme="item.status === 'published' ? 'success' : 'default'" size="small">{{ item.status === 'published' ? '已发布' : '草稿' }}</t-tag>
+                <el-tag v-if="item.pinned" size="small" type="primary">置顶</el-tag>
+                <el-tag :type="item.status === 'published' ? 'success' : 'info'" size="small">{{ item.status === 'published' ? '已发布' : '草稿' }}</el-tag>
               </div>
             </div>
             <div class="admin-mobile-card-subtitle">{{ (item.content || '').slice(0, 80) || '-' }}</div>
@@ -63,18 +59,18 @@
               </div>
             </div>
             <div class="admin-mobile-card-actions">
-              <t-button size="small" variant="text" @click="openEdit(item)">编辑</t-button>
-              <t-button size="small" variant="text" :loading="statusUpdatingId === item.id" @click="handleToggleStatus(item)">{{ item.status === 'published' ? '转草稿' : '发布' }}</t-button>
-              <t-button size="small" variant="text" :loading="pinUpdatingId === item.id" @click="handleTogglePin(item)">{{ item.pinned ? '取消置顶' : '置顶' }}</t-button>
-              <t-button size="small" variant="text" theme="danger" @click="deleteTarget = item">删除</t-button>
+              <el-button size="small" link @click="openEdit(item)">编辑</el-button>
+              <el-button size="small" link :loading="statusUpdatingId === item.id" @click="handleToggleStatus(item)">{{ item.status === 'published' ? '转草稿' : '发布' }}</el-button>
+              <el-button size="small" link :loading="pinUpdatingId === item.id" @click="handleTogglePin(item)">{{ item.pinned ? '取消置顶' : '置顶' }}</el-button>
+              <el-button size="small" link type="danger" @click="deleteTarget = item">删除</el-button>
             </div>
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-dialog
-      v-model:visible="createOpen"
+    <EpDialog append-to-body
+      v-model="createOpen"
       header="新增公告"
       :confirm-btn="{ content: creating ? '提交中...' : '提交', loading: creating, theme: 'primary' }"
       cancel-btn="取消"
@@ -82,26 +78,26 @@
       @confirm="handleCreate"
       @close="resetCreateForm"
     >
-      <t-form layout="vertical" label-align="top">
-        <t-form-item label="标题">
-          <t-input v-model="form.title" :disabled="creating" />
-        </t-form-item>
-        <t-form-item label="内容">
-          <t-textarea v-model="form.content" :disabled="creating" :autosize="{ minRows: 4, maxRows: 8 }" />
-        </t-form-item>
+      <el-form label-position="top">
+        <el-form-item label="标题">
+          <el-input v-model="form.title" :disabled="creating" />
+        </el-form-item>
+        <el-form-item label="内容">
+          <el-input v-model="form.content" :disabled="creating" :autosize="{ minRows: 4, maxRows: 8 }" />
+        </el-form-item>
         <div class="grid-2">
-          <t-form-item label="状态">
-            <t-select v-model="form.status" :options="publishOptions" :disabled="creating" />
-          </t-form-item>
-          <t-form-item label="置顶">
-            <t-switch v-model="form.pinned" :disabled="creating" />
-          </t-form-item>
+          <el-form-item label="状态">
+            <EpSelect v-model="form.status" :options="publishOptions" :disabled="creating" />
+          </el-form-item>
+          <el-form-item label="置顶">
+            <el-switch v-model="form.pinned" :disabled="creating" />
+          </el-form-item>
         </div>
-      </t-form>
-    </t-dialog>
+      </el-form>
+    </EpDialog>
 
-    <t-dialog
-      v-model:visible="editOpen"
+    <EpDialog append-to-body
+      v-model="editOpen"
       header="编辑公告"
       :confirm-btn="{ content: updating ? '保存中...' : '保存', loading: updating, theme: 'primary' }"
       cancel-btn="取消"
@@ -109,26 +105,26 @@
       @confirm="handleUpdate"
       @close="closeEdit"
     >
-      <t-form layout="vertical" label-align="top">
-        <t-form-item label="标题">
-          <t-input v-model="editForm.title" :disabled="updating" />
-        </t-form-item>
-        <t-form-item label="内容">
-          <t-textarea v-model="editForm.content" :disabled="updating" :autosize="{ minRows: 4, maxRows: 8 }" />
-        </t-form-item>
+      <el-form label-position="top">
+        <el-form-item label="标题">
+          <el-input v-model="editForm.title" :disabled="updating" />
+        </el-form-item>
+        <el-form-item label="内容">
+          <el-input v-model="editForm.content" :disabled="updating" :autosize="{ minRows: 4, maxRows: 8 }" />
+        </el-form-item>
         <div class="grid-2">
-          <t-form-item label="状态">
-            <t-select v-model="editForm.status" :options="publishOptions" :disabled="updating" />
-          </t-form-item>
-          <t-form-item label="置顶">
-            <t-switch v-model="editForm.pinned" :disabled="updating" />
-          </t-form-item>
+          <el-form-item label="状态">
+            <EpSelect v-model="editForm.status" :options="publishOptions" :disabled="updating" />
+          </el-form-item>
+          <el-form-item label="置顶">
+            <el-switch v-model="editForm.pinned" :disabled="updating" />
+          </el-form-item>
         </div>
-      </t-form>
-    </t-dialog>
+      </el-form>
+    </EpDialog>
 
-    <t-dialog
-      v-model:visible="deleteDialogVisible"
+    <EpDialog append-to-body
+      v-model="deleteDialogVisible"
       header="删除公告"
       :confirm-btn="{ content: deleting ? '删除中...' : '确认删除', loading: deleting, theme: 'danger' }"
       cancel-btn="取消"
@@ -136,14 +132,19 @@
       @close="() => (deleteTarget = null)"
     >
       <div>删除后将无法恢复，确认删除该公告吗？</div>
-    </t-dialog>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
 import { computed, h, onMounted, ref } from "vue"
-import { MessagePlugin, Tag, Button } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
+import { ElTag, ElButton } from "element-plus"
 import { api, type Announcement } from "@/lib/api"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const announcements = ref<Announcement[]>([])
 const total = ref(0)
@@ -330,7 +331,7 @@ const columns = computed(() => [
     cell: (_h: any, { row }: { row: Announcement }) =>
       h("div", { class: "admin-table-title" }, [
         h("span", null, row.title),
-        row.pinned ? h(Tag, { size: "small", theme: "primary", style: "margin-left:8px" }, () => "置顶") : null,
+        row.pinned ? h(ElTag, { size: "small", type: "primary", style: "margin-left:8px" }, () => "置顶") : null,
       ]),
   },
   {
@@ -343,7 +344,7 @@ const columns = computed(() => [
     title: "状态",
     width: 100,
     cell: (_h: any, { row }: { row: Announcement }) =>
-      h(Tag, { theme: row.status === "published" ? "success" : "default", size: "small" }, () =>
+      h(ElTag, { type: row.status === "published" ? "success" : "info", size: "small" }, () =>
         row.status === "published" ? "已发布" : "草稿"
       ),
   },
@@ -356,20 +357,14 @@ const columns = computed(() => [
     fixed: "right",
     cell: (_h: any, { row }: { row: Announcement }) =>
       h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, [
-        h(Button, { size: "small", variant: "text", onClick: () => openEdit(row) }, () => "编辑"),
-        h(
-          Button,
-          { size: "small", variant: "text", loading: statusUpdatingId.value === row.id, onClick: () => handleToggleStatus(row) },
+        h(ElButton, { size: "small", link: true, onClick: () => openEdit(row) }, () => "编辑"),
+        h(ElButton, { size: "small", link: true, loading: statusUpdatingId.value === row.id, onClick: () => handleToggleStatus(row) },
           () => (row.status === "published" ? "转草稿" : "发布")
         ),
-        h(
-          Button,
-          { size: "small", variant: "text", loading: pinUpdatingId.value === row.id, onClick: () => handleTogglePin(row) },
+        h(ElButton, { size: "small", link: true, loading: pinUpdatingId.value === row.id, onClick: () => handleTogglePin(row) },
           () => (row.pinned ? "取消置顶" : "置顶")
         ),
-        h(
-          Button,
-          { size: "small", variant: "text", theme: "danger", onClick: () => (deleteTarget.value = row) },
+        h(ElButton, { size: "small", link: true, type: "danger", onClick: () => (deleteTarget.value = row) },
           () => "删除"
         ),
       ]),
@@ -394,35 +389,3 @@ onMounted(() => {
   loadData()
 })
 </script>
-
-<style scoped>
-.grid-2 {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-@media (max-width: 720px) {
-  .grid-2 {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 768px) {
-  .admin-toolbar {
-    flex-direction: column;
-    gap: 8px;
-  }
-  .admin-toolbar-left,
-  .admin-toolbar-right {
-    width: 100%;
-  }
-  .admin-toolbar-right {
-    flex-direction: column;
-  }
-  .admin-filter-select,
-  .admin-search-input {
-    width: 100% !important;
-  }
-}
-</style>

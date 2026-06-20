@@ -17,8 +17,8 @@ import (
 // bans and saturate the DB connection pool).
 //
 // The queue has a bounded buffer. When the buffer is full (flush is slow or
-// database is unreachable) new enqueues are dropped with a warning rather than
-// blocking the caller. A dedicated goroutine drains the queue in batches on a
+// database is unreachable) enqueue waits briefly before dropping with a warning
+// rather than blocking the caller indefinitely. A dedicated goroutine drains the queue in batches on a
 // fixed interval.
 type wafBanQueue struct {
 	ch       chan *store.WAFBan
@@ -26,6 +26,7 @@ type wafBanQueue struct {
 	store    store.Store
 	interval time.Duration
 	batch    int
+	onFlush  func(context.Context, int)
 	stop     chan struct{}
 	wg       sync.WaitGroup
 }
@@ -33,7 +34,7 @@ type wafBanQueue struct {
 // newWAFBanQueue creates a queue wired to the given store. `bufferSize` caps
 // in-memory buffered bans; `batchSize` is how many bans are flushed per tick;
 // `interval` is the tick cadence.
-func newWAFBanQueue(st store.Store, bufferSize, batchSize int, interval time.Duration) *wafBanQueue {
+func newWAFBanQueue(st store.Store, bufferSize, batchSize int, interval time.Duration, onFlush func(context.Context, int)) *wafBanQueue {
 	if bufferSize <= 0 {
 		bufferSize = 4096
 	}
@@ -49,12 +50,16 @@ func newWAFBanQueue(st store.Store, bufferSize, batchSize int, interval time.Dur
 		store:    st,
 		interval: interval,
 		batch:    batchSize,
+		onFlush:  onFlush,
 		stop:     make(chan struct{}),
 	}
 }
 
-// enqueue attempts to put a ban on the queue without blocking. Returns true on
-// success, false when the queue is full.
+// enqueue attempts to put a ban on the queue. It tries a non-blocking send
+// first, then waits up to enqueueWait when the buffer is full. Returns true on
+// success, false when the queue remains full after the wait.
+const enqueueWait = 100 * time.Millisecond
+
 func (q *wafBanQueue) enqueue(b *store.WAFBan) bool {
 	if q == nil || b == nil {
 		return false
@@ -63,6 +68,14 @@ func (q *wafBanQueue) enqueue(b *store.WAFBan) bool {
 	case q.ch <- b:
 		return true
 	default:
+	}
+	timer := time.NewTimer(enqueueWait)
+	defer timer.Stop()
+	select {
+	case q.ch <- b:
+		return true
+	case <-timer.C:
+		log.Warn().Str("ip", b.IP).Dur("wait", enqueueWait).Msg("WAF ban queue full, dropping report")
 		return false
 	}
 }
@@ -79,16 +92,32 @@ func (q *wafBanQueue) start(ctx context.Context) {
 		defer ticker.Stop()
 
 		buf := make([]*store.WAFBan, 0, q.batch)
+		var lastPublish time.Time
 		flush := func() {
 			if len(buf) == 0 {
 				return
 			}
-			// Use a fresh, bounded context so shutdown signals cancel flushing.
-			fctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			// IMPORTANT: derive the flush ctx from context.Background(), NOT
+			// the long-lived `ctx` passed to start(). That ctx is typically
+			// the server's root context; during shutdown it is cancelled
+			// *before* close(q.stop) fires, so inheriting from it would
+			// make every CreateOrUpdateWAFBan return ctx.Cancelled and the
+			// "drain best-effort on shutdown" branch below would drop
+			// everything it was trying to save. A dedicated 5s budget lets
+			// us finish the drain even after the outer ctx is gone, while
+			// still bounding the work in the normal in-process path.
+			fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			persisted := 0
 			for _, b := range buf {
 				if err := q.store.CreateOrUpdateWAFBan(fctx, b); err != nil {
 					log.Ctx(fctx).Warn().Err(err).Str("ip", b.IP).Msg("failed to persist WAF ban (async)")
+				} else {
+					persisted++
 				}
+			}
+			if persisted > 0 && q.onFlush != nil && time.Since(lastPublish) >= 2*time.Second {
+				lastPublish = time.Now()
+				q.onFlush(context.Background(), persisted)
 			}
 			cancel()
 			buf = buf[:0]
@@ -131,6 +160,11 @@ func (q *wafBanQueue) shutdown() {
 	if q == nil {
 		return
 	}
-	close(q.stop)
+	select {
+	case <-q.stop:
+		// already closed
+	default:
+		close(q.stop)
+	}
 	q.wg.Wait()
 }

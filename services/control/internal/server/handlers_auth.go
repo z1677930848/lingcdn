@@ -4,14 +4,14 @@ package server
 // email verification + captcha), password reset (email-code flow), captcha
 // issuance/verification, and the currently-authenticated user/me endpoint
 // plus password change. The in-memory password-reset token map and the
-// HMAC-based captcha helpers live here because they're only used by these
-// handlers. JWT issuance lives in auth.go so both the HTTP surface here and
-// the gRPC side can share it.
+// server-side captcha session store live here because they're only used by
+// these handlers. JWT issuance lives in auth.go so both the HTTP surface
+// here and the gRPC side can share it.
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -72,16 +72,18 @@ func (s *Servers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.CaptchaToken != "" || req.CaptchaAnswer != "" {
-		if err := s.verifyCaptcha(req.CaptchaToken, req.CaptchaAnswer); err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
-			return
-		}
+	// Captcha is skipped on the first attempt from an IP; after a failed auth
+	// attempt the same IP must solve captcha on subsequent tries. Rate limiters
+	// still throttle brute-force traffic.
+	if err := s.enforceAuthCaptcha(r, req.CaptchaToken, req.CaptchaAnswer); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+		return
 	}
 
 	ctx, cancel := store.WithTimeout(r.Context())
 	defer cancel()
 
+	loginIP := getRequestIP(r)
 	identifier := strings.TrimSpace(req.Identifier)
 	if identifier == "" {
 		identifier = strings.TrimSpace(req.Email)
@@ -92,18 +94,21 @@ func (s *Servers) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user == nil {
-		s.writeSystemLog(ctx, "login", "failed", "login failed: user not found", "", identifier, getRequestIP(r))
+		s.writeSystemLog(ctx, "login", "failed", "login failed: user not found", "", identifier, loginIP)
+		markAuthCaptchaRequired(loginIP)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "用户名或密码错误"})
 		return
 	}
 	if strings.TrimSpace(user.Status) == "disabled" {
-		s.writeSystemLog(ctx, "login", "failed", "login failed: invalid credentials", user.ID, user.Username, getRequestIP(r))
+		s.writeSystemLog(ctx, "login", "failed", "login failed: invalid credentials", user.ID, user.Username, loginIP)
+		markAuthCaptchaRequired(loginIP)
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "用户已被禁用"})
 		return
 	}
 
 	if err := validatePassword(user.PasswordHash, req.Password); err != nil {
-		s.writeSystemLog(ctx, "login", "failed", "login failed: invalid credentials", user.ID, user.Username, getRequestIP(r))
+		s.writeSystemLog(ctx, "login", "failed", "login failed: invalid credentials", user.ID, user.Username, loginIP)
+		markAuthCaptchaRequired(loginIP)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "用户名或密码错误"})
 		return
 	}
@@ -115,13 +120,13 @@ func (s *Servers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	loginIP := getRequestIP(r)
 	loginLocation := s.resolveIPLocation(loginIP)
 	if err := s.store.UpdateUserLastLogin(ctx, user.ID, now, loginIP, loginLocation); err != nil {
 		log.Ctx(r.Context()).Warn().Err(err).Msg("failed to update last login")
 	}
 
-	s.writeSystemLog(ctx, "login", "success", "login success", user.ID, user.Username, getRequestIP(r))
+	clearAuthCaptchaRequired(loginIP)
+	s.writeSystemLog(ctx, "login", "success", "login success", user.ID, user.Username, loginIP)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
 		"user": map[string]any{
@@ -157,11 +162,9 @@ func (s *Servers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.CaptchaToken != "" || req.CaptchaAnswer != "" {
-		if err := s.verifyCaptcha(req.CaptchaToken, req.CaptchaAnswer); err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
-			return
-		}
+	if err := s.enforceAuthCaptcha(r, req.CaptchaToken, req.CaptchaAnswer); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+		return
 	}
 
 	req.Username = strings.TrimSpace(req.Username)
@@ -207,7 +210,7 @@ func (s *Servers) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "邮箱验证码已过期"})
 			return
 		}
-		if hashEmailVerificationToken(req.Email, code) != verify.TokenHash {
+		if !emailVerificationTokenEquals(req.Email, code, verify.TokenHash) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "邮箱验证码错误"})
 			return
 		}
@@ -260,6 +263,7 @@ func (s *Servers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clearAuthCaptchaRequired(getRequestIP(r))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
 		"user": map[string]any{
@@ -293,16 +297,16 @@ func (s *Servers) handleRegisterEmailRequest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if req.CaptchaToken != "" || req.CaptchaAnswer != "" {
-		if err := s.verifyCaptcha(req.CaptchaToken, req.CaptchaAnswer); err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
-			return
-		}
+	if err := s.enforceAuthCaptcha(r, req.CaptchaToken, req.CaptchaAnswer); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+		return
 	}
 
 	emailAddr := strings.TrimSpace(strings.ToLower(req.Email))
+	requestIP := getRequestIP(r)
 	if emailAddr == "" || !strings.Contains(emailAddr, "@") {
-		s.writeSystemLog(r.Context(), "email", "failed", "register email request failed: invalid email", "", emailAddr, getRequestIP(r))
+		s.writeSystemLog(r.Context(), "email", "failed", "register email request failed: invalid email", "", emailAddr, requestIP)
+		markAuthCaptchaRequired(requestIP)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "邮箱地址无效"})
 		return
 	}
@@ -317,18 +321,21 @@ func (s *Servers) handleRegisterEmailRequest(w http.ResponseWriter, r *http.Requ
 	}
 	normalized := s.applySettingsDefaults(settings)
 	if normalized == nil || !normalized.RegisterEnabled {
-		s.writeSystemLog(ctx, "email", "failed", "register email request failed: registration disabled", "", emailAddr, getRequestIP(r))
+		s.writeSystemLog(ctx, "email", "failed", "register email request failed: registration disabled", "", emailAddr, requestIP)
+		markAuthCaptchaRequired(requestIP)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "注册功能已关闭"})
 		return
 	}
 	if normalized == nil || !normalized.RegisterEmailVerification {
-		s.writeSystemLog(ctx, "email", "failed", "register email request failed: email verification disabled", "", emailAddr, getRequestIP(r))
+		s.writeSystemLog(ctx, "email", "failed", "register email request failed: email verification disabled", "", emailAddr, requestIP)
+		markAuthCaptchaRequired(requestIP)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "邮箱验证功能未开启"})
 		return
 	}
 
 	if existing, _ := s.store.GetUserByLogin(ctx, emailAddr); existing != nil {
-		s.writeSystemLog(ctx, "email", "failed", "register email request failed: email already exists", "", emailAddr, getRequestIP(r))
+		s.writeSystemLog(ctx, "email", "failed", "register email request failed: email already exists", "", emailAddr, requestIP)
+		markAuthCaptchaRequired(requestIP)
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "邮箱已被注册"})
 		return
 	}
@@ -365,12 +372,14 @@ func (s *Servers) handleRegisterEmailRequest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := sendEmail(smtpCfg, emailAddr, subject, body); err != nil {
-		s.writeSystemLog(ctx, "email", "failed", "register email request failed: send email failed", "", emailAddr, getRequestIP(r))
+		s.writeSystemLog(ctx, "email", "failed", "register email request failed: send email failed", "", emailAddr, requestIP)
+		markAuthCaptchaRequired(requestIP)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "邮件发送失败"})
 		return
 	}
-	s.writeSystemLog(ctx, "email", "success", "register email code sent", "", emailAddr, getRequestIP(r))
+	s.writeSystemLog(ctx, "email", "success", "register email code sent", "", emailAddr, requestIP)
 
+	clearAuthCaptchaRequired(requestIP)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "expires_in": int(registerCodeTTL.Seconds())})
 }
 
@@ -393,16 +402,16 @@ func (s *Servers) handlePasswordResetRequest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if req.CaptchaToken != "" || req.CaptchaAnswer != "" {
-		if err := s.verifyCaptcha(req.CaptchaToken, req.CaptchaAnswer); err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
-			return
-		}
+	if err := s.enforceAuthCaptcha(r, req.CaptchaToken, req.CaptchaAnswer); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+		return
 	}
 
 	emailAddr := strings.TrimSpace(strings.ToLower(req.Email))
+	requestIP := getRequestIP(r)
 	if emailAddr == "" || !strings.Contains(emailAddr, "@") {
-		s.writeSystemLog(r.Context(), "email", "failed", "password reset email request failed: invalid email", "", emailAddr, getRequestIP(r))
+		s.writeSystemLog(r.Context(), "email", "failed", "password reset email request failed: invalid email", "", emailAddr, requestIP)
+		markAuthCaptchaRequired(requestIP)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "邮箱地址无效"})
 		return
 	}
@@ -410,18 +419,10 @@ func (s *Servers) handlePasswordResetRequest(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := store.WithTimeout(r.Context())
 	defer cancel()
 
-	user, err := s.store.GetUserByEmail(ctx, emailAddr)
-	if err != nil {
-		s.writeSystemLog(ctx, "email", "failed", "password reset email request failed: user lookup failed", "", emailAddr, getRequestIP(r))
-		writeInternalError(w, "get user by email", err)
-		return
-	}
-	if user == nil {
-		s.writeSystemLog(ctx, "email", "failed", "password reset email request failed: user not found", "", emailAddr, getRequestIP(r))
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "用户不存在"})
-		return
-	}
-
+	// Resolve global config first so the SMTP-misconfiguration error path
+	// is identical regardless of whether the email is registered. Without
+	// this ordering, a "邮件服务未配置" response would only be returned for
+	// known accounts and would itself leak registration status.
 	settings, err := s.store.GetSettings(ctx)
 	if err != nil {
 		writeInternalError(w, "get settings", err)
@@ -431,8 +432,29 @@ func (s *Servers) handlePasswordResetRequest(w http.ResponseWriter, r *http.Requ
 
 	smtpCfg := s.smtpConfigFromSettings(normalized)
 	if strings.TrimSpace(smtpCfg.SMTPHost) == "" || strings.TrimSpace(smtpCfg.SMTPFrom) == "" {
-		s.writeSystemLog(ctx, "email", "failed", "password reset email request failed: smtp not configured", user.ID, user.Username, getRequestIP(r))
+		s.writeSystemLog(ctx, "email", "failed", "password reset email request failed: smtp not configured", "", emailAddr, requestIP)
+		markAuthCaptchaRequired(requestIP)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "邮件服务未配置"})
+		return
+	}
+
+	// Account-existence check. The HTTP response for "user not found" must
+	// match the happy-path response so attackers can't enumerate registered
+	// emails by hammering this endpoint with addresses; only the internal
+	// system log distinguishes the two cases for operators.
+	uniformOK := map[string]any{"ok": true, "expires_in": int(resetCodeTTL.Seconds())}
+	user, err := s.store.GetUserByEmail(ctx, emailAddr)
+	if err != nil {
+		s.writeSystemLog(ctx, "email", "failed", "password reset email request failed: user lookup failed", "", emailAddr, getRequestIP(r))
+		writeInternalError(w, "get user by email", err)
+		return
+	}
+	if user == nil {
+		// Pretend success: same JSON shape, same status code, no hint that
+		// the email is unregistered. Still record the miss server-side so
+		// abuse can be investigated.
+		s.writeSystemLog(ctx, "email", "failed", "password reset email request failed: user not found", "", emailAddr, getRequestIP(r))
+		writeJSON(w, http.StatusOK, uniformOK)
 		return
 	}
 
@@ -468,13 +490,15 @@ func (s *Servers) handlePasswordResetRequest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := sendEmail(smtpCfg, emailAddr, subject, body); err != nil {
-		s.writeSystemLog(ctx, "email", "failed", "password reset email request failed: send email failed", user.ID, user.Username, getRequestIP(r))
+		s.writeSystemLog(ctx, "email", "failed", "password reset email request failed: send email failed", user.ID, user.Username, requestIP)
+		markAuthCaptchaRequired(requestIP)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "邮件发送失败"})
 		return
 	}
-	s.writeSystemLog(ctx, "email", "success", "password reset email code sent", user.ID, user.Username, getRequestIP(r))
+	s.writeSystemLog(ctx, "email", "success", "password reset email code sent", user.ID, user.Username, requestIP)
 
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "expires_in": int(resetCodeTTL.Seconds())})
+	clearAuthCaptchaRequired(requestIP)
+	writeJSON(w, http.StatusOK, uniformOK)
 }
 
 // handlePasswordResetConfirm validates the reset code (single-use, TTL-gated)
@@ -521,12 +545,13 @@ func (s *Servers) handlePasswordResetConfirm(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "验证码已过期"})
 		return
 	}
-	if hashEmailVerificationToken(emailAddr, code) != verify.TokenHash {
+	if !emailVerificationTokenEquals(emailAddr, code, verify.TokenHash) {
 		passwordResetMu.Unlock()
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "验证码错误"})
 		return
 	}
 	// Commit: remove the token so no concurrent request can reuse it.
+	// Restored below if the password update fails.
 	delete(passwordResetTokens, emailAddr)
 	passwordResetMu.Unlock()
 
@@ -548,6 +573,9 @@ func (s *Servers) handlePasswordResetConfirm(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := s.store.UpdateUserPasswordHash(ctx, user.ID, string(hash)); err != nil {
+		passwordResetMu.Lock()
+		passwordResetTokens[emailAddr] = verify
+		passwordResetMu.Unlock()
 		writeInternalError(w, "update user password", err)
 		return
 	}
@@ -556,9 +584,11 @@ func (s *Servers) handlePasswordResetConfirm(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleCaptcha issues a signed captcha token plus a base64-encoded PNG of
-// distorted digits. The HMAC-signed token carries the expected answer and a
-// timestamp so verification is a pure stateless check (no DB / cache round-trip).
+// handleCaptcha issues an opaque captcha handle plus a base64-encoded PNG
+// of distorted digits. The expected answer is held only on the server in
+// captchaSessions; the client gets back nothing more than a random token.
+// This is the security-critical change versus the previous design, which
+// embedded the answer in the token (a base64-decode away from the client).
 func (s *Servers) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
@@ -571,45 +601,50 @@ func (s *Servers) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "captcha render", err)
 		return
 	}
-	ts := time.Now().Unix()
-	payload := fmt.Sprintf("0|0|%s|%d", answer, ts)
-	token := signCaptchaToken(s.cfg.AuthSecret, payload)
+	token, err := issueCaptchaSession(answer)
+	if err != nil {
+		writeInternalError(w, "captcha session", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"question":   item.EncodeB64string(),
 		"token":      token,
-		"expires_in": int64((5 * time.Minute).Seconds()),
+		"expires_in": int64(captchaTTL.Seconds()),
 	})
 }
 
-// verifyCaptcha decodes the HMAC-signed captcha token and compares the
-// recovered answer against the user's submission. Tokens older than 5 minutes
-// are rejected.
+// verifyCaptcha looks up the server-side captcha session for the supplied
+// token and consumes it (single-use), then compares the answer. Both
+// success and failure remove the session so a wrong guess cannot be
+// retried with the same token. Tokens older than captchaTTL are rejected
+// even before the answer is checked.
 func (s *Servers) verifyCaptcha(token, answer string) error {
 	if token == "" || answer == "" {
 		return errors.New("请输入验证码")
 	}
-	if s.cfg.AuthSecret == "" {
-		return errors.New("验证码功能未配置")
+	sess := consumeCaptchaSession(token)
+	if sess == nil {
+		return errors.New("验证码无效或已过期")
 	}
-	payload, sigHex, err := decodeCaptchaToken(token)
-	if err != nil {
-		return fmt.Errorf("验证码无效")
+	expect := strings.TrimSpace(sess.answer)
+	got := strings.TrimSpace(answer)
+	if expect == "" {
+		return errors.New("验证码无效或已过期")
 	}
-	if !validateCaptchaSig(s.cfg.AuthSecret, payload, sigHex) {
-		return fmt.Errorf("验证码无效")
+	// Compare numerically when both sides parse as integers (the default
+	// driver emits 4-digit numbers); otherwise fall back to a constant-time
+	// byte compare so leading zeros and string variants both work.
+	if e, eErr := strconv.Atoi(expect); eErr == nil {
+		if g, gErr := strconv.Atoi(got); gErr == nil {
+			if e != g {
+				return errors.New("验证码不正确")
+			}
+			return nil
+		}
 	}
-	parts := strings.Split(payload, "|")
-	if len(parts) != 4 {
-		return fmt.Errorf("验证码无效")
-	}
-	expectAns, _ := strconv.Atoi(parts[2])
-	ts, _ := strconv.ParseInt(parts[3], 10, 64)
-	if ts == 0 || time.Since(time.Unix(ts, 0)) > 5*time.Minute {
-		return fmt.Errorf("验证码已过期")
-	}
-	userAns, _ := strconv.Atoi(strings.TrimSpace(answer))
-	if userAns != expectAns {
-		return fmt.Errorf("验证码不正确")
+	if len(expect) != len(got) ||
+		subtle.ConstantTimeCompare([]byte(expect), []byte(got)) != 1 {
+		return errors.New("验证码不正确")
 	}
 	return nil
 }
@@ -649,6 +684,18 @@ func (s *Servers) handleMe(w http.ResponseWriter, r *http.Request) {
 		"role":       user.Role,
 		"status":     user.Status,
 		"created_at": user.CreatedAt,
+	}
+	if gid := strings.TrimSpace(user.GroupID); gid != "" {
+		u["group_id"] = gid
+		if g, gerr := s.store.GetUserGroup(ctx, gid); gerr == nil && g != nil {
+			u["group_name"] = g.Name
+			if perms := normalizeUserGroupPermissions(g.Permissions); len(perms) > 0 {
+				u["permissions"] = perms
+			}
+		}
+	}
+	if perms, ok := r.Context().Value(ctxKeyPermissions).([]string); ok && len(perms) > 0 {
+		u["permissions"] = perms
 	}
 	if user.LastLoginAt != nil {
 		u["last_login_at"] = *user.LastLoginAt
@@ -728,35 +775,150 @@ func (s *Servers) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 
 // --- captcha helpers ---
 
-// signCaptchaToken produces a base64(payload|hmac_sha256(secret, payload)) token.
-func signCaptchaToken(secret, payload string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(payload))
-	sig := hex.EncodeToString(mac.Sum(nil))
-	raw := payload + "|" + sig
-	return base64.StdEncoding.EncodeToString([]byte(raw))
+// captchaTTL is how long an issued captcha is valid before consumption.
+// Five minutes matches the previous HMAC token lifetime so the user-facing
+// behavior (UI countdown, "code expired" copy) does not change.
+const captchaTTL = 5 * time.Minute
+
+// authCaptchaGateTTL is how long a client IP must supply captcha after a
+// failed public-auth attempt. Aligns with the frontend localStorage gate.
+const authCaptchaGateTTL = 30 * time.Minute
+
+var (
+	authCaptchaMu       sync.Mutex
+	authCaptchaRequired = map[string]time.Time{} // ip -> expiry
+)
+
+func markAuthCaptchaRequired(ip string) {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return
+	}
+	authCaptchaMu.Lock()
+	defer authCaptchaMu.Unlock()
+	pruneAuthCaptchaRequiredLocked()
+	authCaptchaRequired[ip] = time.Now().Add(authCaptchaGateTTL)
 }
 
-// decodeCaptchaToken reverses signCaptchaToken, returning (payload, sigHex).
-// Payloads are always 4 pipe-delimited parts; the signature is the 5th.
-func decodeCaptchaToken(token string) (payload, sigHex string, err error) {
-	raw, err := base64.StdEncoding.DecodeString(token)
-	if err != nil {
-		return "", "", err
+func clearAuthCaptchaRequired(ip string) {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return
 	}
-	parts := strings.Split(string(raw), "|")
-	if len(parts) != 5 {
-		return "", "", fmt.Errorf("bad token")
-	}
-	return strings.Join(parts[:4], "|"), parts[4], nil
+	authCaptchaMu.Lock()
+	defer authCaptchaMu.Unlock()
+	delete(authCaptchaRequired, ip)
 }
 
-// validateCaptchaSig is a constant-time comparison of expected vs received HMAC.
-func validateCaptchaSig(secret, payload, sigHex string) bool {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(payload))
-	expect := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(strings.ToLower(expect)), []byte(strings.ToLower(sigHex)))
+func authCaptchaRequiredForIP(ip string) bool {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return false
+	}
+	authCaptchaMu.Lock()
+	defer authCaptchaMu.Unlock()
+	pruneAuthCaptchaRequiredLocked()
+	exp, ok := authCaptchaRequired[ip]
+	return ok && time.Now().Before(exp)
+}
+
+func pruneAuthCaptchaRequiredLocked() {
+	now := time.Now()
+	for k, v := range authCaptchaRequired {
+		if !now.Before(v) {
+			delete(authCaptchaRequired, k)
+		}
+	}
+}
+
+// enforceAuthCaptcha skips captcha on the first attempt from an IP. After a
+// prior failed auth attempt (or a bad captcha submission) the same IP must
+// solve captcha before retrying.
+func (s *Servers) enforceAuthCaptcha(r *http.Request, token, answer string) error {
+	token = strings.TrimSpace(token)
+	answer = strings.TrimSpace(answer)
+	ip := getRequestIP(r)
+	if token == "" && answer == "" {
+		if authCaptchaRequiredForIP(ip) {
+			return errors.New("请输入验证码")
+		}
+		return nil
+	}
+	if err := s.verifyCaptcha(token, answer); err != nil {
+		markAuthCaptchaRequired(ip)
+		return err
+	}
+	return nil
+}
+
+// captchaTokenLen is the byte length of the random handle generated for
+// each captcha. 24 bytes (192 bits) is far beyond what's needed for a
+// 5-minute single-use token but matches our other random-id sizing.
+const captchaTokenLen = 24
+
+// captchaSession records an issued captcha challenge. Only the answer and
+// expiry are kept server-side; the client receives a random token only.
+type captchaSession struct {
+	answer    string
+	expiresAt time.Time
+}
+
+var (
+	captchaMu       sync.Mutex
+	captchaSessions = make(map[string]*captchaSession)
+)
+
+// issueCaptchaSession generates a fresh random token bound to the supplied
+// answer and stores it in captchaSessions. The token is the only thing the
+// client gets back; the answer never leaves the process.
+func issueCaptchaSession(answer string) (string, error) {
+	buf := make([]byte, captchaTokenLen)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(buf)
+
+	captchaMu.Lock()
+	defer captchaMu.Unlock()
+	captchaSessions[token] = &captchaSession{
+		answer:    strings.TrimSpace(answer),
+		expiresAt: time.Now().Add(captchaTTL),
+	}
+	pruneCaptchaSessionsLocked()
+	return token, nil
+}
+
+// consumeCaptchaSession atomically removes and returns the session for the
+// given token. The deletion is unconditional so a wrong guess cannot be
+// retried by replaying the token. Returns nil for unknown / expired
+// tokens.
+func consumeCaptchaSession(token string) *captchaSession {
+	if token == "" {
+		return nil
+	}
+	captchaMu.Lock()
+	defer captchaMu.Unlock()
+	s, ok := captchaSessions[token]
+	if !ok {
+		return nil
+	}
+	delete(captchaSessions, token)
+	if time.Now().After(s.expiresAt) {
+		return nil
+	}
+	return s
+}
+
+// pruneCaptchaSessionsLocked drops expired entries. Called opportunistically
+// on each issue (cheap because the map only ever holds tokens issued within
+// the last captchaTTL minutes). Must be called with captchaMu held.
+func pruneCaptchaSessionsLocked() {
+	now := time.Now()
+	for k, v := range captchaSessions {
+		if now.After(v.expiresAt) {
+			delete(captchaSessions, k)
+		}
+	}
 }
 
 // randomInt returns a crypto/rand integer in [min, max]. Falls back to min on
@@ -794,6 +956,19 @@ func hashEmailVerificationToken(email, code string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// emailVerificationTokenEquals constant-time compares a freshly derived
+// (email, code) hash against the stored TokenHash. Using subtle here is
+// defense-in-depth: the hashes are random-looking SHA-256 hex so the
+// timing channel is narrow, but a plain `!=` short-circuits on the first
+// differing byte and there's no reason to leak even that little.
+func emailVerificationTokenEquals(email, code, stored string) bool {
+	derived := hashEmailVerificationToken(email, code)
+	if len(derived) != len(stored) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(derived), []byte(stored)) == 1
+}
+
 // passwordPolicyError returns a user-facing error message when the password does
 // not meet the minimum policy, or an empty string if the password is acceptable.
 // Policy: at least 8 chars, must contain at least one letter and one digit.
@@ -801,6 +976,28 @@ func hashEmailVerificationToken(email, code string) string {
 func passwordPolicyError(pw string) string {
 	if len(pw) < 8 {
 		return "密码长度不能少于8位"
+	}
+	// We don't reuse `unicode.IsLetter` / `unicode.IsDigit` here because the
+	// frontend / docs both speak in terms of ASCII letters and digits, which
+	// is what most operators expect for "letter + digit" rules. This avoids
+	// false-positives for inputs that happen to contain non-Latin letters
+	// or East-Asian fullwidth digits while missing real ASCII variety.
+	hasLetter := false
+	hasDigit := false
+	for i := 0; i < len(pw); i++ {
+		c := pw[i]
+		switch {
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
+			hasLetter = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		}
+		if hasLetter && hasDigit {
+			break
+		}
+	}
+	if !hasLetter || !hasDigit {
+		return "密码必须同时包含字母和数字"
 	}
 	return ""
 }

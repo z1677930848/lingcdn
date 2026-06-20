@@ -1,27 +1,31 @@
 ﻿<template>
   <div class="settings-tab">
-    <t-form layout="vertical" label-align="top" :disabled="loading || saving">
-      <t-form-item v-for="item in notificationItems" :key="item.key" label="">
+    <ErrorState v-if="error" :message="error" @retry="loadSettings" />
+    <LoadingState v-else-if="loading" />
+    <el-form v-else label-position="top" :disabled="saving">
+      <el-form-item v-for="item in notificationItems" :key="item.key" label="">
         <div class="notify-item">
           <div class="notify-info">
             <div class="notify-label">{{ item.label }}</div>
             <div class="notify-desc">{{ item.description }}</div>
           </div>
-          <t-switch v-model="settings[item.key]" />
+          <el-switch v-model="settings[item.key]" />
         </div>
-      </t-form-item>
+      </el-form-item>
 
       <div class="actions">
-        <t-button theme="primary" @click="handleSave" :loading="saving">保存</t-button>
+        <el-button type="primary" @click="handleSave" :loading="saving">保存</el-button>
       </div>
-    </t-form>
+    </el-form>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
 import { api } from "@/lib/api"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 type NotificationTypes = {
   notify_node_resource: boolean
@@ -48,17 +52,19 @@ const notificationItems = [
   },
   {
     key: "notify_ticket_reply",
-    label: "工单回复通知",
-    description: "客户回复工单通知",
+    label: "工单用户动态",
+    description: "用户新建或回复工单时通知（钉钉/企微/飞书 Webhook）",
   },
 ] as const
 
 const loading = ref(false)
+const error = ref("")
 const saving = ref(false)
 
 const loadSettings = async () => {
   try {
     loading.value = true
+    error.value = ""
     const { settings: data } = await api.getSettings()
     if (data) {
       settings.value = {
@@ -67,8 +73,9 @@ const loadSettings = async () => {
         notify_ticket_reply: Boolean(data.notify_ticket_reply ?? false),
       }
     }
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载设置失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载设置失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -91,45 +98,4 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
-.notify-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-input-radius);
-  background: var(--app-surface);
-  transition: background var(--app-anim-fast) var(--app-easing-standard),
-              border-color var(--app-anim-fast) var(--app-easing-standard);
-}
-
-.notify-item:hover {
-  background: var(--app-surface-muted);
-  border-color: var(--app-border-strong);
-}
-
-.notify-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.notify-label {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--app-text-strong);
-}
-
-.notify-desc {
-  font-size: 12px;
-  color: var(--app-text-faint);
-}
-
-.actions {
-  margin-top: 12px;
-}
-</style>
 

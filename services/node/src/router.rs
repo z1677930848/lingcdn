@@ -14,6 +14,8 @@ pub struct RouteMatch {
 pub struct CacheDecision {
     pub ttl_seconds: u64,
     pub cache_query_params: bool,
+    pub stale_while_revalidate_seconds: u64,
+    pub stale_if_error_seconds: u64,
 }
 
 /// Router for matching requests to domains and origins
@@ -32,7 +34,8 @@ struct CompiledCacheRule {
 
 impl Router {
     pub fn new(config: Arc<RuntimeConfig>) -> Self {
-        let mut exact_domains: HashMap<String, usize> = HashMap::with_capacity(config.domains.len());
+        let mut exact_domains: HashMap<String, usize> =
+            HashMap::with_capacity(config.domains.len());
         let mut wildcard_domains: HashMap<String, usize> = HashMap::new();
 
         for (idx, domain) in config.domains.iter().enumerate() {
@@ -46,7 +49,8 @@ impl Router {
             }
         }
 
-        let mut compiled_cache_rules: Vec<CompiledCacheRule> = Vec::with_capacity(config.cache_rules.len());
+        let mut compiled_cache_rules: Vec<CompiledCacheRule> =
+            Vec::with_capacity(config.cache_rules.len());
         for rule in &config.cache_rules {
             let host_re = rule
                 .host_pattern
@@ -71,44 +75,58 @@ impl Router {
         }
     }
 
-    /// Match a request by host, path, and method
-    pub fn route(&self, host: &str, path: &str, method: &str) -> Option<RouteMatch> {
-        debug!("Routing request: host={}, path={}, method={}", host, path, method);
+    /// Match a request by host, path, method, and optional listener port.
+    pub fn route_with_port(
+        &self,
+        host: &str,
+        path: &str,
+        method: &str,
+        incoming_port: Option<u16>,
+    ) -> Option<RouteMatch> {
+        debug!(
+            "Routing request: host={}, path={}, method={}",
+            host, path, method
+        );
 
         // Fast path: exact match.
         if let Some(&idx) = self.exact_domains.get(host) {
             if let Some(domain) = self.config.domains.get(idx) {
-                debug!("Matched domain: {}", domain.name);
-                return Some(RouteMatch {
-                    domain_idx: idx,
-                });
+                if Self::domain_accepts_port(domain, incoming_port) {
+                    debug!("Matched domain: {}", domain.name);
+                    return Some(RouteMatch { domain_idx: idx });
+                }
             }
         }
 
         // Wildcard match (e.g., *.example.com).
         // 1) The apex itself: a config of "*.example.com" also accepts a request
         //    for the bare "example.com" when no exact entry exists.
-        // 2) Suffix walk for sub-labels: for host "a.b.example.com" try
-        //    "b.example.com", then "example.com", then "com".
+        // 2) Sub-label match: a `*.example.com` config matches exactly one
+        //    DNS label below the apex (e.g. "a.example.com"), per RFC 6125
+        //    §6.4.3 — *not* arbitrary depth. The previous suffix walk was
+        //    inconsistent with the listener's TLS SNI resolver, which only
+        //    matches a single label, and would route requests for
+        //    "a.b.example.com" through the `*.example.com` domain config
+        //    even though the TLS handshake would refuse the cert. That gap
+        //    let an attacker reach domain config / WAF / origin behavior
+        //    bound to `*.example.com` from any deeper sub-label.
         if let Some(&idx) = self.wildcard_domains.get(host) {
             if let Some(domain) = self.config.domains.get(idx) {
-                debug!("Matched wildcard apex: {}", domain.name);
-                return Some(RouteMatch { domain_idx: idx });
+                if Self::domain_accepts_port(domain, incoming_port) {
+                    debug!("Matched wildcard apex: {}", domain.name);
+                    return Some(RouteMatch { domain_idx: idx });
+                }
             }
         }
-        {
-            let mut rest = host;
-            while let Some(dot_pos) = rest.find('.') {
-                let suffix = &rest[dot_pos + 1..];
-                if let Some(&idx) = self.wildcard_domains.get(suffix) {
-                    if let Some(domain) = self.config.domains.get(idx) {
+        if let Some(dot_pos) = host.find('.') {
+            let suffix = &host[dot_pos + 1..];
+            if let Some(&idx) = self.wildcard_domains.get(suffix) {
+                if let Some(domain) = self.config.domains.get(idx) {
+                    if Self::domain_accepts_port(domain, incoming_port) {
                         debug!("Matched wildcard domain: {}", domain.name);
-                        return Some(RouteMatch {
-                            domain_idx: idx,
-                        });
+                        return Some(RouteMatch { domain_idx: idx });
                     }
                 }
-                rest = suffix;
             }
         }
 
@@ -116,11 +134,23 @@ impl Router {
         None
     }
 
+    fn domain_accepts_port(
+        domain: &crate::config::DomainConfig,
+        incoming_port: Option<u16>,
+    ) -> bool {
+        match (domain.effective_listen_port(), incoming_port) {
+            (Some(expected), Some(actual)) => expected == actual,
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+    }
+
     /// Check if a request should be cached based on cache rules
     #[allow(dead_code)]
     // 预留：简化调用方只关心 TTL 的场景
     pub fn should_cache(&self, host: &str, path: &str, method: &str) -> Option<u64> {
-        self.cache_decision(host, path, method).map(|d| d.ttl_seconds)
+        self.cache_decision(host, path, method)
+            .map(|d| d.ttl_seconds)
     }
 
     /// Return cache behavior for a request (TTL + whether to include query params in cache key).
@@ -131,6 +161,8 @@ impl Router {
                 return Some(CacheDecision {
                     ttl_seconds: rule.rule.ttl_seconds,
                     cache_query_params: rule.rule.cache_query_params,
+                    stale_while_revalidate_seconds: rule.rule.stale_while_revalidate_seconds,
+                    stale_if_error_seconds: rule.rule.stale_if_error_seconds,
                 });
             }
         }

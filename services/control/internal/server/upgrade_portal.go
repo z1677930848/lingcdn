@@ -9,8 +9,99 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
+
+const (
+	portalLatestCacheTTL      = 5 * time.Minute
+	portalLatestErrorCacheTTL = 30 * time.Second
+)
+
+type portalLatestCacheEntry struct {
+	latest *portalLatest
+	err    error
+	at     time.Time
+}
+
+func portalLatestCacheKey(baseURL, product, channel, platform, arch, version string) string {
+	return strings.Join([]string{baseURL, product, channel, platform, arch, version}, "|")
+}
+
+func (s *Servers) fetchPortalLatestCached(ctx context.Context, baseURL, product, channel, platform, arch, version string) (*portalLatest, error) {
+	if s == nil {
+		return fetchPortalLatest(ctx, baseURL, product, channel, platform, arch, version)
+	}
+	key := portalLatestCacheKey(baseURL, product, channel, platform, arch, version)
+
+	s.portalLatestCacheMu.RLock()
+	if e, ok := s.portalLatestCache[key]; ok {
+		ttl := portalLatestCacheTTL
+		if e.err != nil {
+			ttl = portalLatestErrorCacheTTL
+		}
+		if time.Since(e.at) < ttl {
+			s.portalLatestCacheMu.RUnlock()
+			return e.latest, e.err
+		}
+	}
+	s.portalLatestCacheMu.RUnlock()
+
+	latest, err := fetchPortalLatest(ctx, baseURL, product, channel, platform, arch, version)
+
+	s.portalLatestCacheMu.Lock()
+	if s.portalLatestCache == nil {
+		s.portalLatestCache = make(map[string]portalLatestCacheEntry)
+	}
+	s.portalLatestCache[key] = portalLatestCacheEntry{latest: latest, err: err, at: time.Now()}
+	s.portalLatestCacheMu.Unlock()
+
+	return latest, err
+}
+
+// fetchPortalLatestAll queries control + node (amd64/arm64) latest versions in parallel.
+func (s *Servers) fetchPortalLatestAll(ctx context.Context, portal, channel, controlArch string) (control, nodeAMD64, nodeARM64 *portalLatest, notes []string) {
+	type slot struct {
+		idx    int
+		latest *portalLatest
+		err    error
+	}
+	queries := []struct {
+		idx              int
+		product, platform, arch string
+	}{
+		{0, "control", "linux", controlArch},
+		{1, "node", "linux", "amd64"},
+		{2, "node", "linux", "arm64"},
+	}
+	out := make([]slot, len(queries))
+	var wg sync.WaitGroup
+	for _, q := range queries {
+		wg.Add(1)
+		go func(q struct {
+			idx              int
+			product, platform, arch string
+		}) {
+			defer wg.Done()
+			latest, err := s.fetchPortalLatestCached(ctx, portal, q.product, channel, q.platform, q.arch, "latest")
+			out[q.idx] = slot{idx: q.idx, latest: latest, err: err}
+		}(q)
+	}
+	wg.Wait()
+
+	if out[0].err == nil {
+		control = out[0].latest
+	} else {
+		notes = append(notes, fmt.Sprintf("failed to query control latest version: %v", out[0].err))
+	}
+	if out[1].err == nil {
+		nodeAMD64 = out[1].latest
+	}
+	if out[2].err == nil {
+		nodeARM64 = out[2].latest
+	}
+	return control, nodeAMD64, nodeARM64, notes
+}
 
 type portalLatest struct {
 	Product     string `json:"product"`

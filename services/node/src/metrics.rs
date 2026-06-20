@@ -17,6 +17,7 @@ pub struct Metrics {
     pub cache_hits: IntCounter,
     pub cache_misses: IntCounter,
     pub cache_size_bytes: IntGauge,
+    pub waf_blocks: IntCounter,
 
     // Origin metrics
     pub origin_requests_total: IntCounter,
@@ -58,6 +59,11 @@ impl Metrics {
             Opts::new("lingcdn_cache_misses_total", "Total cache misses")
         )?;
         registry.register(Box::new(cache_misses.clone()))?;
+
+        let waf_blocks = IntCounter::with_opts(
+            Opts::new("lingcdn_waf_blocks_total", "Total WAF blocks")
+        )?;
+        registry.register(Box::new(waf_blocks.clone()))?;
 
         let cache_size_bytes = IntGauge::with_opts(
             Opts::new("lingcdn_cache_size_bytes", "Cache size in bytes")
@@ -110,6 +116,7 @@ impl Metrics {
             requests_by_status,
             cache_hits,
             cache_misses,
+            waf_blocks,
             cache_size_bytes,
             origin_requests_total,
             origin_request_duration,

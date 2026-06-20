@@ -33,7 +33,7 @@ export default defineConfig({
           if (!id.includes("node_modules")) return
           if (id.includes("echarts") || id.includes("zrender")) return "echarts"
           if (id.includes("@highcharts/map-collection")) return "map-data"
-          if (id.includes("tdesign-vue-next") || id.includes("tdesign-icons-vue-next")) return "tdesign"
+          if (id.includes("element-plus")) return "element-plus"
           if (
             id.includes("vue-router") ||
             id.includes("/pinia/") ||

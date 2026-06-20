@@ -58,8 +58,8 @@ func (s *Servers) handleNodesOverview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		commOK := !n.LastHeartbeat.IsZero() && now.Sub(n.LastHeartbeat) <= 90*time.Second && sn != "disabled"
-		reportOK := !n.LastMetricsAt.IsZero() && now.Sub(n.LastMetricsAt) <= 120*time.Second
+		commOK := nodeCommOK(n, now)
+		reportOK := nodeMetricsOK(n, now)
 
 		item := map[string]any{
 			"id":              n.ID,

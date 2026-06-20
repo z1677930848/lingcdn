@@ -1,13 +1,6 @@
 <template>
-  <div v-if="loading" class="loading">
-    <t-loading size="medium" />
-  </div>
-  <div v-else-if="error" class="page">
-    <div class="error-box">
-      <span>{{ error }}</span>
-      <t-button size="small" theme="primary" @click="loadProducts">重试</t-button>
-    </div>
-  </div>
+  <LoadingState v-if="loading" />
+  <ErrorState v-else-if="error" :message="error" @retry="loadProducts" />
   <div v-else class="page">
     <div class="header">
       <div>
@@ -16,14 +9,16 @@
       </div>
     </div>
 
-    <t-card v-if="products.length === 0" class="section-card" bordered>
+    <PermissionNotice :show="hasRestrictions && !canOrdersPurchase" />
+
+    <el-card v-if="products.length === 0" class="section-card">
       <div class="empty">
         <p class="muted" style="margin:0">暂无可购买的套餐</p>
       </div>
-    </t-card>
+    </el-card>
 
     <div v-else class="product-grid">
-      <t-card v-for="product in products" :key="product.id" class="section-card" bordered>
+      <el-card v-for="product in products" :key="product.id" class="section-card">
         <div class="section-body">
           <div class="product-head">
             <div>
@@ -61,15 +56,18 @@
           </div>
 
           <div class="product-actions">
-            <t-button size="small" variant="outline" @click="openDetail(product)">查看详情</t-button>
-            <t-button size="small" theme="primary" @click="openBuy(product)">立即购买</t-button>
+            <el-button size="small" plain @click="openDetail(product)">查看详情</el-button>
+            <el-button v-if="canOrdersPurchase" size="small" type="primary" :disabled="Boolean(getRenewalBlockedReason(product))" @click="openBuy(product)">
+              {{ getProductActionLabel(product) }}
+            </el-button>
           </div>
+          <div v-if="getRenewalBlockedReason(product)" class="renewal-hint">{{ getRenewalBlockedReason(product) }}</div>
         </div>
-      </t-card>
+      </el-card>
     </div>
 
     <!-- Detail Dialog -->
-    <t-dialog v-model:visible="detailVisible" :header="detailProduct?.name || '套餐详情'" :footer="false" width="540px">
+    <EpDialog append-to-body v-model="detailVisible" :title="detailProduct?.name || '套餐详情'" :footer="false" width="540px">
       <div v-if="detailProduct" class="detail-content">
         <div class="detail-section">
           <div class="detail-row"><span class="detail-label">名称</span><span>{{ detailProduct.name }}</span></div>
@@ -89,12 +87,12 @@
         <div class="detail-section">
           <div class="detail-section-title">功能特性</div>
           <div class="detail-features">
-            <t-tag v-if="detailProduct.websocket" theme="primary" variant="light" size="small">WebSocket</t-tag>
-            <t-tag v-if="detailProduct.http3" theme="primary" variant="light" size="small">HTTP/3</t-tag>
-            <t-tag v-if="detailProduct.custom_cc_rules" theme="primary" variant="light" size="small">自定义 CC 规则</t-tag>
-            <t-tag v-if="detailProduct.l2_origin" theme="primary" variant="light" size="small">L2 回源</t-tag>
-            <t-tag v-if="detailProduct.cc_protection" theme="primary" variant="light" size="small">CC 防护: {{ detailProduct.cc_protection }}</t-tag>
-            <t-tag v-if="detailProduct.ddos_protection" theme="primary" variant="light" size="small">DDoS 防护: {{ detailProduct.ddos_protection }}</t-tag>
+            <el-tag v-if="detailProduct.websocket" type="primary" effect="light" size="small">WebSocket</el-tag>
+            <el-tag v-if="detailProduct.http3" type="primary" effect="light" size="small">HTTP/3</el-tag>
+            <el-tag v-if="detailProduct.custom_cc_rules" type="primary" effect="light" size="small">自定义 CC 规则</el-tag>
+            <el-tag v-if="detailProduct.l2_origin" type="primary" effect="light" size="small">L2 回源</el-tag>
+            <el-tag v-if="detailProduct.cc_protection" type="primary" effect="light" size="small">CC 防护: {{ detailProduct.cc_protection }}</el-tag>
+            <el-tag v-if="detailProduct.ddos_protection" type="primary" effect="light" size="small">DDoS 防护: {{ detailProduct.ddos_protection }}</el-tag>
           </div>
         </div>
         <div class="detail-section">
@@ -104,37 +102,47 @@
           <div class="detail-row" v-if="detailProduct.price_year_cents"><span class="detail-label">年付</span><span>{{ formatMoney(detailProduct.price_year_cents, detailProduct.currency) }}</span></div>
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
 
     <!-- Buy Dialog -->
-    <t-dialog v-model:visible="buyVisible" header="购买套餐" :confirm-btn="{ content: '确认购买', loading: buying }" @confirm="handleBuy">
+    <EpDialog append-to-body v-model="buyVisible" header="购买套餐" :confirm-btn="{ content: '确认购买', loading: buying }" @confirm="handleBuy">
       <div v-if="buyProduct" class="buy-form">
         <div class="buy-product-name">{{ buyProduct.name }}</div>
         <div class="form-item">
           <div class="form-label">选择周期</div>
-          <t-radio-group v-model="buyPeriod">
-            <t-radio value="month">月付 {{ formatMoney(buyProduct.price_month_cents, buyProduct.currency) }}</t-radio>
-            <t-radio v-if="buyProduct.price_quarter_cents" value="quarter">季付 {{ formatMoney(buyProduct.price_quarter_cents, buyProduct.currency) }}</t-radio>
-            <t-radio v-if="buyProduct.price_year_cents" value="year">年付 {{ formatMoney(buyProduct.price_year_cents, buyProduct.currency) }}</t-radio>
-          </t-radio-group>
+          <el-radio-group v-model="buyPeriod">
+            <el-radio value="month">月付 {{ formatMoney(buyProduct.price_month_cents, buyProduct.currency) }}</el-radio>
+            <el-radio v-if="buyProduct.price_quarter_cents" value="quarter">季付 {{ formatMoney(buyProduct.price_quarter_cents, buyProduct.currency) }}</el-radio>
+            <el-radio v-if="buyProduct.price_year_cents" value="year">年付 {{ formatMoney(buyProduct.price_year_cents, buyProduct.currency) }}</el-radio>
+          </el-radio-group>
         </div>
         <div class="buy-total">
           <span>应付总额</span>
           <span class="buy-price">{{ formatMoney(buyAmount, buyProduct.currency) }}</span>
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpDialog from "@/components/ep/EpDialog.vue"
 import { computed, onMounted, ref } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
-import { api, type Product } from "@/lib/api"
+import { MessagePlugin } from "@/lib/ep-message"
+import { api, type Product, type UserOrder } from "@/lib/api"
+import { useSystemSettings } from "@/lib/systemSettings"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
+import PermissionNotice from "@/components/common/PermissionNotice.vue"
+import { useUserPermissions } from "@/composables/useUserPermissions"
+
+const { canOrdersPurchase, hasRestrictions } = useUserPermissions()
 
 const products = ref<Product[]>([])
+const orders = ref<UserOrder[]>([])
 const loading = ref(true)
 const error = ref("")
+const { settings } = useSystemSettings()
 
 const detailVisible = ref(false)
 const detailProduct = ref<Product | null>(null)
@@ -147,8 +155,12 @@ const buying = ref(false)
 const loadProducts = async () => {
   try {
     loading.value = true
-    const res = await api.getProducts()
-    products.value = (res.products || []).filter((p) => p.enabled !== false)
+    const [productsRes, ordersRes] = await Promise.all([
+      api.getProducts(),
+      api.getUserOrders().catch(() => ({ orders: [], total: 0 })),
+    ])
+    products.value = (productsRes.products || []).filter((p) => p.enabled !== false)
+    orders.value = ordersRes.orders || []
     error.value = ""
   } catch (err: any) {
     error.value = err.message || "加载产品失败"
@@ -163,9 +175,46 @@ const openDetail = (product: Product) => {
 }
 
 const openBuy = (product: Product) => {
+  const blockedReason = getRenewalBlockedReason(product)
+  if (blockedReason) {
+    MessagePlugin.warning(blockedReason)
+    return
+  }
   buyProduct.value = product
   buyPeriod.value = "month"
   buyVisible.value = true
+}
+
+const renewalWindowDays = computed(() => {
+  const raw = Number(settings.value.renewal_before_expiry_days)
+  if (!Number.isFinite(raw)) return 30
+  return Math.max(0, Math.min(3650, Math.floor(raw)))
+})
+
+const latestProductOrderEnd = (productID: string): Date | null => {
+  let latest: Date | null = null
+  for (const order of orders.value) {
+    const status = String(order.status || "").toLowerCase()
+    if (order.product_id !== productID || (status !== "paid" && status !== "active") || !order.ends_at) continue
+    const end = new Date(order.ends_at)
+    if (Number.isNaN(end.getTime())) continue
+    if (!latest || end > latest) latest = end
+  }
+  return latest
+}
+
+const getRenewalBlockedReason = (product: Product) => {
+  const end = latestProductOrderEnd(product.id)
+  if (!end) return ""
+  const now = new Date()
+  const allowAt = new Date(end.getTime() - renewalWindowDays.value * 24 * 60 * 60 * 1000)
+  if (allowAt <= now) return ""
+  const days = Math.max(1, Math.ceil((allowAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)))
+  return `距当前套餐到期超过 ${renewalWindowDays.value} 天，约 ${days} 天后可续费`
+}
+
+const getProductActionLabel = (product: Product) => {
+  return latestProductOrderEnd(product.id) ? "立即续费" : "立即购买"
 }
 
 const buyAmount = computed(() => {
@@ -188,6 +237,7 @@ const handleBuy = async () => {
     })
     MessagePlugin.success("下单成功")
     buyVisible.value = false
+    await loadProducts()
   } catch (err: any) {
     MessagePlugin.error(err.message || "下单失败")
   } finally {
@@ -218,163 +268,3 @@ const formatBandwidth = (bps?: number | null) => {
 onMounted(() => { loadProducts() })
 </script>
 
-<style scoped>
-.loading {
-  min-height: 60vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.empty {
-  padding: 24px 0;
-  text-align: center;
-}
-
-.product-grid {
-  display: grid;
-  gap: 20px;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-}
-
-.product-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.product-name {
-  font-size: 18px;
-  font-weight: 700;
-  color: #0f172a;
-  margin: 0 0 4px;
-}
-
-.product-desc {
-  font-size: 14px;
-  color: #94a3b8;
-  margin: 0;
-}
-
-.product-status {
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  border-radius: 6px;
-  background: rgba(99, 91, 255, 0.1);
-  color: #635BFF;
-  white-space: nowrap;
-}
-
-.product-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 20px;
-}
-
-.meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 14px;
-}
-
-.meta-label { color: #94a3b8; }
-.meta-value { color: #0f172a; font-size: 13px; font-weight: 500; }
-.meta-value.price { font-weight: 700; color: #635BFF; font-size: 16px; }
-
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-
-.product-actions {
-  display: flex;
-  gap: 12px;
-  padding-top: 16px;
-  border-top: 1px solid #f1f5f9;
-}
-
-/* Detail dialog */
-.detail-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.detail-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.detail-section-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #0f172a;
-  padding-bottom: 6px;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.detail-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 14px;
-  padding: 2px 0;
-}
-
-.detail-label {
-  color: #94a3b8;
-  min-width: 80px;
-}
-
-.detail-features {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.price { font-weight: 700; color: #635BFF; }
-
-/* Buy dialog */
-.buy-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.buy-product-name {
-  font-size: 16px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.form-item {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.form-label {
-  font-size: 14px;
-  color: #475569;
-  font-weight: 500;
-}
-
-.buy-total {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-top: 12px;
-  border-top: 1px solid #f1f5f9;
-  font-size: 14px;
-}
-
-.buy-price {
-  font-size: 20px;
-  font-weight: 700;
-  color: #635BFF;
-}
-
-.muted { color: #94a3b8; }
-</style>

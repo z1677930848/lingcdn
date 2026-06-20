@@ -1,0 +1,888 @@
+/* Domain detail page — CDNfly / Element Plus classic layout */
+
+/* ─── Page header: back arrow + domain title ───────────────────────── */
+.domain-page-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  min-width: 0;
+}
+
+.domain-page-back {
+  flex-shrink: 0;
+  padding: 4px !important;
+  margin-left: -4px;
+}
+
+.domain-page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--app-text-strong);
+  word-break: break-all;
+}
+
+.domain-detail-tabs-wrap {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-card-radius);
+}
+
+.domain-detail-tabs-wrap :deep(.el-card__body) {
+  padding: 0 20px 20px;
+}
+
+/* ─── Read-only info rows in 基本信息 ─────────────────────────────── */
+.sec-form--info .sec-row {
+  align-items: center;
+}
+
+.sec-value--text {
+  color: var(--app-text-strong);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.domain-status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--app-text-strong);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot.status-ok {
+  background: var(--app-success, #67c23a);
+  box-shadow: 0 0 0 3px rgba(103, 194, 58, 0.18);
+}
+
+.status-dot.status-off {
+  background: var(--app-text-faint, #c0c4cc);
+}
+
+.cname-inline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+/* Legacy summary card — kept for reference, no longer used in template */
+.domain-summary-card {
+  margin-bottom: var(--app-page-gap, 16px);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-card-radius);
+}
+
+.domain-summary-card :deep(.el-card__body) {
+  padding: 20px 24px;
+}
+
+.domain-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.domain-summary-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.domain-summary-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 0 !important;
+}
+
+.domain-status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.domain-summary-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.domain-summary-icon {
+  flex: 0 0 auto;
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--app-card-radius);
+  background: var(--app-brand-soft-bg);
+  border: 1px solid var(--app-brand-soft-border);
+  color: var(--app-brand-strong);
+}
+
+.domain-summary-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.domain-summary-eyebrow {
+  font-size: 12px;
+  color: var(--app-text-faint);
+  margin-bottom: 4px;
+}
+
+.domain-summary-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--app-text-strong);
+  word-break: break-all;
+}
+
+.domain-summary-cname {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.domain-summary-cname code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  background: var(--app-surface-muted);
+  padding: 4px 10px;
+  border-radius: var(--app-card-radius-sm);
+  border: 1px solid var(--app-border);
+  word-break: break-all;
+}
+
+.domain-summary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.domain-summary-chip :deep(.el-tag__content) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.domain-summary-chip-state {
+  font-weight: 500;
+}
+
+/* Width utility classes for form fields. Centralizes the width
+ * literals previously inlined as `style="width:XXXpx"` across the 7
+ * config tabs, so spacing stays coherent and easy to retune. */
+.fld-port { width: 140px; }
+
+.fld-status { width: 120px; }
+
+.fld-mid { width: 200px; }
+
+.fld-mode { width: 160px; }
+
+.fld-timeout { width: 240px; }
+
+.fld-creds { max-width: 320px; }
+
+.fld-default { max-width: 420px; }
+
+.fld-narrow-cap { max-width: 260px; }
+
+.fld-cap-200 { max-width: 200px; }
+
+.fld-grow { flex: 1; min-width: 160px; }
+
+.fld-flex { flex: 1; }
+
+/* Hero styles live in src/styles/pages.css (global). */
+
+/* ─── Info card (TDescriptions) ───────────────────────────────────── */
+.info-card {
+  margin-bottom: var(--app-page-gap, 20px);
+  border-radius: var(--app-card-radius, 12px) !important;
+  box-shadow: var(--app-shadow-card, 0 1px 3px rgba(15, 23, 42, 0.04));
+}
+
+.info-card-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--app-text-strong);
+}
+
+.info-card-icon {
+  color: var(--app-brand);
+}
+
+.info-desc :deep(.el-descriptions__label) {
+  width: 120px;
+  font-weight: 500;
+  color: var(--app-text-muted);
+}
+
+.info-desc :deep(.el-descriptions__content) {
+  color: var(--app-text-strong);
+}
+
+.cn-code {
+  background: var(--app-surface-muted);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 13px;
+  color: var(--app-text-strong);
+  word-break: break-all;
+}
+
+/* ─── Tab labels with icon ───────────────────────────────────────── */
+.tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.tab-label svg {
+  color: currentColor;
+  opacity: 0.85;
+}
+
+.info-grid,
+.info-row,
+.info-label,
+.info-value,
+.cname-value,
+.cname-value code,
+.status-dot,
+.status-dot.status-ok {
+  /* Legacy info-grid superseded by <t-descriptions>; kept as no-op selectors
+   * so any rogue references in older snapshots compile cleanly. */
+}
+
+/* Grouped section + stacked form style to match the CDNfly basic-config
+ * layout screenshot: a section title, then each field stacked vertically
+ * with its own hint directly underneath instead of inline. Reserved the
+ * existing .domain-form-row / .domain-form-label / .domain-form-hint rules for the older tabs
+ * (origin / https / advanced) which don't need the new layout yet. */
+.config-section {
+  padding: 20px 0 8px;
+  border-bottom: 1px solid var(--app-border);
+  margin-bottom: 4px;
+}
+
+.config-section:last-of-type {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 16px;
+  padding: 0;
+  color: var(--app-text-strong);
+  letter-spacing: 0;
+}
+
+.section-title::before {
+  display: none;
+}
+
+.domain-form-grid .form-hint-v {
+  grid-column: 2;
+  margin-top: 2px;
+}
+
+.domain-form-grid {
+  /* Two-column form on desktop. Each child is a .domain-form-row-v cell.
+   * Users reading the previous single-column layout on wide screens
+   * complained that the page "looked like a phone" — all fields were
+   * stacked vertically and the right half of the card stayed blank.
+   * Switching to auto-fit gives the desktop a proper two-column form
+   * while the @media block below collapses back to one column on
+   * narrow viewports. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px 32px;
+}
+
+.form-input-v {
+  width: 100%;
+  min-width: 0;
+  max-width: 420px;
+}
+
+.domain-form-hint-v {
+  grid-column: 2;
+  color: var(--td-text-color-placeholder, #a9a9a9);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.tab-body {
+  padding: 4px 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.domain-detail-tabs :deep(.el-tabs__header) {
+  margin-bottom: 0;
+  padding-top: 4px;
+}
+
+.domain-detail-tabs :deep(.el-tabs__nav-wrap)::after {
+  height: 1px;
+  background: var(--app-border);
+}
+
+.domain-detail-tabs :deep(.el-tabs__item) {
+  font-weight: 500;
+  padding: 0 20px;
+  height: 46px;
+  font-size: 14px;
+}
+
+.domain-detail-tabs :deep(.el-tabs__item.is-active) {
+  color: var(--app-brand-strong);
+  font-weight: 600;
+}
+
+.section-card.domain-detail-tabs-wrap :deep(.el-card__body) {
+  padding-top: 0;
+}
+
+.domain-form-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.domain-form-label {
+  width: 120px;
+  flex-shrink: 0;
+  padding-top: 6px;
+  color: var(--td-text-color-secondary, #666);
+}
+
+.domain-form-hint {
+  flex-basis: 100%;
+  margin-left: 132px;
+  color: var(--td-text-color-placeholder, #999);
+  font-size: 12px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--app-divider, var(--app-divider-soft));
+  margin-top: 16px;
+  align-items: center;
+  position: sticky;
+  bottom: 0;
+  /* Frosted backdrop so the sticky bar stays readable when content
+   * scrolls underneath it (long tabs like 安全设置 / 回源设置). */
+  background: linear-gradient(to top, var(--app-surface, #fff) 70%, rgba(255, 255, 255, 0.85));
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 0 0 var(--app-card-radius, 12px) var(--app-card-radius, 12px);
+  z-index: 5;
+}
+
+/* Switch row: compact switch + caption, so it stops visually reading as
+ * a progress bar when placed inside a stretchy grid cell. */
+.switch-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.switch-caption {
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+
+/* Port row: numeric input + preset buttons inline. Presets save users
+ * from stepper-clicking 80 → 443 → 8080. */
+.port-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Timeout inputs show the unit ("秒") inline to the right of the input so
+ * the operator can scan 60 + 秒 at a glance without reading the hint text. */
+.timeout-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unit-suffix {
+  color: var(--td-text-color-secondary, #666);
+  font-size: 14px;
+  user-select: none;
+}
+
+/* Inline note next to the disabled origin-auth switch so the UI makes it
+ * obvious this is an upcoming feature rather than a broken control. */
+.switch-hint {
+  margin-left: 10px;
+  color: var(--td-text-color-placeholder, #999);
+  font-size: 12px;
+  user-select: none;
+}
+
+/* Dirty hint next to the 保存 button so the user sees unsaved state
+ * without needing a toast. */
+.dirty-hint {
+  color: var(--td-warning-color, #e37318);
+  font-size: 12px;
+}
+
+.error-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+.error-page-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 768px) {
+  .page {
+    padding: 12px;
+  }
+
+  /* Hero collapses to a single column with smaller title and tighter
+   * padding; chips wrap to two rows on phones without overflowing. */
+  .hero {
+    padding: 18px 18px 16px;
+  }
+  .hero-title {
+    font-size: 19px;
+  }
+  .hero-icon {
+    width: 44px;
+    height: 44px;
+  }
+  .hero-main {
+    gap: 12px;
+  }
+  .hero-cname {
+    width: 100%;
+  }
+
+  /* Origin list collapses to a vertical card on phones — the 5-column
+   * grid is too tight at <420px. We drop the head row and stack each
+   * field with its label tag inline. */
+  .origin-list-head {
+    display: none;
+  }
+  .origin-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--app-divider, var(--app-divider-soft));
+  }
+  .origin-handle {
+    display: none;
+  }
+
+  .form-row-v {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .domain-form-label-v {
+    text-align: left;
+  }
+
+  .domain-form-hint-v {
+    grid-column: 1;
+  }
+
+  .domain-form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .domain-form-label {
+    width: auto;
+    padding-top: 0;
+  }
+
+  .domain-form-hint {
+    margin-left: 0;
+  }
+
+  .form-actions {
+    flex-wrap: wrap;
+  }
+
+  .error-page-row {
+    flex-wrap: wrap;
+  }
+}
+
+/* ─── Security-style horizontal form layout ────────────────────────────
+ * Used in the security tab and now unified across all config tabs.
+ * Each .sec-row is a horizontal label‒value pair:
+ *   .sec-label (fixed left)  |  .sec-value (fluid right)
+ * This mirrors the CDNfly / Aliyun / Tencent Cloud detail-page style:
+ * labels on the left, controls on the right, hints beneath the control.
+ */
+.sec-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-width: 960px;
+}
+
+.sec-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.sec-row:last-child {
+  border-bottom: none;
+}
+
+.sec-row--top {
+  align-items: flex-start;
+}
+
+.sec-label {
+  width: 100px;
+  min-width: 100px;
+  flex-shrink: 0;
+  color: var(--app-text-muted);
+  font-size: 14px;
+  text-align: left;
+  padding-top: 6px;
+  line-height: 1.5;
+}
+
+.sec-value {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sec-hint {
+  color: var(--td-text-color-placeholder, #a9a9a9);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sec-hint-list {
+  padding-left: 18px;
+  margin: 4px 0 0;
+}
+
+/* Region blocking radio group + custom textarea */
+.region-mode-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.region-custom-wrap {
+  margin-top: 8px;
+}
+
+.sec-mode-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sec-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.sec-rule-table {
+  margin-bottom: 4px;
+}
+
+.sec-more {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--td-bg-color-component, #f6f7fa);
+  border-radius: 6px;
+}
+
+.sec-more-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sec-more-row label {
+  min-width: 100px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+  text-align: right;
+}
+
+/* Origin auth header editor */
+.origin-auth-headers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.origin-auth-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ─── Origin list (回源地址) ──────────────────────────────────────────
+ * Bug fix: the template referenced these classes but the previous CSS
+ * file never defined them, so the rows collapsed to default block
+ * layout — input, weight, switch and 删除 stacked vertically with no
+ * spacing. We now lay them out as a 5-column grid mirroring the head
+ * row, with a left drag handle (visual cue only — drag to reorder is
+ * a future enhancement) and a polished inline 删除 icon button.
+ */
+.origin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--app-border, var(--app-border));
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface, #ffffff);
+  padding: 6px;
+}
+
+.origin-list-head,
+.origin-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 110px 130px 36px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--app-card-radius-sm);
+}
+
+.origin-list-head {
+  padding: 6px 8px 4px;
+  border-bottom: 1px dashed var(--app-divider, var(--app-divider-soft));
+}
+
+.origin-col {
+  font-size: 12px;
+  color: var(--app-text-faint, var(--app-text-faint));
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.origin-col-addr { grid-column: 2; }
+
+.origin-col-weight { grid-column: 3; }
+
+.origin-col-enabled { grid-column: 4; }
+
+.origin-col-action { grid-column: 5; }
+
+.origin-row {
+  background: var(--app-surface, #ffffff);
+  transition: background 0.15s var(--app-easing-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.origin-row:hover {
+  background: var(--app-surface-hover, var(--app-divider-soft));
+}
+
+.origin-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-text-faint, var(--app-text-faint));
+  cursor: grab;
+  user-select: none;
+}
+
+.origin-address {
+  width: 100%;
+}
+
+.origin-weight {
+  display: flex;
+  align-items: center;
+}
+
+.origin-enabled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--app-text-muted, var(--app-text-muted));
+  font-size: 12px;
+}
+
+.origin-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--app-card-radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--app-text-muted, var(--app-text-muted));
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.origin-del:hover:not(:disabled) {
+  background: var(--app-danger-soft-bg, #fef2f2);
+  color: var(--app-danger, var(--app-danger));
+  border-color: var(--app-danger-soft-border);
+}
+
+.origin-del:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.origin-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 7px 14px;
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-brand-soft-bg);
+  color: var(--app-brand-strong);
+  border: 1px dashed var(--app-brand-soft-border);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.origin-add:hover {
+  background: var(--td-brand-color-2);
+  border-style: solid;
+}
+
+/* Cache rule action cells: bug fix — the cell renderer used `.row-actions`
+ * (1855) without a matching style, so 编辑/删除 buttons sat with no gap. */
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* TDesign collapse used inside the security tab (更多设置). Dim the
+ * default arrow color and tighten padding so it visually sits inside our
+ * sec-row label/value grid. */
+.sec-more-collapse :deep(.el-collapse-item__header) {
+  padding: 10px 0;
+  font-size: 14px;
+  border: none;
+}
+
+.sec-more-collapse :deep(.el-collapse-item__wrap) {
+  border: none;
+}
+
+.sec-more-collapse :deep(.el-collapse-item__content) {
+  padding-bottom: 12px;
+}
+
+.sec-more-collapse {
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+  padding: 0 12px;
+}
+
+/* Switch control: consistent wrap + caption for all toggles */
+.sec-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sec-switch .switch-text {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  user-select: none;
+}
+
+@media (max-width: 768px) {
+  .sec-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 10px 4px;
+  }
+  .sec-label {
+    width: auto;
+    min-width: auto;
+    text-align: left;
+  }
+  .sec-more-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .sec-more-row label {
+    text-align: left;
+  }
+}
+
+@media (max-width: 1080px) {
+  .domain-detail-tabs :deep(.el-tabs__nav-wrap) {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .domain-detail-tabs :deep(.el-tabs__nav-scroll) {
+    overflow: visible;
+  }
+
+  .domain-detail-tabs :deep(.el-tabs__item) {
+    flex: 0 0 auto;
+  }
+}

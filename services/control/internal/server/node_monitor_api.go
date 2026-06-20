@@ -59,7 +59,8 @@ func (s *Servers) handleNodeMonitorRank(w http.ResponseWriter, r *http.Request) 
 			windowSeconds = n
 		}
 	}
-	if v := strings.TrimSpace(r.URL.Query().Get("window")); v != "" && strings.HasSuffix(v, "s") == false {
+	if v := strings.TrimSpace(r.URL.Query().Get("window")); v != "" {
+		v = strings.TrimSuffix(v, "s")
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			windowSeconds = n
 		}

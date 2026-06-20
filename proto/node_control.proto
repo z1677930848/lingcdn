@@ -39,11 +39,13 @@ message ConfigEnvelope {
   string version = 1;
   bytes payload = 2;
   string checksum = 3;
+  string delivery_id = 4;
 }
 message ConfigAck {
   string version = 1;
   bool ok = 2;
   string reason = 3;
+  string delivery_id = 4;
 }
 message CertificateRequest {
   string node_id = 1;
@@ -92,11 +94,24 @@ message LogsBatch {
 message PurgeCommand {
   repeated string urls = 1;
   string request_id = 2;
+  string purge_type = 3;   // url | prefix | tag
+  repeated string prefixes = 4;
+  repeated string tags = 5;
 }
 message PurgeResult {
   string request_id = 1;
   bool ok = 2;
   string reason = 3;
+}
+message PreloadCommand {
+  repeated string urls = 1;
+  string request_id = 2;
+}
+message PreloadResult {
+  string request_id = 1;
+  bool ok = 2;
+  string reason = 3;
+  int32 loaded = 4;
 }
 message NodePingRequest {}
 message NodePingResponse { bool ok = 1; string message = 2; }
@@ -114,6 +129,7 @@ service NodeControl {
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc StreamConfig(stream ConfigAck) returns (stream ConfigEnvelope);
   rpc StreamPurge(stream PurgeResult) returns (stream PurgeCommand);
+  rpc StreamPreload(stream PreloadResult) returns (stream PreloadCommand);
   rpc ReportMetrics(MetricsBatch) returns (HeartbeatResponse);
   rpc ReportLogs(LogsBatch) returns (HeartbeatResponse);
   rpc Purge(PurgeCommand) returns (PurgeResult);

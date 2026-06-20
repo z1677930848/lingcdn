@@ -120,6 +120,18 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS tcp_time_wait INT NOT NULL DEFAULT 0`,
 		`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS nginx_running BOOLEAN NOT NULL DEFAULT false`,
 		`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS month_bytes_sent BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS requests_total BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS cache_hits BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE nodes ADD COLUMN IF NOT EXISTS cache_misses BIGINT NOT NULL DEFAULT 0`,
+
+		`CREATE TABLE IF NOT EXISTS node_metric_samples (
+			node_id TEXT NOT NULL,
+			sampled_at TIMESTAMPTZ NOT NULL,
+			requests_total BIGINT NOT NULL DEFAULT 0,
+			bytes_sent BIGINT NOT NULL DEFAULT 0,
+			PRIMARY KEY (node_id, sampled_at)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_node_metric_samples_time ON node_metric_samples(sampled_at DESC)`,
 
 		// Origins table
 		`CREATE TABLE IF NOT EXISTS origins (
@@ -134,18 +146,37 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 
 		// Certificates table
 		`CREATE TABLE IF NOT EXISTS certificates (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
+			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL DEFAULT '',
 			domain TEXT NOT NULL,
-			cert_pem BYTEA NOT NULL,
-			key_pem BYTEA NOT NULL,
-			expires_at TIMESTAMPTZ NOT NULL,
+			user_id TEXT NOT NULL DEFAULT '',
+			type TEXT NOT NULL DEFAULT 'upload',
+			auto_renew BOOLEAN NOT NULL DEFAULT false,
+			status TEXT NOT NULL DEFAULT 'active',
+			fail_reason TEXT NOT NULL DEFAULT '',
+			cert_pem BYTEA NOT NULL DEFAULT ''::bytea,
+			key_pem BYTEA NOT NULL DEFAULT ''::bytea,
+			expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_domain ON certificates(domain)`,
 		`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'upload'`,
+		`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS auto_renew BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS fail_reason TEXT NOT NULL DEFAULT ''`,
+		`UPDATE certificates SET cert_pem = ''::bytea WHERE cert_pem IS NULL`,
+		`UPDATE certificates SET key_pem = ''::bytea WHERE key_pem IS NULL`,
+		`UPDATE certificates SET expires_at = NOW() WHERE expires_at IS NULL`,
+		`ALTER TABLE certificates ALTER COLUMN cert_pem SET DEFAULT ''::bytea`,
+		`ALTER TABLE certificates ALTER COLUMN key_pem SET DEFAULT ''::bytea`,
+		`ALTER TABLE certificates ALTER COLUMN expires_at SET DEFAULT NOW()`,
+		`ALTER TABLE certificates ALTER COLUMN cert_pem SET NOT NULL`,
+		`ALTER TABLE certificates ALTER COLUMN key_pem SET NOT NULL`,
+		`ALTER TABLE certificates ALTER COLUMN expires_at SET NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_certificates_user_id ON certificates(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_certificates_status ON certificates(status)`,
 
 		// Domains table
 		`CREATE TABLE IF NOT EXISTS domains (
@@ -154,7 +185,8 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 			cname TEXT NOT NULL DEFAULT '',
 			line_group_id TEXT,
 			origin_id TEXT REFERENCES origins(id),
-			cert_id TEXT REFERENCES certificates(id),
+			cert_id BIGINT REFERENCES certificates(id) ON DELETE SET NULL,
+			listen_port INT NOT NULL DEFAULT 0,
 			origin_scheme TEXT NOT NULL DEFAULT 'http',
 			origin_port INT NOT NULL DEFAULT 80,
 			origin_host_mode TEXT NOT NULL DEFAULT 'request_host',
@@ -182,6 +214,7 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		`ALTER TABLE domains ADD COLUMN IF NOT EXISTS error_pages JSONB NOT NULL DEFAULT '[]'::jsonb`,
 		`ALTER TABLE domains ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_domains_user_id ON domains(user_id)`,
+		`ALTER TABLE domains ADD COLUMN IF NOT EXISTS listen_port INT NOT NULL DEFAULT 0`,
 		`ALTER TABLE domains ADD COLUMN IF NOT EXISTS cache_enabled BOOLEAN NOT NULL DEFAULT true`,
 		`ALTER TABLE domains ADD COLUMN IF NOT EXISTS http2_enabled BOOLEAN NOT NULL DEFAULT true`,
 		`ALTER TABLE domains ADD COLUMN IF NOT EXISTS websocket_enabled BOOLEAN NOT NULL DEFAULT false`,
@@ -191,7 +224,7 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		// issuances implicitly turned 443 on. Defaults to TRUE when a cert
 		// is bound (preserve legacy behavior) and FALSE otherwise.
 		`ALTER TABLE domains ADD COLUMN IF NOT EXISTS https_enabled BOOLEAN NOT NULL DEFAULT false`,
-		`UPDATE domains SET https_enabled = true WHERE cert_id IS NOT NULL AND cert_id <> '' AND https_enabled = false`,
+		`UPDATE domains SET https_enabled = true WHERE cert_id IS NOT NULL AND cert_id::text <> '' AND https_enabled = false`,
 		// Per-domain security settings (CC protection + IP black/white
 		// lists + custom rules). Stored as opaque JSONB because the
 		// shape evolves faster than the DB schema — readers decode it
@@ -242,6 +275,25 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_origins_domain_id ON domain_origins(domain_id)`,
+
+		// stream_forwards: L4 TCP/UDP port forwarding rules.
+		`CREATE TABLE IF NOT EXISTS stream_forwards (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			domain_id TEXT REFERENCES domains(id) ON DELETE SET NULL,
+			name TEXT NOT NULL DEFAULT '',
+			protocol TEXT NOT NULL DEFAULT 'tcp',
+			listen_port INT NOT NULL,
+			origin_host TEXT NOT NULL,
+			origin_port INT NOT NULL,
+			enabled BOOLEAN NOT NULL DEFAULT true,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_stream_forwards_user_id ON stream_forwards(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_stream_forwards_domain_id ON stream_forwards(domain_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stream_forwards_listen_port ON stream_forwards(listen_port) WHERE enabled = true`,
+		`ALTER TABLE stream_forwards ADD COLUMN IF NOT EXISTS health_check_enabled BOOLEAN NOT NULL DEFAULT true`,
 		// One-shot backfill from legacy origins / domains.origin_id.
 		// Fires only when the new table is empty but legacy data exists,
 		// so subsequent startups are no-ops. Expands origins.addresses
@@ -332,21 +384,15 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 			methods TEXT[] NOT NULL DEFAULT '{GET}',
 			ttl_seconds BIGINT NOT NULL DEFAULT 3600,
 			cache_query_params BOOLEAN NOT NULL DEFAULT false,
+			stale_while_revalidate_seconds BIGINT NOT NULL DEFAULT 0,
+			stale_if_error_seconds BIGINT NOT NULL DEFAULT 0,
 			priority INT NOT NULL DEFAULT 0,
 			enabled BOOLEAN NOT NULL DEFAULT true,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS ban_seconds BIGINT NOT NULL DEFAULT 300`,
-		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS template_html TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS ban_template_html TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS redirect_url TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS ban_mode TEXT NOT NULL DEFAULT 'ipset'`,
-		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS path_prefix TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS methods TEXT[] NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS ua_contains TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS log_only BOOLEAN NOT NULL DEFAULT false`,
-
+		`ALTER TABLE cache_rules ADD COLUMN IF NOT EXISTS stale_while_revalidate_seconds BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE cache_rules ADD COLUMN IF NOT EXISTS stale_if_error_seconds BIGINT NOT NULL DEFAULT 0`,
 		// Config versions table
 		`CREATE TABLE IF NOT EXISTS config_versions (
 			version TEXT PRIMARY KEY,
@@ -391,6 +437,7 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 			upgrade_channel TEXT NOT NULL DEFAULT 'stable',
 			notify_new_build BOOLEAN NOT NULL DEFAULT true,
 			register_email_verification BOOLEAN NOT NULL DEFAULT false,
+			renewal_before_expiry_days INT NOT NULL DEFAULT 30,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS system_name TEXT NOT NULL DEFAULT ''`,
@@ -398,6 +445,7 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS footer_copyright TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS favicon TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS logo TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS sidebar_brand_mode TEXT NOT NULL DEFAULT 'name'`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS smtp_host TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS smtp_port INT NOT NULL DEFAULT 587`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS smtp_username TEXT NOT NULL DEFAULT ''`,
@@ -417,6 +465,7 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS upgrade_channel TEXT NOT NULL DEFAULT 'stable'`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS notify_new_build BOOLEAN NOT NULL DEFAULT true`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS register_email_verification BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS renewal_before_expiry_days INT NOT NULL DEFAULT 30`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT false`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS dingtalk_enabled BOOLEAN NOT NULL DEFAULT false`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS dingtalk_webhook TEXT NOT NULL DEFAULT ''`,
@@ -438,6 +487,9 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS retention_es_logs INT NOT NULL DEFAULT 7`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS retention_waf_bans INT NOT NULL DEFAULT 7`,
 		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS retention_upgrade_logs INT NOT NULL DEFAULT 30`,
+		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS control_domain TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS control_public_https BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE settings ADD COLUMN IF NOT EXISTS control_redirect_ip BOOLEAN NOT NULL DEFAULT false`,
 		// Log shipper columns existed pre-Filebeat-migration; drop them now
 		// that node-side log delivery happens via Filebeat directly to ES.
 		`ALTER TABLE settings DROP COLUMN IF EXISTS log_shipper_enabled`,
@@ -563,6 +615,16 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (LOWER(email))`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS numeric_id SERIAL`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_numeric_id ON users (numeric_id)`,
+		// Align numeric_id with account creation order so the bootstrap admin is 1.
+		`WITH ranked AS (
+			SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS rn FROM users
+		)
+		UPDATE users u SET numeric_id = r.rn FROM ranked r WHERE u.id = r.id AND u.numeric_id IS DISTINCT FROM r.rn`,
+		`SELECT setval(
+			pg_get_serial_sequence('users', 'numeric_id'),
+			GREATEST(COALESCE((SELECT MAX(numeric_id) FROM users), 1), 1),
+			true
+		)`,
 
 		// Email verifications
 		`CREATE TABLE IF NOT EXISTS email_verifications (
@@ -655,12 +717,23 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 			methods TEXT[] NOT NULL DEFAULT '{}',
 			ua_contains TEXT NOT NULL DEFAULT '',
 			log_only BOOLEAN NOT NULL DEFAULT false,
+			captcha_type TEXT NOT NULL DEFAULT '',
 			note TEXT NOT NULL DEFAULT '',
 			priority INT NOT NULL DEFAULT 0,
 			enabled BOOLEAN NOT NULL DEFAULT true,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS ban_seconds BIGINT NOT NULL DEFAULT 300`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS template_html TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS ban_template_html TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS redirect_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS ban_mode TEXT NOT NULL DEFAULT 'ipset'`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS path_prefix TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS methods TEXT[] NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS ua_contains TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS log_only BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE waf_rules ADD COLUMN IF NOT EXISTS captcha_type TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_waf_rules_policy ON waf_rules(policy_id)`,
 
 		// WAF bans
@@ -684,6 +757,20 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_waf_whitelist_ip ON waf_whitelist(ip)`,
+
+		// Alert rules
+		`CREATE TABLE IF NOT EXISTS alert_rules (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			metric TEXT NOT NULL DEFAULT 'cpu_usage',
+			threshold DOUBLE PRECISION NOT NULL DEFAULT 0,
+			window_seconds INT NOT NULL DEFAULT 60,
+			severity TEXT NOT NULL DEFAULT 'warning',
+			enabled BOOLEAN NOT NULL DEFAULT true,
+			notify_channels TEXT[] NOT NULL DEFAULT '{}',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 	}
 
 	// Upgrade tasks/logs
@@ -720,6 +807,30 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		`DO $$ BEGIN
 			IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename = 'product_groups' AND indexname = 'idx_product_groups_name_lower') THEN
 				CREATE UNIQUE INDEX idx_product_groups_name_lower ON product_groups (LOWER(name));
+			END IF;
+		END $$`,
+		`CREATE TABLE IF NOT EXISTS user_groups (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename = 'user_groups' AND indexname = 'idx_user_groups_name_lower') THEN
+				CREATE UNIQUE INDEX idx_user_groups_name_lower ON user_groups (LOWER(name));
+			END IF;
+		END $$`,
+		`ALTER TABLE user_groups ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '[]'::jsonb`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS group_id TEXT`,
+		`DO $$ BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints
+				WHERE constraint_name = 'users_group_id_fkey' AND table_name = 'users'
+			) THEN
+				ALTER TABLE users
+					ADD CONSTRAINT users_group_id_fkey
+					FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE SET NULL;
 			END IF;
 		END $$`,
 		`CREATE TABLE IF NOT EXISTS products (
@@ -870,45 +981,33 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		)`,
 	)
 
-	// Certificate table v2: migrate from TEXT id to BIGSERIAL auto-increment,
-	// add type/auto_renew/status/fail_reason columns. This is a destructive
-	// migration — existing certificate data is dropped because the id type
-	// change (TEXT → BIGINT) is incompatible with in-place ALTER on PG, and
-	// domains.cert_id foreign key must match. Acceptable in dev/early-prod
-	// because ACME certs can be re-issued and uploads re-submitted.
 	migrations = append(migrations,
-		// 1) Drop the domains→certificates FK so we can drop+recreate the table.
-		`ALTER TABLE domains DROP CONSTRAINT IF EXISTS domains_cert_id_fkey`,
-		// 2) Clear stale cert_id references in domains.
-		`UPDATE domains SET cert_id = NULL WHERE cert_id IS NOT NULL`,
-		// 3) Change domains.cert_id column type to BIGINT (from TEXT).
-		//    Safe because we just NULLed all values above.
-		`ALTER TABLE domains ALTER COLUMN cert_id TYPE BIGINT USING NULL`,
-		// 4) Drop old certificates table entirely.
-		`DROP TABLE IF EXISTS certificates CASCADE`,
-		// 5) Recreate with BIGSERIAL id + new columns.
-		`CREATE TABLE IF NOT EXISTS certificates (
-			id BIGSERIAL PRIMARY KEY,
-			name TEXT NOT NULL DEFAULT '',
-			domain TEXT NOT NULL,
-			user_id TEXT NOT NULL DEFAULT '',
-			type TEXT NOT NULL DEFAULT 'upload',
-			auto_renew BOOLEAN NOT NULL DEFAULT false,
-			status TEXT NOT NULL DEFAULT 'active',
-			fail_reason TEXT NOT NULL DEFAULT '',
-			cert_pem BYTEA,
-			key_pem BYTEA,
-			expires_at TIMESTAMPTZ,
+		`CREATE TABLE IF NOT EXISTS tickets (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			subject TEXT NOT NULL,
+			category TEXT NOT NULL DEFAULT 'general',
+			status TEXT NOT NULL DEFAULT 'open',
+			priority TEXT NOT NULL DEFAULT 'normal',
+			last_reply_by TEXT NOT NULL DEFAULT 'user',
+			reply_count INT NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			UNIQUE (user_id, domain)
+			closed_at TIMESTAMPTZ
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_certificates_domain ON certificates(domain)`,
-		`CREATE INDEX IF NOT EXISTS idx_certificates_user_id ON certificates(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_certificates_status ON certificates(status)`,
-		// 6) Re-add FK from domains.cert_id → certificates.id with ON DELETE SET NULL
-		//    so deleting a cert doesn't require manually unbinding every domain first.
-		`ALTER TABLE domains ADD CONSTRAINT domains_cert_id_fkey FOREIGN KEY (cert_id) REFERENCES certificates(id) ON DELETE SET NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_tickets_user_id ON tickets(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets(updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS ticket_replies (
+			id TEXT PRIMARY KEY,
+			ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+			author_id TEXT NOT NULL DEFAULT '',
+			author_role TEXT NOT NULL DEFAULT 'user',
+			author_name TEXT NOT NULL DEFAULT '',
+			body TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ticket_replies_ticket ON ticket_replies(ticket_id, created_at)`,
 	)
 
 	for _, m := range migrations {
@@ -917,6 +1016,9 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 			// so partial failures are safe to re-run.
 			log.Warn().Err(err).Str("migration", truncate(m, 50)).Msg("migration statement failed (may be safe to ignore)")
 		}
+	}
+	if err := p.migrateCertificatesV2(ctx); err != nil {
+		return err
 	}
 
 	defaults := DefaultSettings()
@@ -997,6 +1099,158 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	return nil
 }
 
+func (p *Postgres) columnDataType(ctx context.Context, tableName, columnName string) (string, error) {
+	var dataType string
+	err := p.pool.QueryRow(ctx, `
+		SELECT data_type
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = $1
+		  AND column_name = $2
+	`, tableName, columnName).Scan(&dataType)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.ToLower(strings.TrimSpace(dataType)), nil
+}
+
+func (p *Postgres) migrateCertificatesV2(ctx context.Context) error {
+	idType, err := p.columnDataType(ctx, "certificates", "id")
+	if err != nil {
+		return fmt.Errorf("inspect certificates.id type: %w", err)
+	}
+	if idType == "" {
+		return nil
+	}
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	exec := func(sql string, args ...any) error {
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+			return fmt.Errorf("%s: %w", truncate(sql, 90), err)
+		}
+		return nil
+	}
+	finalize := func() error {
+		stmts := []string{
+			`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'upload'`,
+			`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS auto_renew BOOLEAN NOT NULL DEFAULT false`,
+			`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`,
+			`ALTER TABLE certificates ADD COLUMN IF NOT EXISTS fail_reason TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE domains ADD COLUMN IF NOT EXISTS cert_id BIGINT`,
+			`ALTER TABLE domains DROP CONSTRAINT IF EXISTS domains_cert_id_fkey`,
+			`UPDATE domains SET cert_id = NULL WHERE cert_id IS NOT NULL AND cert_id::text !~ '^[0-9]+$'`,
+			`ALTER TABLE domains ALTER COLUMN cert_id DROP DEFAULT`,
+			`ALTER TABLE domains ALTER COLUMN cert_id TYPE BIGINT USING NULLIF(cert_id::text, '')::BIGINT`,
+			`UPDATE domains d SET cert_id = NULL WHERE d.cert_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM certificates c WHERE c.id = d.cert_id)`,
+			`CREATE SEQUENCE IF NOT EXISTS certificates_id_seq OWNED BY certificates.id`,
+			`ALTER TABLE certificates ALTER COLUMN id SET DEFAULT nextval('certificates_id_seq')`,
+			`SELECT setval('certificates_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM certificates), 1), (SELECT COALESCE(MAX(id), 0) > 0 FROM certificates))`,
+			`CREATE INDEX IF NOT EXISTS idx_certificates_domain ON certificates(domain)`,
+			`CREATE INDEX IF NOT EXISTS idx_certificates_user_id ON certificates(user_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_certificates_status ON certificates(status)`,
+			`ALTER TABLE domains ADD CONSTRAINT domains_cert_id_fkey FOREIGN KEY (cert_id) REFERENCES certificates(id) ON DELETE SET NULL`,
+		}
+		for _, stmt := range stmts {
+			if err := exec(stmt); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	switch idType {
+	case "bigint":
+		if err := finalize(); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	case "integer":
+		if err := exec(`ALTER TABLE domains DROP CONSTRAINT IF EXISTS domains_cert_id_fkey`); err != nil {
+			return err
+		}
+		if err := exec(`ALTER TABLE certificates ALTER COLUMN id TYPE BIGINT`); err != nil {
+			return err
+		}
+		if err := finalize(); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	case "text", "character varying", "character":
+	default:
+		return fmt.Errorf("unsupported certificates.id type %q", idType)
+	}
+
+	stmts := []string{
+		`ALTER TABLE domains DROP CONSTRAINT IF EXISTS domains_cert_id_fkey`,
+		`DROP TABLE IF EXISTS certificates_v2`,
+		`DROP TABLE IF EXISTS certificates_legacy_text_id`,
+		`CREATE TABLE certificates_v2 (
+			id BIGSERIAL PRIMARY KEY,
+			legacy_id TEXT NOT NULL,
+			name TEXT NOT NULL DEFAULT '',
+			domain TEXT NOT NULL,
+			user_id TEXT NOT NULL DEFAULT '',
+			type TEXT NOT NULL DEFAULT 'upload',
+			auto_renew BOOLEAN NOT NULL DEFAULT false,
+			status TEXT NOT NULL DEFAULT 'active',
+			fail_reason TEXT NOT NULL DEFAULT '',
+			cert_pem BYTEA NOT NULL DEFAULT ''::bytea,
+			key_pem BYTEA NOT NULL DEFAULT ''::bytea,
+			expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`INSERT INTO certificates_v2 (
+			legacy_id, name, domain, user_id, type, auto_renew, status, fail_reason,
+			cert_pem, key_pem, expires_at, created_at, updated_at
+		)
+		SELECT
+			id::text,
+			COALESCE(NULLIF(name, ''), domain, ''),
+			domain,
+			COALESCE(user_id, ''),
+			COALESCE(NULLIF(type, ''), 'upload'),
+			COALESCE(auto_renew, false),
+			COALESCE(NULLIF(status, ''), 'active'),
+			COALESCE(fail_reason, ''),
+			cert_pem,
+			key_pem,
+			expires_at,
+			COALESCE(created_at, NOW()),
+			COALESCE(updated_at, NOW())
+		FROM certificates
+		ORDER BY created_at, id::text`,
+		`ALTER TABLE domains ADD COLUMN IF NOT EXISTS cert_id_v2 BIGINT`,
+		`UPDATE domains SET cert_id_v2 = NULL`,
+		`UPDATE domains d SET cert_id_v2 = c.id FROM certificates_v2 c WHERE d.cert_id::text = c.legacy_id`,
+		`ALTER TABLE domains DROP COLUMN cert_id`,
+		`ALTER TABLE domains RENAME COLUMN cert_id_v2 TO cert_id`,
+		`ALTER TABLE certificates RENAME TO certificates_legacy_text_id`,
+		`ALTER TABLE certificates_v2 DROP COLUMN legacy_id`,
+		`ALTER TABLE certificates_v2 RENAME TO certificates`,
+		`DROP TABLE certificates_legacy_text_id`,
+	}
+	for _, stmt := range stmts {
+		if err := exec(stmt); err != nil {
+			return err
+		}
+	}
+	if err := finalize(); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // Seed inserts initial data.
 func (p *Postgres) Seed(ctx context.Context) error {
 	log.Info().Msg("seeding database")
@@ -1050,68 +1304,64 @@ func (p *Postgres) CreateUser(ctx context.Context, user *User) error {
 	if user.Status == "" {
 		user.Status = "active"
 	}
-	_, err := p.pool.Exec(ctx,
-		`INSERT INTO users (id, username, email, password_hash, role, status, created_at, updated_at, last_login_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		user.ID, strings.ToLower(user.Username), strings.ToLower(user.Email), user.PasswordHash, user.Role, user.Status, user.CreatedAt, user.UpdatedAt, nullTimePtr(user.LastLoginAt))
-	return err
+	return p.pool.QueryRow(ctx,
+		`INSERT INTO users (id, username, email, password_hash, role, status, group_id, created_at, updated_at, last_login_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7,''), $8, $9, $10)
+		 RETURNING numeric_id`,
+		user.ID, strings.ToLower(user.Username), strings.ToLower(user.Email), user.PasswordHash, user.Role, user.Status, strings.TrimSpace(user.GroupID), user.CreatedAt, user.UpdatedAt, nullTimePtr(user.LastLoginAt),
+	).Scan(&user.NumericID)
+}
+
+const userSelectSQL = `SELECT id, username, email, password_hash, role, status, created_at, updated_at, last_login_at, last_login_ip, last_login_location, numeric_id, COALESCE(group_id, '') FROM users`
+
+func scanUserRow(row interface {
+	Scan(dest ...any) error
+}) (*User, error) {
+	var u User
+	var lastLogin sql.NullTime
+	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt, &lastLogin, &u.LastLoginIP, &u.LastLoginLocation, &u.NumericID, &u.GroupID); err != nil {
+		return nil, err
+	}
+	if lastLogin.Valid {
+		u.LastLoginAt = &lastLogin.Time
+	}
+	return &u, nil
 }
 
 // GetUserByID returns a user by id.
 func (p *Postgres) GetUserByID(ctx context.Context, id string) (*User, error) {
-	var u User
-	var lastLogin sql.NullTime
-	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, email, password_hash, role, status, created_at, updated_at, last_login_at, last_login_ip, last_login_location, numeric_id FROM users WHERE id = $1`,
-		id).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt, &lastLogin, &u.LastLoginIP, &u.LastLoginLocation, &u.NumericID)
+	u, err := scanUserRow(p.pool.QueryRow(ctx, userSelectSQL+` WHERE id = $1`, id))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if lastLogin.Valid {
-		u.LastLoginAt = &lastLogin.Time
-	}
-	return &u, nil
+	return u, nil
 }
 
 // GetUserByEmail returns a user by email.
 func (p *Postgres) GetUserByEmail(ctx context.Context, email string) (*User, error) {
-	var u User
-	var lastLogin sql.NullTime
-	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, email, password_hash, role, status, created_at, updated_at, last_login_at, last_login_ip, last_login_location, numeric_id FROM users WHERE LOWER(email) = LOWER($1)`,
-		email).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt, &lastLogin, &u.LastLoginIP, &u.LastLoginLocation, &u.NumericID)
+	u, err := scanUserRow(p.pool.QueryRow(ctx, userSelectSQL+` WHERE LOWER(email) = LOWER($1)`, email))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if lastLogin.Valid {
-		u.LastLoginAt = &lastLogin.Time
-	}
-	return &u, nil
+	return u, nil
 }
 
 // GetUserByUsername returns a user by username.
 func (p *Postgres) GetUserByUsername(ctx context.Context, username string) (*User, error) {
-	var u User
-	var lastLogin sql.NullTime
-	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, email, password_hash, role, status, created_at, updated_at, last_login_at, last_login_ip, last_login_location, numeric_id FROM users WHERE LOWER(username) = LOWER($1)`,
-		username).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt, &lastLogin, &u.LastLoginIP, &u.LastLoginLocation, &u.NumericID)
+	u, err := scanUserRow(p.pool.QueryRow(ctx, userSelectSQL+` WHERE LOWER(username) = LOWER($1)`, username))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if lastLogin.Valid {
-		u.LastLoginAt = &lastLogin.Time
-	}
-	return &u, nil
+	return u, nil
 }
 
 // GetUserByLogin returns a user by username or email.
@@ -1124,7 +1374,7 @@ func (p *Postgres) GetUserByLogin(ctx context.Context, login string) (*User, err
 
 // ListUsers returns users limited by "limit" (0 = all).
 func (p *Postgres) ListUsers(ctx context.Context, limit int) ([]*User, error) {
-	query := `SELECT id, username, email, password_hash, role, status, created_at, updated_at, last_login_at, last_login_ip, last_login_location, numeric_id FROM users ORDER BY created_at DESC`
+	query := userSelectSQL + ` ORDER BY created_at DESC`
 	if limit > 0 {
 		query += ` LIMIT $1`
 	}
@@ -1140,17 +1390,13 @@ func (p *Postgres) ListUsers(ctx context.Context, limit int) ([]*User, error) {
 	defer rows.Close()
 	var users []*User
 	for rows.Next() {
-		var u User
-		var lastLogin sql.NullTime
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt, &lastLogin, &u.LastLoginIP, &u.LastLoginLocation, &u.NumericID); err != nil {
+		u, err := scanUserRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		if lastLogin.Valid {
-			u.LastLoginAt = &lastLogin.Time
-		}
-		users = append(users, &u)
+		users = append(users, u)
 	}
-	return users, nil
+	return users, rows.Err()
 }
 
 func (p *Postgres) CountUsers(ctx context.Context) (int, error) {
@@ -1179,6 +1425,23 @@ func (p *Postgres) UpdateUserRole(ctx context.Context, id string, role string) e
 
 func (p *Postgres) UpdateUserPasswordHash(ctx context.Context, id string, passwordHash string) error {
 	_, err := p.pool.Exec(ctx, `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`, passwordHash, id)
+	return err
+}
+
+func (p *Postgres) UpdateUserGroupID(ctx context.Context, id, groupID string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE users SET group_id = NULLIF($2, ''), updated_at = NOW() WHERE id = $1`, id, strings.TrimSpace(groupID))
+	return err
+}
+
+func (p *Postgres) UpdateUserEmail(ctx context.Context, id, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	_, err := p.pool.Exec(ctx, `UPDATE users SET email = $1, updated_at = NOW() WHERE id = $2`, email, id)
+	return err
+}
+
+func (p *Postgres) UpdateUserUsername(ctx context.Context, id, username string) error {
+	username = strings.ToLower(strings.TrimSpace(username))
+	_, err := p.pool.Exec(ctx, `UPDATE users SET username = $1, updated_at = NOW() WHERE id = $2`, username, id)
 	return err
 }
 
@@ -1246,6 +1509,7 @@ func (p *Postgres) GetNode(ctx context.Context, id string) (*Node, error) {
 		        cpu_usage, mem_usage, disk_usage, cpu_count, mem_total, disk_total, last_metrics_at,
 		        bytes_sent, bytes_received, bandwidth_up_bps, bandwidth_down_bps,
 		        tcp_established, tcp_syn_recv, tcp_time_wait, nginx_running, month_bytes_sent,
+		        requests_total, cache_hits, cache_misses,
 		        created_at, updated_at
 		 FROM nodes WHERE id = $1`, id)
 	return scanNode(row)
@@ -1259,6 +1523,7 @@ func (p *Postgres) GetNodeByHostname(ctx context.Context, hostname string) (*Nod
 		        cpu_usage, mem_usage, disk_usage, cpu_count, mem_total, disk_total, last_metrics_at,
 		        bytes_sent, bytes_received, bandwidth_up_bps, bandwidth_down_bps,
 		        tcp_established, tcp_syn_recv, tcp_time_wait, nginx_running, month_bytes_sent,
+		        requests_total, cache_hits, cache_misses,
 		        created_at, updated_at
 		 FROM nodes WHERE hostname = $1`, hostname)
 	return scanNode(row)
@@ -1272,6 +1537,7 @@ func (p *Postgres) ListNodes(ctx context.Context) ([]*Node, error) {
 		        cpu_usage, mem_usage, disk_usage, cpu_count, mem_total, disk_total, last_metrics_at,
 		        bytes_sent, bytes_received, bandwidth_up_bps, bandwidth_down_bps,
 		        tcp_established, tcp_syn_recv, tcp_time_wait, nginx_running, month_bytes_sent,
+		        requests_total, cache_hits, cache_misses,
 		        created_at, updated_at
 		 FROM nodes ORDER BY created_at DESC`)
 	if err != nil {
@@ -1517,6 +1783,9 @@ func (p *Postgres) UpdateNodeTelemetry(ctx context.Context, id string, t NodeTel
 		     END,
 		     bytes_sent = $12,
 		     bytes_received = $13,
+		     requests_total = $14,
+		     cache_hits = $15,
+		     cache_misses = $16,
 		     last_metrics_at = NOW(),
 		     updated_at = NOW()
 		 WHERE id = $1`,
@@ -1533,6 +1802,9 @@ func (p *Postgres) UpdateNodeTelemetry(ctx context.Context, id string, t NodeTel
 		t.NginxRunning,
 		t.BytesSent,
 		t.BytesReceived,
+		t.RequestsTotal,
+		t.CacheHits,
+		t.CacheMisses,
 	)
 	return err
 }
@@ -1612,9 +1884,10 @@ func (p *Postgres) DeleteClusterNode(ctx context.Context, clusterID, line, nodeI
 
 func (p *Postgres) CreateDomain(ctx context.Context, domain *Domain) error {
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO domains (id, name, cname, user_id, line_group_id, origin_id, cert_id, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)`,
+		`INSERT INTO domains (id, name, cname, user_id, line_group_id, origin_id, cert_id, listen_port, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
 		domain.ID, domain.Name, domain.CNAME, domain.UserID, nullString(domain.LineGroupID), nullString(domain.OriginID), nullString(domain.CertID),
+		normalizeListenPort(domain.ListenPort),
 		defaultOriginScheme(domain.OriginScheme), defaultOriginPort(domain.OriginPort), defaultOriginHostMode(domain.OriginHostMode),
 		domain.OriginHost, defaultOriginTimeout(domain.OriginTimeoutMs), defaultOriginConnectTimeout(domain.OriginConnectTimeoutMs),
 		marshalErrorPages(domain.ErrorPages), domain.CacheEnabled, domain.HTTP2Enabled, domain.WebsocketEnabled, domain.HTTPSEnabled, domain.Enabled,
@@ -1626,22 +1899,30 @@ func (p *Postgres) CreateDomain(ctx context.Context, domain *Domain) error {
 
 func (p *Postgres) GetDomain(ctx context.Context, id string) (*Domain, error) {
 	row := p.pool.QueryRow(ctx,
-		`SELECT id, name, cname, user_id, line_group_id, origin_id, cert_id, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at
+		`SELECT id, name, cname, user_id, line_group_id, origin_id, cert_id, listen_port, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at
 		 FROM domains WHERE id = $1`, id)
 	return scanDomain(row)
 }
 
 func (p *Postgres) GetDomainByName(ctx context.Context, name string) (*Domain, error) {
 	row := p.pool.QueryRow(ctx,
-		`SELECT id, name, cname, user_id, line_group_id, origin_id, cert_id, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at
+		`SELECT id, name, cname, user_id, line_group_id, origin_id, cert_id, listen_port, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at
 		 FROM domains WHERE name = $1`, name)
 	return scanDomain(row)
 }
 
 func (p *Postgres) ListDomains(ctx context.Context) ([]*Domain, error) {
+	// ORDER BY name alone is not a total order — domains with the same
+	// name but different listen_port (or stale duplicates a migration
+	// left behind) can swap positions across query runs depending on
+	// Postgres's physical layout. The compiler treats "first match wins"
+	// for wildcard routing, so the listener on each node would otherwise
+	// see different rule precedence depending on vacuum history.
+	// Adding (created_at, id) as tie-breakers makes the order fully
+	// deterministic across replicas and across time.
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, name, cname, user_id, line_group_id, origin_id, cert_id, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at
-		 FROM domains ORDER BY name`)
+		`SELECT id, name, cname, user_id, line_group_id, origin_id, cert_id, listen_port, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at
+		 FROM domains ORDER BY name, created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1667,9 +1948,11 @@ func (p *Postgres) CountDomains(ctx context.Context) (int, error) {
 }
 
 func (p *Postgres) ListDomainsByUser(ctx context.Context, userID string) ([]*Domain, error) {
+	// See ListDomains for the (name, created_at, id) rationale — same
+	// determinism story for the per-tenant view.
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, name, cname, user_id, line_group_id, origin_id, cert_id, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at
-		 FROM domains WHERE user_id = $1 ORDER BY name`, userID)
+		`SELECT id, name, cname, user_id, line_group_id, origin_id, cert_id, listen_port, origin_scheme, origin_port, origin_host_mode, origin_host, origin_timeout_ms, origin_connect_timeout_ms, error_pages, cache_enabled, http2_enabled, websocket_enabled, https_enabled, enabled, security_json, origin_auth_json, load_balance_method, origin_health_check_json, created_at, updated_at
+		 FROM domains WHERE user_id = $1 ORDER BY name, created_at, id`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1697,11 +1980,12 @@ func (p *Postgres) CountDomainsByUser(ctx context.Context, userID string) (int, 
 func (p *Postgres) UpdateDomain(ctx context.Context, domain *Domain) error {
 	_, err := p.pool.Exec(ctx,
 		`UPDATE domains SET name = $2, cname = $3, user_id = $4, line_group_id = $5, origin_id = $6, cert_id = $7,
-		    origin_scheme = $8, origin_port = $9, origin_host_mode = $10, origin_host = $11,
-		    origin_timeout_ms = $12, origin_connect_timeout_ms = $13, error_pages = $14, cache_enabled = $15, http2_enabled = $16, websocket_enabled = $17, https_enabled = $18, enabled = $19, security_json = $20, origin_auth_json = $21,
-		    load_balance_method = $22, origin_health_check_json = $23, updated_at = NOW()
+		    listen_port = $8, origin_scheme = $9, origin_port = $10, origin_host_mode = $11, origin_host = $12,
+		    origin_timeout_ms = $13, origin_connect_timeout_ms = $14, error_pages = $15, cache_enabled = $16, http2_enabled = $17, websocket_enabled = $18, https_enabled = $19, enabled = $20, security_json = $21, origin_auth_json = $22,
+		    load_balance_method = $23, origin_health_check_json = $24, updated_at = NOW()
 		 WHERE id = $1`,
 		domain.ID, domain.Name, domain.CNAME, domain.UserID, nullString(domain.LineGroupID), nullString(domain.OriginID), nullString(domain.CertID),
+		normalizeListenPort(domain.ListenPort),
 		defaultOriginScheme(domain.OriginScheme), defaultOriginPort(domain.OriginPort), defaultOriginHostMode(domain.OriginHostMode),
 		domain.OriginHost, defaultOriginTimeout(domain.OriginTimeoutMs), defaultOriginConnectTimeout(domain.OriginConnectTimeoutMs),
 		marshalErrorPages(domain.ErrorPages), domain.CacheEnabled, domain.HTTP2Enabled, domain.WebsocketEnabled, domain.HTTPSEnabled, domain.Enabled,
@@ -1860,6 +2144,135 @@ func (p *Postgres) DeleteDomainOrigins(ctx context.Context, domainID string) err
 	return err
 }
 
+// --- StreamForward operations ---
+
+func scanStreamForward(row interface {
+	Scan(dest ...any) error
+}) (*StreamForward, error) {
+	sf := &StreamForward{}
+	var domainID sql.NullString
+	if err := row.Scan(
+		&sf.ID, &sf.UserID, &domainID, &sf.Name, &sf.Protocol,
+		&sf.ListenPort, &sf.OriginHost, &sf.OriginPort, &sf.Enabled, &sf.HealthCheckEnabled,
+		&sf.CreatedAt, &sf.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if domainID.Valid {
+		sf.DomainID = domainID.String
+	}
+	return sf, nil
+}
+
+func (p *Postgres) ListStreamForwards(ctx context.Context, userID string) ([]*StreamForward, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT id, user_id, domain_id, name, protocol, listen_port, origin_host, origin_port, enabled, health_check_enabled, created_at, updated_at
+		 FROM stream_forwards WHERE user_id = $1 ORDER BY listen_port, id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*StreamForward
+	for rows.Next() {
+		sf, err := scanStreamForward(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sf)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) ListStreamForwardsByDomain(ctx context.Context, domainID string) ([]*StreamForward, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT id, user_id, domain_id, name, protocol, listen_port, origin_host, origin_port, enabled, health_check_enabled, created_at, updated_at
+		 FROM stream_forwards WHERE domain_id = $1 ORDER BY listen_port, id`, domainID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*StreamForward
+	for rows.Next() {
+		sf, err := scanStreamForward(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sf)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) ListAllStreamForwards(ctx context.Context) ([]*StreamForward, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT id, user_id, domain_id, name, protocol, listen_port, origin_host, origin_port, enabled, health_check_enabled, created_at, updated_at
+		 FROM stream_forwards ORDER BY user_id, listen_port, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*StreamForward
+	for rows.Next() {
+		sf, err := scanStreamForward(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sf)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) GetStreamForward(ctx context.Context, id string) (*StreamForward, error) {
+	row := p.pool.QueryRow(ctx,
+		`SELECT id, user_id, domain_id, name, protocol, listen_port, origin_host, origin_port, enabled, health_check_enabled, created_at, updated_at
+		 FROM stream_forwards WHERE id = $1`, id)
+	sf, err := scanStreamForward(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return sf, nil
+}
+
+func (p *Postgres) CreateStreamForward(ctx context.Context, sf *StreamForward) error {
+	var domainID any
+	if strings.TrimSpace(sf.DomainID) != "" {
+		domainID = sf.DomainID
+	}
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO stream_forwards (id, user_id, domain_id, name, protocol, listen_port, origin_host, origin_port, enabled, health_check_enabled, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())`,
+		sf.ID, sf.UserID, domainID, sf.Name, sf.Protocol, sf.ListenPort, sf.OriginHost, sf.OriginPort, sf.Enabled, sf.HealthCheckEnabled,
+	)
+	return err
+}
+
+func (p *Postgres) UpdateStreamForward(ctx context.Context, sf *StreamForward) error {
+	var domainID any
+	if strings.TrimSpace(sf.DomainID) != "" {
+		domainID = sf.DomainID
+	}
+	_, err := p.pool.Exec(ctx,
+		`UPDATE stream_forwards SET user_id=$2, domain_id=$3, name=$4, protocol=$5, listen_port=$6,
+		 origin_host=$7, origin_port=$8, enabled=$9, health_check_enabled=$10, updated_at=NOW() WHERE id=$1`,
+		sf.ID, sf.UserID, domainID, sf.Name, sf.Protocol, sf.ListenPort, sf.OriginHost, sf.OriginPort, sf.Enabled, sf.HealthCheckEnabled,
+	)
+	return err
+}
+
+func (p *Postgres) DeleteStreamForward(ctx context.Context, id string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM stream_forwards WHERE id = $1`, id)
+	return err
+}
+
+func (p *Postgres) CountEnabledStreamForwardsByUser(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := p.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM stream_forwards WHERE user_id = $1 AND enabled = true`, userID).Scan(&n)
+	return n, err
+}
+
 // --- Certificate operations ---
 
 const certColumns = `id, name, domain, user_id, type, auto_renew, status, fail_reason, cert_pem, key_pem, expires_at, created_at, updated_at`
@@ -1991,24 +2404,24 @@ func (p *Postgres) CreateCacheRule(ctx context.Context, rule *CacheRule) error {
 		rule.Methods = []string{}
 	}
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO cache_rules (id, name, host_pattern, path_pattern, methods, ttl_seconds, cache_query_params, priority, enabled, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		`INSERT INTO cache_rules (id, name, host_pattern, path_pattern, methods, ttl_seconds, cache_query_params, stale_while_revalidate_seconds, stale_if_error_seconds, priority, enabled, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		rule.ID, rule.Name, rule.HostPattern, rule.PathPattern, rule.Methods,
-		rule.TTLSeconds, rule.CacheQueryParams, rule.Priority, rule.Enabled,
+		rule.TTLSeconds, rule.CacheQueryParams, rule.StaleWhileRevalidateSeconds, rule.StaleIfErrorSeconds, rule.Priority, rule.Enabled,
 		rule.CreatedAt, rule.UpdatedAt)
 	return err
 }
 
 func (p *Postgres) GetCacheRule(ctx context.Context, id string) (*CacheRule, error) {
 	row := p.pool.QueryRow(ctx,
-		`SELECT id, name, host_pattern, path_pattern, methods, ttl_seconds, cache_query_params, priority, enabled, created_at, updated_at
+		`SELECT id, name, host_pattern, path_pattern, methods, ttl_seconds, cache_query_params, stale_while_revalidate_seconds, stale_if_error_seconds, priority, enabled, created_at, updated_at
 		 FROM cache_rules WHERE id = $1`, id)
 	return scanCacheRule(row)
 }
 
 func (p *Postgres) ListCacheRules(ctx context.Context) ([]*CacheRule, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, name, host_pattern, path_pattern, methods, ttl_seconds, cache_query_params, priority, enabled, created_at, updated_at
+		`SELECT id, name, host_pattern, path_pattern, methods, ttl_seconds, cache_query_params, stale_while_revalidate_seconds, stale_if_error_seconds, priority, enabled, created_at, updated_at
 		 FROM cache_rules ORDER BY priority DESC, name`)
 	if err != nil {
 		return nil, err
@@ -2031,10 +2444,10 @@ func (p *Postgres) UpdateCacheRule(ctx context.Context, rule *CacheRule) error {
 		rule.Methods = []string{}
 	}
 	_, err := p.pool.Exec(ctx,
-		`UPDATE cache_rules SET name = $2, host_pattern = $3, path_pattern = $4, methods = $5, ttl_seconds = $6, cache_query_params = $7, priority = $8, enabled = $9, updated_at = NOW()
+		`UPDATE cache_rules SET name = $2, host_pattern = $3, path_pattern = $4, methods = $5, ttl_seconds = $6, cache_query_params = $7, stale_while_revalidate_seconds = $8, stale_if_error_seconds = $9, priority = $10, enabled = $11, updated_at = NOW()
 		 WHERE id = $1`,
 		rule.ID, rule.Name, rule.HostPattern, rule.PathPattern, rule.Methods,
-		rule.TTLSeconds, rule.CacheQueryParams, rule.Priority, rule.Enabled)
+		rule.TTLSeconds, rule.CacheQueryParams, rule.StaleWhileRevalidateSeconds, rule.StaleIfErrorSeconds, rule.Priority, rule.Enabled)
 	return err
 }
 
@@ -2119,7 +2532,7 @@ func (p *Postgres) GetLicenseState(ctx context.Context) (*LicenseState, error) {
 
 // Settings
 func (p *Postgres) GetSettings(ctx context.Context) (*Settings, error) {
-	row := p.pool.QueryRow(ctx, `SELECT id, system_name, footer_links, footer_copyright, favicon, logo, smtp_host, smtp_port, smtp_username, smtp_password, smtp_from, smtp_from_name, elasticsearch_url, elasticsearch_user, elasticsearch_pass, elasticsearch_index, elasticsearch_ts_field, elasticsearch_domain_field, elasticsearch_bytes_field, sales_email, support_email, register_enabled, upgrade_channel, notify_new_build, register_email_verification, email_enabled, dingtalk_enabled, dingtalk_webhook, wechat_enabled, wechat_webhook, feishu_enabled, feishu_webhook, notify_node_resource, notify_node_monitor, notify_ticket_reply, notify_interval, threshold_cpu, threshold_memory, threshold_disk, threshold_bandwidth_up, threshold_bandwidth_down, retention_system_logs, retention_es_logs, retention_waf_bans, retention_upgrade_logs, updated_at FROM settings WHERE id='default'`)
+	row := p.pool.QueryRow(ctx, `SELECT id, system_name, footer_links, footer_copyright, favicon, logo, sidebar_brand_mode, smtp_host, smtp_port, smtp_username, smtp_password, smtp_from, smtp_from_name, elasticsearch_url, elasticsearch_user, elasticsearch_pass, elasticsearch_index, elasticsearch_ts_field, elasticsearch_domain_field, elasticsearch_bytes_field, sales_email, support_email, register_enabled, upgrade_channel, notify_new_build, register_email_verification, renewal_before_expiry_days, email_enabled, dingtalk_enabled, dingtalk_webhook, wechat_enabled, wechat_webhook, feishu_enabled, feishu_webhook, notify_node_resource, notify_node_monitor, notify_ticket_reply, notify_interval, threshold_cpu, threshold_memory, threshold_disk, threshold_bandwidth_up, threshold_bandwidth_down, retention_system_logs, retention_es_logs, retention_waf_bans, retention_upgrade_logs, control_domain, control_public_https, control_redirect_ip, updated_at FROM settings WHERE id='default'`)
 	var s Settings
 	if err := row.Scan(
 		&s.ID,
@@ -2128,6 +2541,7 @@ func (p *Postgres) GetSettings(ctx context.Context) (*Settings, error) {
 		&s.FooterCopyright,
 		&s.Favicon,
 		&s.Logo,
+		&s.SidebarBrandMode,
 		&s.SMTPHost,
 		&s.SMTPPort,
 		&s.SMTPUsername,
@@ -2147,6 +2561,7 @@ func (p *Postgres) GetSettings(ctx context.Context) (*Settings, error) {
 		&s.UpgradeChannel,
 		&s.NotifyNewBuild,
 		&s.RegisterEmailVerification,
+		&s.RenewalBeforeExpiryDays,
 		&s.EmailEnabled,
 		&s.DingtalkEnabled,
 		&s.DingtalkWebhook,
@@ -2167,6 +2582,9 @@ func (p *Postgres) GetSettings(ctx context.Context) (*Settings, error) {
 		&s.RetentionESLogs,
 		&s.RetentionWafBans,
 		&s.RetentionUpgradeLogs,
+		&s.ControlDomain,
+		&s.ControlPublicHTTPS,
+		&s.ControlRedirectIP,
 		&s.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -2188,14 +2606,15 @@ func (p *Postgres) UpdateSettings(ctx context.Context, s *Settings) error {
 		s.UpdatedAt = time.Now()
 	}
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO settings (id, system_name, footer_links, footer_copyright, favicon, logo, smtp_host, smtp_port, smtp_username, smtp_password, smtp_from, smtp_from_name, elasticsearch_url, elasticsearch_user, elasticsearch_pass, elasticsearch_index, elasticsearch_ts_field, elasticsearch_domain_field, elasticsearch_bytes_field, sales_email, support_email, register_enabled, upgrade_channel, notify_new_build, register_email_verification, email_enabled, dingtalk_enabled, dingtalk_webhook, wechat_enabled, wechat_webhook, feishu_enabled, feishu_webhook, notify_node_resource, notify_node_monitor, notify_ticket_reply, notify_interval, threshold_cpu, threshold_memory, threshold_disk, threshold_bandwidth_up, threshold_bandwidth_down, retention_system_logs, retention_es_logs, retention_waf_bans, retention_upgrade_logs, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46)
+		`INSERT INTO settings (id, system_name, footer_links, footer_copyright, favicon, logo, sidebar_brand_mode, smtp_host, smtp_port, smtp_username, smtp_password, smtp_from, smtp_from_name, elasticsearch_url, elasticsearch_user, elasticsearch_pass, elasticsearch_index, elasticsearch_ts_field, elasticsearch_domain_field, elasticsearch_bytes_field, sales_email, support_email, register_enabled, upgrade_channel, notify_new_build, register_email_verification, renewal_before_expiry_days, email_enabled, dingtalk_enabled, dingtalk_webhook, wechat_enabled, wechat_webhook, feishu_enabled, feishu_webhook, notify_node_resource, notify_node_monitor, notify_ticket_reply, notify_interval, threshold_cpu, threshold_memory, threshold_disk, threshold_bandwidth_up, threshold_bandwidth_down, retention_system_logs, retention_es_logs, retention_waf_bans, retention_upgrade_logs, control_domain, control_public_https, control_redirect_ip, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51)
 		 ON CONFLICT (id) DO UPDATE SET
 		   system_name = EXCLUDED.system_name,
 		   footer_links = EXCLUDED.footer_links,
 		   footer_copyright = EXCLUDED.footer_copyright,
 		   favicon = EXCLUDED.favicon,
 		   logo = EXCLUDED.logo,
+		   sidebar_brand_mode = EXCLUDED.sidebar_brand_mode,
 		   smtp_host = EXCLUDED.smtp_host,
 		   smtp_port = EXCLUDED.smtp_port,
 		   smtp_username = EXCLUDED.smtp_username,
@@ -2215,6 +2634,7 @@ func (p *Postgres) UpdateSettings(ctx context.Context, s *Settings) error {
 		   upgrade_channel = EXCLUDED.upgrade_channel,
 		   notify_new_build = EXCLUDED.notify_new_build,
 		   register_email_verification = EXCLUDED.register_email_verification,
+		   renewal_before_expiry_days = EXCLUDED.renewal_before_expiry_days,
 		   email_enabled = EXCLUDED.email_enabled,
 		   dingtalk_enabled = EXCLUDED.dingtalk_enabled,
 		   dingtalk_webhook = EXCLUDED.dingtalk_webhook,
@@ -2235,6 +2655,9 @@ func (p *Postgres) UpdateSettings(ctx context.Context, s *Settings) error {
 		   retention_es_logs = EXCLUDED.retention_es_logs,
 		   retention_waf_bans = EXCLUDED.retention_waf_bans,
 		   retention_upgrade_logs = EXCLUDED.retention_upgrade_logs,
+		   control_domain = EXCLUDED.control_domain,
+		   control_public_https = EXCLUDED.control_public_https,
+		   control_redirect_ip = EXCLUDED.control_redirect_ip,
 		   updated_at = EXCLUDED.updated_at`,
 		s.ID,
 		s.SystemName,
@@ -2242,6 +2665,7 @@ func (p *Postgres) UpdateSettings(ctx context.Context, s *Settings) error {
 		s.FooterCopyright,
 		s.Favicon,
 		s.Logo,
+		s.SidebarBrandMode,
 		s.SMTPHost,
 		s.SMTPPort,
 		s.SMTPUsername,
@@ -2261,6 +2685,7 @@ func (p *Postgres) UpdateSettings(ctx context.Context, s *Settings) error {
 		s.UpgradeChannel,
 		s.NotifyNewBuild,
 		s.RegisterEmailVerification,
+		s.RenewalBeforeExpiryDays,
 		s.EmailEnabled,
 		s.DingtalkEnabled,
 		s.DingtalkWebhook,
@@ -2281,6 +2706,9 @@ func (p *Postgres) UpdateSettings(ctx context.Context, s *Settings) error {
 		s.RetentionESLogs,
 		s.RetentionWafBans,
 		s.RetentionUpgradeLogs,
+		s.ControlDomain,
+		s.ControlPublicHTTPS,
+		s.ControlRedirectIP,
 		s.UpdatedAt,
 	)
 	return err
@@ -2520,6 +2948,18 @@ func (p *Postgres) AdminUpdateBalanceRecharge(ctx context.Context, id, status, t
 	return tx.Commit(ctx)
 }
 
+func (p *Postgres) UpdateBalanceRechargePayment(ctx context.Context, id, payURL, qrCode, formHTML string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	_, err := p.pool.Exec(ctx,
+		`UPDATE balance_recharges SET payment_url=COALESCE(NULLIF($2,''), payment_url),
+		 qr_code=COALESCE(NULLIF($3,''), qr_code), updated_at=NOW() WHERE id=$1`,
+		id, payURL, qrCode)
+	return err
+}
+
 func (p *Postgres) AdminListBalanceWithdrawals(ctx context.Context, userID, status string, page, pageSize int) ([]*BalanceWithdrawal, int64, error) {
 	userID = strings.TrimSpace(userID)
 	status = strings.TrimSpace(status)
@@ -2564,6 +3004,18 @@ func (p *Postgres) AdminListBalanceWithdrawals(ctx context.Context, userID, stat
 		res = append(res, &w)
 	}
 	return res, total, rows.Err()
+}
+
+func (p *Postgres) CreateBalanceWithdrawal(ctx context.Context, w *BalanceWithdrawal) error {
+	if w == nil || strings.TrimSpace(w.ID) == "" || strings.TrimSpace(w.UserID) == "" {
+		return fmt.Errorf("invalid withdrawal")
+	}
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO balance_withdrawals (id, user_id, amount_cents, currency, method, account_name, account_no, status, note, reviewed_at, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10,$11)`,
+		w.ID, w.UserID, w.AmountCents, w.Currency, w.Method, w.AccountName, w.AccountNo, w.Status, w.Note, w.CreatedAt, w.UpdatedAt,
+	)
+	return err
 }
 
 func (p *Postgres) AdminUpdateBalanceWithdrawal(ctx context.Context, id, status, note string, reviewedAt time.Time) error {
@@ -2968,6 +3420,7 @@ func scanNode(row pgx.Row) (*Node, error) {
 		&n.CPUUsage, &n.MemUsage, &n.DiskUsage, &n.CPUCount, &n.MemTotal, &n.DiskTotal, &lastMetricsAt,
 		&n.BytesSent, &n.BytesReceived, &n.BandwidthUpBps, &n.BandwidthDownBps,
 		&n.TCPEstablished, &n.TCPSynRecv, &n.TCPTimeWait, &n.NginxRunning, &n.MonthBytesSent,
+		&n.RequestsTotal, &n.CacheHits, &n.CacheMisses,
 		&n.CreatedAt, &n.UpdatedAt,
 	)
 	if err != nil {
@@ -3001,6 +3454,7 @@ func scanNodeRows(rows pgx.Rows) (*Node, error) {
 		&n.CPUUsage, &n.MemUsage, &n.DiskUsage, &n.CPUCount, &n.MemTotal, &n.DiskTotal, &lastMetricsAt,
 		&n.BytesSent, &n.BytesReceived, &n.BandwidthUpBps, &n.BandwidthDownBps,
 		&n.TCPEstablished, &n.TCPSynRecv, &n.TCPTimeWait, &n.NginxRunning, &n.MonthBytesSent,
+		&n.RequestsTotal, &n.CacheHits, &n.CacheMisses,
 		&n.CreatedAt, &n.UpdatedAt,
 	)
 	if err != nil {
@@ -3028,7 +3482,7 @@ func scanDomain(row pgx.Row) (*Domain, error) {
 	var originAuthBytes []byte
 	var loadBalanceMethod string
 	var healthCheckBytes []byte
-	err := row.Scan(&d.ID, &d.Name, &d.CNAME, &d.UserID, &lineGroupID, &originID, &certID,
+	err := row.Scan(&d.ID, &d.Name, &d.CNAME, &d.UserID, &lineGroupID, &originID, &certID, &d.ListenPort,
 		&d.OriginScheme, &d.OriginPort, &d.OriginHostMode, &d.OriginHost, &d.OriginTimeoutMs, &d.OriginConnectTimeoutMs, &errorPagesBytes,
 		&d.CacheEnabled, &d.HTTP2Enabled, &d.WebsocketEnabled, &d.HTTPSEnabled, &d.Enabled, &securityBytes, &originAuthBytes,
 		&loadBalanceMethod, &healthCheckBytes, &d.CreatedAt, &d.UpdatedAt)
@@ -3082,7 +3536,7 @@ func scanDomainRows(rows pgx.Rows) (*Domain, error) {
 	var originAuthBytes []byte
 	var loadBalanceMethod string
 	var healthCheckBytes []byte
-	err := rows.Scan(&d.ID, &d.Name, &d.CNAME, &d.UserID, &lineGroupID, &originID, &certID,
+	err := rows.Scan(&d.ID, &d.Name, &d.CNAME, &d.UserID, &lineGroupID, &originID, &certID, &d.ListenPort,
 		&d.OriginScheme, &d.OriginPort, &d.OriginHostMode, &d.OriginHost, &d.OriginTimeoutMs, &d.OriginConnectTimeoutMs, &errorPagesBytes,
 		&d.CacheEnabled, &d.HTTP2Enabled, &d.WebsocketEnabled, &d.HTTPSEnabled, &d.Enabled, &securityBytes, &originAuthBytes,
 		&loadBalanceMethod, &healthCheckBytes, &d.CreatedAt, &d.UpdatedAt)
@@ -3191,7 +3645,7 @@ func scanConfigVersionRows(rows pgx.Rows) (*ConfigVersion, error) {
 func scanCacheRule(row pgx.Row) (*CacheRule, error) {
 	var r CacheRule
 	err := row.Scan(&r.ID, &r.Name, &r.HostPattern, &r.PathPattern, &r.Methods,
-		&r.TTLSeconds, &r.CacheQueryParams, &r.Priority, &r.Enabled, &r.CreatedAt, &r.UpdatedAt)
+		&r.TTLSeconds, &r.CacheQueryParams, &r.StaleWhileRevalidateSeconds, &r.StaleIfErrorSeconds, &r.Priority, &r.Enabled, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -3204,7 +3658,7 @@ func scanCacheRule(row pgx.Row) (*CacheRule, error) {
 func scanCacheRuleRows(rows pgx.Rows) (*CacheRule, error) {
 	var r CacheRule
 	err := rows.Scan(&r.ID, &r.Name, &r.HostPattern, &r.PathPattern, &r.Methods,
-		&r.TTLSeconds, &r.CacheQueryParams, &r.Priority, &r.Enabled, &r.CreatedAt, &r.UpdatedAt)
+		&r.TTLSeconds, &r.CacheQueryParams, &r.StaleWhileRevalidateSeconds, &r.StaleIfErrorSeconds, &r.Priority, &r.Enabled, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -3289,6 +3743,13 @@ func defaultOriginScheme(s string) string {
 func defaultOriginPort(p int32) int32 {
 	if p <= 0 {
 		return 80
+	}
+	return p
+}
+
+func normalizeListenPort(p int32) int32 {
+	if p < 0 || p > 65535 {
+		return 0
 	}
 	return p
 }
@@ -3559,7 +4020,7 @@ func (p *Postgres) DeleteWAFPolicy(ctx context.Context, id string) error {
 
 func (p *Postgres) ListWAFRules(ctx context.Context, policyID string) ([]*WAFRule, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, policy_id, type, action, value, threshold, window_seconds, shield_seconds, auto_challenge_qps, ban_seconds, template_html, ban_template_html, redirect_url, ban_mode, expires_at, path_prefix, methods, ua_contains, log_only, note, priority, enabled, created_at, updated_at
+		`SELECT id, policy_id, type, action, value, threshold, window_seconds, shield_seconds, auto_challenge_qps, ban_seconds, template_html, ban_template_html, redirect_url, ban_mode, expires_at, path_prefix, methods, ua_contains, log_only, note, priority, enabled, captcha_type, created_at, updated_at
 		 FROM waf_rules WHERE policy_id=$1 ORDER BY priority ASC, created_at ASC`, policyID)
 	if err != nil {
 		return nil, err
@@ -3568,7 +4029,7 @@ func (p *Postgres) ListWAFRules(ctx context.Context, policyID string) ([]*WAFRul
 	var res []*WAFRule
 	for rows.Next() {
 		var r WAFRule
-		if err := rows.Scan(&r.ID, &r.PolicyID, &r.Type, &r.Action, &r.Value, &r.Threshold, &r.WindowSeconds, &r.ShieldSeconds, &r.AutoChallengeQPS, &r.BanSeconds, &r.TemplateHTML, &r.BanTemplateHTML, &r.RedirectURL, &r.BanMode, &r.ExpiresAt, &r.PathPrefix, &r.Methods, &r.UAContains, &r.LogOnly, &r.Note, &r.Priority, &r.Enabled, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.PolicyID, &r.Type, &r.Action, &r.Value, &r.Threshold, &r.WindowSeconds, &r.ShieldSeconds, &r.AutoChallengeQPS, &r.BanSeconds, &r.TemplateHTML, &r.BanTemplateHTML, &r.RedirectURL, &r.BanMode, &r.ExpiresAt, &r.PathPrefix, &r.Methods, &r.UAContains, &r.LogOnly, &r.Note, &r.Priority, &r.Enabled, &r.CaptchaType, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if r.BanMode == "" {
@@ -3609,9 +4070,9 @@ func (p *Postgres) ReplaceWAFRules(ctx context.Context, policyID string, rules [
 			r.Methods = []string{}
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO waf_rules (id, policy_id, type, action, value, threshold, window_seconds, shield_seconds, auto_challenge_qps, ban_seconds, template_html, ban_template_html, redirect_url, ban_mode, expires_at, path_prefix, methods, ua_contains, log_only, note, priority, enabled, created_at, updated_at)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
-			r.ID, r.PolicyID, r.Type, r.Action, r.Value, r.Threshold, r.WindowSeconds, r.ShieldSeconds, r.AutoChallengeQPS, r.BanSeconds, r.TemplateHTML, r.BanTemplateHTML, r.RedirectURL, r.BanMode, nullTime(r.ExpiresAt), r.PathPrefix, r.Methods, r.UAContains, r.LogOnly, r.Note, r.Priority, r.Enabled, r.CreatedAt, r.UpdatedAt); err != nil {
+			`INSERT INTO waf_rules (id, policy_id, type, action, value, threshold, window_seconds, shield_seconds, auto_challenge_qps, ban_seconds, template_html, ban_template_html, redirect_url, ban_mode, expires_at, path_prefix, methods, ua_contains, log_only, note, priority, enabled, captcha_type, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+			r.ID, r.PolicyID, r.Type, r.Action, r.Value, r.Threshold, r.WindowSeconds, r.ShieldSeconds, r.AutoChallengeQPS, r.BanSeconds, r.TemplateHTML, r.BanTemplateHTML, r.RedirectURL, r.BanMode, nullTime(r.ExpiresAt), r.PathPrefix, r.Methods, r.UAContains, r.LogOnly, r.Note, r.Priority, r.Enabled, r.CaptchaType, r.CreatedAt, r.UpdatedAt); err != nil {
 			return err
 		}
 	}
@@ -4125,6 +4586,136 @@ func (p *Postgres) DeleteProductGroup(ctx context.Context, id string) error {
 		return nil
 	}
 	_, err := p.pool.Exec(ctx, `DELETE FROM product_groups WHERE id = $1`, id)
+	return err
+}
+
+func (p *Postgres) ListUserGroups(ctx context.Context) ([]*UserGroup, error) {
+	rows, err := p.pool.Query(ctx, `SELECT id, name, description, permissions, created_at, updated_at FROM user_groups ORDER BY name ASC, created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []*UserGroup
+	for rows.Next() {
+		g, err := scanUserGroupRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, g)
+	}
+	return list, rows.Err()
+}
+
+func scanUserGroupRow(row interface {
+	Scan(dest ...any) error
+}) (*UserGroup, error) {
+	var g UserGroup
+	var permsRaw []byte
+	if err := row.Scan(&g.ID, &g.Name, &g.Description, &permsRaw, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		return nil, err
+	}
+	g.Permissions = decodeUserGroupPermissions(permsRaw)
+	return &g, nil
+}
+
+func decodeUserGroupPermissions(raw []byte) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var perms []string
+	if err := json.Unmarshal(raw, &perms); err != nil {
+		return nil
+	}
+	return perms
+}
+
+func encodeUserGroupPermissions(perms []string) ([]byte, error) {
+	if len(perms) == 0 {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(perms)
+}
+
+func (p *Postgres) GetUserGroup(ctx context.Context, id string) (*UserGroup, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil
+	}
+	g, err := scanUserGroupRow(p.pool.QueryRow(ctx, `SELECT id, name, description, permissions, created_at, updated_at FROM user_groups WHERE id = $1`, id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return g, nil
+}
+
+func (p *Postgres) CreateUserGroup(ctx context.Context, g *UserGroup) error {
+	if g == nil {
+		return nil
+	}
+	now := time.Now()
+	cp := *g
+	if strings.TrimSpace(cp.ID) == "" {
+		cp.ID = generateID()
+	}
+	cp.Name = strings.TrimSpace(cp.Name)
+	cp.Description = strings.TrimSpace(cp.Description)
+	cp.Permissions = cp.Permissions
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	permsJSON, err := encodeUserGroupPermissions(cp.Permissions)
+	if err != nil {
+		return err
+	}
+	_, err = p.pool.Exec(ctx,
+		`INSERT INTO user_groups (id, name, description, permissions, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
+		cp.ID, cp.Name, cp.Description, permsJSON, cp.CreatedAt, cp.UpdatedAt)
+	if err == nil {
+		*g = cp
+	}
+	return err
+}
+
+func (p *Postgres) UpdateUserGroup(ctx context.Context, g *UserGroup) error {
+	if g == nil {
+		return nil
+	}
+	now := time.Now()
+	cp := *g
+	cp.Name = strings.TrimSpace(cp.Name)
+	cp.Description = strings.TrimSpace(cp.Description)
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	permsJSON, err := encodeUserGroupPermissions(cp.Permissions)
+	if err != nil {
+		return err
+	}
+	ct, err := p.pool.Exec(ctx,
+		`UPDATE user_groups SET name = $2, description = $3, permissions = $4::jsonb, updated_at = $5 WHERE id = $1`,
+		cp.ID, cp.Name, cp.Description, permsJSON, cp.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return sql.ErrNoRows
+	}
+	*g = cp
+	return nil
+}
+
+func (p *Postgres) DeleteUserGroup(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	_, err := p.pool.Exec(ctx, `DELETE FROM user_groups WHERE id = $1`, id)
 	return err
 }
 

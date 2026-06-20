@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,8 +19,16 @@ pub struct ConfigAgent {
 }
 
 impl ConfigAgent {
-    pub fn new(config_holder: Arc<ConfigHolder>, tls_enabled: bool, cert_store: Option<Arc<CertStore>>) -> Self {
-        Self { config_holder, tls_enabled, cert_store }
+    pub fn new(
+        config_holder: Arc<ConfigHolder>,
+        tls_enabled: bool,
+        cert_store: Option<Arc<CertStore>>,
+    ) -> Self {
+        Self {
+            config_holder,
+            tls_enabled,
+            cert_store,
+        }
     }
 
     pub async fn start(
@@ -69,14 +77,24 @@ impl ConfigAgent {
         Ok(())
     }
 
-    async fn process_config(&self, grpc_client: &GrpcClient, node_id: &str, token: &str, envelope: ConfigEnvelope) -> ConfigAck {
+    async fn process_config(
+        &self,
+        grpc_client: &GrpcClient,
+        node_id: &str,
+        token: &str,
+        envelope: ConfigEnvelope,
+    ) -> ConfigAck {
         // Validate checksum
-        if !self.config_holder.validate_checksum(&envelope.payload, &envelope.checksum) {
+        if !self
+            .config_holder
+            .validate_checksum(&envelope.payload, &envelope.checksum)
+        {
             error!("Config checksum mismatch: expected={}", envelope.checksum);
             return ConfigAck {
                 version: envelope.version,
                 ok: false,
                 reason: "Checksum validation failed".to_string(),
+                delivery_id: envelope.delivery_id.clone(),
             };
         }
 
@@ -89,6 +107,7 @@ impl ConfigAgent {
                     version: envelope.version,
                     ok: false,
                     reason: format!("Deserialization failed: {}", e),
+                    delivery_id: envelope.delivery_id.clone(),
                 };
             }
         };
@@ -100,16 +119,21 @@ impl ConfigAgent {
                 version: envelope.version,
                 ok: false,
                 reason: format!("Validation failed: {}", e),
+                delivery_id: envelope.delivery_id.clone(),
             };
         }
 
         if self.tls_enabled {
-            if let Err(e) = self.ensure_certificates(grpc_client, node_id, token, &mut config).await {
+            if let Err(e) = self
+                .ensure_certificates(grpc_client, node_id, token, &mut config)
+                .await
+            {
                 error!("Certificate sync failed: {}", e);
                 return ConfigAck {
                     version: envelope.version,
                     ok: false,
                     reason: format!("Certificate sync failed: {}", e),
+                    delivery_id: envelope.delivery_id.clone(),
                 };
             }
         }
@@ -122,6 +146,7 @@ impl ConfigAgent {
             version: envelope.version,
             ok: true,
             reason: "Config applied successfully".to_string(),
+            delivery_id: envelope.delivery_id,
         }
     }
 
@@ -139,7 +164,9 @@ impl ConfigAgent {
         // 1) Backward compatibility: if the control plane embeds PEM blobs, persist them to disk
         // and drop from memory to keep runtime RSS stable.
         for (id, cert_cfg) in config.certificates.iter_mut() {
-            let (Some(cert_pem), Some(key_pem)) = (cert_cfg.cert_pem.take(), cert_cfg.key_pem.take()) else {
+            let (Some(cert_pem), Some(key_pem)) =
+                (cert_cfg.cert_pem.take(), cert_cfg.key_pem.take())
+            else {
                 continue;
             };
             if cert_pem.is_empty() || key_pem.is_empty() {
@@ -160,11 +187,7 @@ impl ConfigAgent {
         // 2) Collect required cert IDs from domains.
         let mut needed: HashSet<String> = HashSet::new();
         for d in &config.domains {
-            let cert_id = d
-                .cert_id
-                .as_deref()
-                .unwrap_or(d.name.as_str())
-                .trim();
+            let cert_id = d.cert_id.as_deref().unwrap_or(d.name.as_str()).trim();
             if !cert_id.is_empty() {
                 needed.insert(cert_id.to_string());
             }
@@ -188,7 +211,11 @@ impl ConfigAgent {
         let sem = Arc::new(Semaphore::new(concurrency.max(1)));
         let mut join = JoinSet::new();
 
-        info!("Prefetching {} certificates (concurrency={})", missing.len(), concurrency);
+        info!(
+            "Prefetching {} certificates (concurrency={})",
+            missing.len(),
+            concurrency
+        );
 
         for cert_id in missing {
             let permit = sem.clone().acquire_owned().await?;
@@ -205,13 +232,24 @@ impl ConfigAgent {
                     .with_context(|| format!("GetCertificate cert_id={}", cert_id))?;
 
                 if !resp.ok {
-                    return Err(anyhow!("GetCertificate {} failed: {}", cert_id, resp.reason));
+                    return Err(anyhow!(
+                        "GetCertificate {} failed: {}",
+                        cert_id,
+                        resp.reason
+                    ));
                 }
                 if resp.cert_pem.trim().is_empty() || resp.key_pem.trim().is_empty() {
-                    return Err(anyhow!("GetCertificate {} returned empty cert/key", cert_id));
+                    return Err(anyhow!(
+                        "GetCertificate {} returned empty cert/key",
+                        cert_id
+                    ));
                 }
 
-                let merged = format!("{}\n{}\n", resp.cert_pem.trim_end(), resp.key_pem.trim_end());
+                let merged = format!(
+                    "{}\n{}\n",
+                    resp.cert_pem.trim_end(),
+                    resp.key_pem.trim_end()
+                );
                 cert_store
                     .put_pem_if_absent(&cert_id, merged.as_bytes())
                     .with_context(|| format!("persist fetched cert_id={}", cert_id))?;

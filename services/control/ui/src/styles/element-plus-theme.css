@@ -1,0 +1,131 @@
+/*
+ * Element Plus component polish (vue-element-plus-admin style).
+ */
+
+.el-card {
+  border-radius: var(--app-card-radius);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-card);
+  background: var(--app-surface);
+}
+
+.el-card__body {
+  padding: var(--app-card-padding);
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  border-radius: var(--app-input-radius);
+}
+
+.el-button {
+  border-radius: var(--app-button-radius);
+  font-weight: 500;
+}
+
+.el-button--primary {
+  box-shadow: none;
+}
+
+.el-button--primary:hover {
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.35);
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  background: var(--app-surface-muted) !important;
+}
+
+.el-table td.el-table__cell {
+  color: var(--app-text);
+}
+
+.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
+  background: var(--app-surface-muted);
+}
+
+.el-tag {
+  border-radius: var(--app-button-radius);
+}
+
+.section-card .el-tabs__content {
+  overflow: visible;
+}
+
+.el-tabs__item.is-active {
+  font-weight: 600;
+}
+
+.el-alert {
+  border-radius: var(--app-card-radius-sm);
+}
+
+.el-overlay {
+  background-color: rgba(0, 0, 0, 0.45) !important;
+}
+
+.el-dialog {
+  border-radius: var(--app-card-radius);
+  box-shadow: var(--app-shadow-popover);
+}
+
+.el-dialog__header {
+  padding: 20px var(--app-dialog-padding) 14px;
+  border-bottom: 1px solid var(--app-divider-soft);
+}
+
+.el-dialog__body {
+  padding: 18px var(--app-dialog-padding) 22px;
+}
+
+.el-dialog__footer {
+  padding: 14px var(--app-dialog-padding) 20px;
+  border-top: 1px solid var(--app-divider-soft);
+  background: var(--app-surface-muted);
+}
+
+.el-drawer__header {
+  padding: 16px 20px;
+  font-size: 16px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--app-divider-soft);
+  margin-bottom: 0;
+}
+
+.el-drawer__body {
+  padding: 0;
+}
+
+.node-detail-drawer .el-drawer__header {
+  padding: 18px 20px;
+  margin-bottom: 0;
+}
+
+.node-detail-drawer .el-drawer__footer {
+  padding: 14px 20px;
+  border-top: 1px solid var(--app-divider-soft);
+  background: var(--app-surface-muted);
+}
+
+.el-descriptions__cell {
+  vertical-align: middle;
+}
+
+.el-form-item__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--app-text-muted);
+}
+
+:where(a, button, [role="button"]):focus-visible {
+  outline: none;
+  box-shadow: var(--app-focus-ring);
+  border-radius: var(--app-input-radius);
+}
+
+.el-pagination {
+  font-size: 13px;
+}

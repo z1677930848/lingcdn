@@ -6,31 +6,31 @@
         <p class="subtitle">查看当前版本与执行升级任务</p>
       </div>
       <div class="header-actions">
-        <t-switch v-model="autoRefresh" />
+        <el-switch v-model="autoRefresh" />
         <span class="muted">自动刷新（8s）</span>
-        <t-button variant="outline" @click="() => loadData(true)" :loading="loading">刷新</t-button>
+        <el-button plain @click="() => loadData(true)" :loading="loading">刷新</el-button>
       </div>
     </div>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
         <div class="row">
           <span class="label">更新通道</span>
-          <t-radio-group v-model="channel" variant="default-filled" size="small" @change="handleChannelChange">
-            <t-radio-button value="stable">稳定版</t-radio-button>
-            <t-radio-button value="beta">测试版</t-radio-button>
-          </t-radio-group>
+          <el-radio-group v-model="channel" variant="default-filled" size="small" @change="handleChannelChange">
+            <el-radio-button value="stable">稳定版</el-radio-button>
+            <el-radio-button value="beta">测试版</el-radio-button>
+          </el-radio-group>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card v-if="error" class="section-card" bordered>
+    <el-card v-if="error" class="section-card">
       <div class="section-body">
         <span class="error">{{ error }}</span>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
         <div class="upgrade-header">
           <div>
@@ -40,15 +40,15 @@
               <span class="arrow">→</span>
               <span class="latest">最新 {{ info?.latest_version || '-' }}</span>
               <span class="badge" :class="channel === 'beta' ? 'beta' : 'stable'">{{ channelLabel }}</span>
-              <t-tag v-if="isLatest" theme="success" variant="light" size="small">已是最新</t-tag>
-              <t-tag v-else-if="hasUpdate" theme="warning" variant="light" size="small">可升级</t-tag>
+              <el-tag v-if="isLatest" type="success" effect="light" size="small">已是最新</el-tag>
+              <el-tag v-else-if="hasUpdate" type="warning" effect="light" size="small">可升级</el-tag>
             </div>
           </div>
-          <t-button @click="handleUpgradeControl" :loading="controlLoading" :disabled="isLatest">
+          <el-button @click="handleUpgradeControl" :loading="controlLoading" :disabled="isLatest">
             {{ isLatest ? '已是最新' : '执行升级' }}
-          </t-button>
+          </el-button>
         </div>
-        <div class="meta-row">
+        <div class="meta-strip">
           <span class="muted">来源：{{ info?.source || '-' }}</span>
           <span class="muted">检查时间：{{ formatDateTime(info?.checked_at) }}</span>
         </div>
@@ -56,11 +56,11 @@
           <div v-for="(note, idx) in info?.notes" :key="idx">· {{ note }}</div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
-        <div class="section-title">升级任务</div>
+        <div class="panel-title">升级任务</div>
         <div v-if="tasks.length === 0" class="muted">暂无升级任务</div>
         <div v-else class="task-list">
           <div v-for="task in tasks" :key="task.id" class="task-item">
@@ -73,14 +73,14 @@
             <div class="task-actions">
               <span class="status" :style="statusStyle(task.status)">{{ statusText(task.status) }}</span>
               <span class="muted">{{ task.id.slice(0, 8) }}</span>
-              <t-button size="small" variant="outline" @click="openLogs(task.id)">查看日志</t-button>
+              <el-button size="small" plain @click="openLogs(task.id)">查看日志</el-button>
             </div>
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-dialog v-model:visible="logVisible" header="升级日志" width="920px" :footer="null" @close="closeLogs">
+    <EpDialog append-to-body v-model="logVisible" header="升级日志" width="920px" :footer="null" @close="closeLogs">
       <div class="log-header">
         <div class="log-info">
           <span class="muted">任务</span>
@@ -90,9 +90,9 @@
           <span v-if="logError" class="error">{{ logError }}</span>
         </div>
         <div class="log-actions">
-          <t-switch v-model="logAutoScroll" />
+          <el-switch v-model="logAutoScroll" />
           <span class="muted">自动滚动</span>
-          <t-button size="small" variant="outline" @click="closeLogs">关闭</t-button>
+          <el-button size="small" plain @click="closeLogs">关闭</el-button>
         </div>
       </div>
 
@@ -102,13 +102,15 @@
           <div v-for="(line, idx) in logLines" :key="`${idx}-${line}`" class="log-line">{{ line }}</div>
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import { MessagePlugin } from "@/lib/ep-message"
+import EpDialog from "@/components/ep/EpDialog.vue"
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
-import { DialogPlugin, MessagePlugin } from "tdesign-vue-next"
+import { DialogPlugin } from "@/lib/ep-dialog"
 import { api, type UpgradeInfo, type UpgradeTask } from "@/lib/api"
 
 const channel = ref<"stable" | "beta">("stable")
@@ -225,11 +227,11 @@ const statusText = (status?: string) => {
 
 const statusStyle = (status?: string) => {
   const map: Record<string, { color: string; bg: string }> = {
-    pending: { color: "#475569", bg: "rgba(71, 85, 105, 0.12)" },
-    running: { color: "#635BFF", bg: "rgba(99, 91, 255, 0.12)" },
+    pending: { color: "var(--app-text-muted)", bg: "rgba(71, 85, 105, 0.12)" },
+    running: { color: "#409EFF", bg: "rgba(64, 158, 255, 0.12)" },
     completed: { color: "#16a34a", bg: "rgba(22, 163, 74, 0.12)" },
-    failed: { color: "#ef4444", bg: "rgba(245, 34, 45, 0.12)" },
-    unknown: { color: "#cbd5e1", bg: "rgba(203, 213, 225, 0.2)" },
+    failed: { color: "var(--app-danger)", bg: "rgba(245, 34, 45, 0.12)" },
+    unknown: { color: "var(--app-border-strong)", bg: "rgba(203, 213, 225, 0.2)" },
   }
   return map[status || ""] || map.unknown
 }
@@ -288,217 +290,3 @@ onUnmounted(() => {
   if (logTimer) clearInterval(logTimer)
 })
 </script>
-
-<style scoped>
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.muted {
-  font-size: 12px;
-  color: #475569;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.label {
-  font-size: 12px;
-  color: #475569;
-}
-
-.value {
-  font-size: 14px;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.upgrade-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.upgrade-version {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.arrow {
-  color: #cbd5e1;
-}
-
-.latest {
-  color: #635BFF;
-}
-
-.badge {
-  padding: 2px 8px;
-  border-radius: 8px;
-  font-size: 12px;
-}
-
-.badge.stable {
-  background: rgba(99, 91, 255, 0.12);
-  color: #635BFF;
-}
-
-.badge.beta {
-  background: rgba(245, 34, 45, 0.12);
-  color: #ef4444;
-}
-
-.meta-row {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.notes {
-  margin-top: 8px;
-  font-size: 12px;
-  color: #475569;
-}
-
-.section-title {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 12px;
-}
-
-.task-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.task-item {
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.task-title {
-  font-size: 13px;
-  color: #0f172a;
-}
-
-.task-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.status {
-  padding: 2px 8px;
-  border-radius: 8px;
-  font-size: 12px;
-}
-
-.log-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.log-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.log-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.log-box {
-  height: 420px;
-  overflow: auto;
-  background: #0b1020;
-  color: #d6e4ff;
-  border-radius: 8px;
-  padding: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.log-line {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.log-empty {
-  color: rgba(214, 228, 255, 0.7);
-}
-
-.link {
-  color: var(--td-brand-color);
-  font-size: 12px;
-  text-decoration: none;
-}
-
-.error {
-  color: #ef4444;
-  font-size: 12px;
-}
-
-@media (max-width: 768px) {
-  .header-actions {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-
-  .upgrade-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .upgrade-version {
-    flex-wrap: wrap;
-    font-size: 13px;
-  }
-
-  .task-item {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .task-actions {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-
-  .log-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .log-box {
-    height: 320px;
-  }
-}
-</style>

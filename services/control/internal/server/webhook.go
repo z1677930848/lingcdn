@@ -56,18 +56,21 @@ func (s *Servers) HandleUpgradeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if event.Timestamp != "" {
-		ts, err := time.Parse(time.RFC3339, event.Timestamp)
-		if err != nil {
-			log.Warn().Err(err).Msg("invalid webhook timestamp")
-			http.Error(w, "invalid timestamp", http.StatusUnauthorized)
-			return
-		}
-		if time.Since(ts).Abs() > 5*time.Minute {
-			log.Warn().Time("ts", ts).Msg("webhook timestamp too far from now")
-			http.Error(w, "stale request", http.StatusUnauthorized)
-			return
-		}
+	if event.Timestamp == "" {
+		log.Warn().Msg("webhook missing timestamp")
+		http.Error(w, "timestamp required", http.StatusUnauthorized)
+		return
+	}
+	ts, err := time.Parse(time.RFC3339, event.Timestamp)
+	if err != nil {
+		log.Warn().Err(err).Msg("invalid webhook timestamp")
+		http.Error(w, "invalid timestamp", http.StatusUnauthorized)
+		return
+	}
+	if time.Since(ts).Abs() > 5*time.Minute {
+		log.Warn().Time("ts", ts).Msg("webhook timestamp too far from now")
+		http.Error(w, "stale request", http.StatusUnauthorized)
+		return
 	}
 
 	if event.Event != "build.created" {

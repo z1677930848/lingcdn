@@ -112,7 +112,7 @@ func (c *AliDNSClient) Recover(ctx context.Context) (string, error) {
 	if err := c.Ping(ctx); err != nil {
 		return "", err
 	}
-	return "AliDNS credentials verified，未执行具体记录恢复（需业务规则）", nil
+	return syncVerifiedMessage("AliDNS"), nil
 }
 
 // Cleanup is a stub that simply validates credentials.
@@ -120,7 +120,7 @@ func (c *AliDNSClient) Cleanup(ctx context.Context) (string, error) {
 	if err := c.Ping(ctx); err != nil {
 		return "", err
 	}
-	return "AliDNS credentials verified，未执行实际删除（需明确删除规则）", nil
+	return syncVerifiedMessage("AliDNS"), nil
 }
 
 func (c *AliDNSClient) commonParams(action string) url.Values {

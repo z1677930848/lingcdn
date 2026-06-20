@@ -115,17 +115,12 @@ func (s *Servers) handleBalanceRecharges(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("最低充值金额 %d 分", s.cfg.PaymentMinRechargeCents)})
 			return
 		}
+		id := uuid.NewString()
+		outTradeNo := strings.ReplaceAll(uuid.NewString(), "-", "")
 		if !s.payProvider.SupportsMethod(req.PaymentMethod) {
 			req.PaymentMethod = "alipay" // default
 		}
 
-		id := uuid.NewString()
-		outTradeNo := strings.ReplaceAll(uuid.NewString(), "-", "")
-		payResult, err := s.payProvider.CreateRecharge(ctx, outTradeNo, userID, req.AmountCents, req.PaymentMethod, "余额充值")
-		if err != nil {
-			writeInternalError(w, "create payment", err)
-			return
-		}
 		recharge := &store.BalanceRecharge{
 			ID:              id,
 			UserID:          userID,
@@ -134,8 +129,6 @@ func (s *Servers) handleBalanceRecharges(w http.ResponseWriter, r *http.Request)
 			Currency:        "CNY",
 			PaymentMethod:   req.PaymentMethod,
 			PaymentProvider: s.payProvider.Name(),
-			PaymentURL:      payResult.PayURL,
-			QRCode:          payResult.QRCode,
 			ExpiresAt:       time.Now().Add(30 * time.Minute),
 			Status:          "pending",
 			CreatedAt:       time.Now(),
@@ -144,6 +137,18 @@ func (s *Servers) handleBalanceRecharges(w http.ResponseWriter, r *http.Request)
 		if err := s.store.CreateBalanceRecharge(ctx, recharge); err != nil {
 			writeInternalError(w, "create recharge", err)
 			return
+		}
+
+		payResult, err := s.payProvider.CreateRecharge(ctx, outTradeNo, userID, req.AmountCents, req.PaymentMethod, "余额充值")
+		if err != nil {
+			_ = s.store.AdminUpdateBalanceRecharge(ctx, recharge.ID, "cancelled", "", "", time.Time{})
+			writeInternalError(w, "create payment", err)
+			return
+		}
+		recharge.PaymentURL = payResult.PayURL
+		recharge.QRCode = payResult.QRCode
+		if err := s.store.UpdateBalanceRechargePayment(ctx, recharge.ID, payResult.PayURL, payResult.QRCode, payResult.FormHTML); err != nil {
+			log.Warn().Err(err).Str("recharge_id", recharge.ID).Msg("failed to persist payment URLs after gateway create")
 		}
 
 		writeJSON(w, http.StatusCreated, map[string]any{
@@ -161,30 +166,101 @@ func (s *Servers) handleBalanceRecharges(w http.ResponseWriter, r *http.Request)
 func (s *Servers) handleBalanceWithdrawals(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := store.WithTimeout(r.Context())
 	defer cancel()
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
-		return
-	}
 	userID, _ := ctx.Value(ctxKeyUserID).(string)
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "未登录或登录已过期"})
 		return
 	}
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	page := parseIntQuery(r, "page", 1)
-	pageSize := parseIntQuery(r, "page_size", parseIntQuery(r, "pageSize", 20))
-	withdrawals, total, err := s.store.AdminListBalanceWithdrawals(ctx, userID, status, page, pageSize)
-	if err != nil {
-		writeInternalError(w, "list balance withdrawals", err)
-		return
+
+	switch r.Method {
+	case http.MethodGet:
+		status := strings.TrimSpace(r.URL.Query().Get("status"))
+		page := parseIntQuery(r, "page", 1)
+		pageSize := parseIntQuery(r, "page_size", parseIntQuery(r, "pageSize", 20))
+		withdrawals, total, err := s.store.AdminListBalanceWithdrawals(ctx, userID, status, page, pageSize)
+		if err != nil {
+			writeInternalError(w, "list balance withdrawals", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"withdrawals": withdrawals,
+			"total":       total,
+			"page":        page,
+			"page_size":   pageSize,
+		})
+
+	case http.MethodPost:
+		if !s.requireUserPermission(w, ctx, PermBalanceWithdraw) {
+			return
+		}
+		var req struct {
+			AmountCents int64  `json:"amount_cents"`
+			Method      string `json:"method"`
+			AccountName string `json:"account_name"`
+			AccountNo   string `json:"account_no"`
+			Note        string `json:"note"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		if req.AmountCents <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "提现金额必须大于0"})
+			return
+		}
+		req.Method = strings.TrimSpace(req.Method)
+		req.AccountName = strings.TrimSpace(req.AccountName)
+		req.AccountNo = strings.TrimSpace(req.AccountNo)
+		if req.Method == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请选择提现方式"})
+			return
+		}
+		if req.AccountName == "" || req.AccountNo == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请填写完整的收款账户信息"})
+			return
+		}
+		account, err := s.store.GetBalanceAccount(ctx, userID)
+		if err != nil {
+			writeInternalError(w, "get balance account", err)
+			return
+		}
+		if account == nil || account.BalanceCents < req.AmountCents {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "余额不足"})
+			return
+		}
+		pending, _, err := s.store.AdminListBalanceWithdrawals(ctx, userID, "pending", 1, 1)
+		if err != nil {
+			writeInternalError(w, "check pending withdrawals", err)
+			return
+		}
+		if len(pending) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "您已有待审核的提现申请，请等待处理后再提交"})
+			return
+		}
+		now := time.Now()
+		wd := &store.BalanceWithdrawal{
+			ID:          uuid.NewString(),
+			UserID:      userID,
+			AmountCents: req.AmountCents,
+			Currency:    "CNY",
+			Method:      req.Method,
+			AccountName: req.AccountName,
+			AccountNo:   req.AccountNo,
+			Status:      "pending",
+			Note:        strings.TrimSpace(req.Note),
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if err := s.store.CreateBalanceWithdrawal(ctx, wd); err != nil {
+			writeInternalError(w, "create balance withdrawal", err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"withdrawal": wd})
+
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"withdrawals": withdrawals,
-		"total":       total,
-		"page":        page,
-		"page_size":   pageSize,
-	})
 }
 
 func (s *Servers) handleAdminBalanceAccounts(w http.ResponseWriter, r *http.Request) {
@@ -447,6 +523,12 @@ func (s *Servers) handlePaymentNotify(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := store.WithTimeout(r.Context())
 	defer cancel()
 
+	if s.payProvider.Name() == "mock" {
+		log.Warn().Msg("mock payment provider does not accept async notify callbacks")
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "mock provider unsupported"})
+		return
+	}
+
 	cb, err := s.payProvider.VerifyCallback(r)
 	if err != nil {
 		log.Warn().Err(err).Str("provider", s.payProvider.Name()).Msg("payment callback verify failed")
@@ -460,12 +542,20 @@ func (s *Servers) handlePaymentNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if recharge == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "recharge not found"})
+		// Idempotent: unknown orders still return success so gateways stop retrying.
+		log.Warn().Str("out_trade_no", cb.OutTradeNo).Msg("payment notify: unknown recharge, ignoring")
+		writeJSON(w, http.StatusOK, map[string]any{"success": true})
 		return
 	}
-	if cb.AmountCents > 0 && cb.AmountCents != recharge.AmountCents {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "支付金额不匹配"})
-		return
+	if cb.Status == "paid" {
+		if cb.AmountCents <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "支付金额无效"})
+			return
+		}
+		if cb.AmountCents != recharge.AmountCents {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "支付金额不匹配"})
+			return
+		}
 	}
 
 	if cb.Status == "paid" {
@@ -500,6 +590,11 @@ func (s *Servers) handlePaymentMock(w http.ResponseWriter, r *http.Request) {
 	}
 	if recharge == nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "充值单不存在"})
+		return
+	}
+	callerID := getUserID(ctx)
+	if !isAdmin(ctx) && (callerID == "" || recharge.UserID != callerID) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权操作此充值单"})
 		return
 	}
 	if r.Method == http.MethodPost || strings.TrimSpace(r.URL.Query().Get("confirm")) == "1" {

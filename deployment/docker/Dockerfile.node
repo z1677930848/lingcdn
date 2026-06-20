@@ -1,0 +1,22 @@
+FROM rust:1.83-bookworm AS builder
+WORKDIR /src
+COPY services/node/Cargo.toml services/node/Cargo.lock ./
+COPY services/node/build.rs ./
+COPY services/node/proto ./proto
+RUN mkdir src && echo "fn main(){}" > src/main.rs \
+  && cargo build --release \
+  && rm -rf src
+COPY services/node/src ./src
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /var/lib/lingcdn-node
+COPY --from=builder /src/target/release/lingcdn-node /usr/local/bin/lingcdn-node
+COPY deployment/docker/node-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh \
+  && mkdir -p /var/log/lingcdn /var/lib/lingcdn-node/cache
+EXPOSE 8088 9101
+ENTRYPOINT ["/entrypoint.sh"]

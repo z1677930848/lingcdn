@@ -34,7 +34,7 @@ import (
 // mistakes (e.g. a stale APP_VERSION pinned in /etc/lingcdn/lingcdn.env)
 // can never shadow the real binary version —they can only *complement*
 // it with operator-visible metadata.
-var appVersion = "1.0.23"
+var appVersion = "1.0.24"
 
 // once guards one-time initialization of the resolved version string.
 var (

@@ -1,0 +1,19 @@
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+RUN apk add --no-cache git ca-certificates
+COPY services/control/go.mod services/control/go.sum ./
+RUN go mod download
+COPY services/control/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /lingcdn-control ./cmd/lingcdn-control
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata curl postgresql-client
+WORKDIR /app
+COPY --from=builder /lingcdn-control /usr/local/bin/lingcdn-control
+COPY services/control/config.docker.yaml /app/config.yaml
+COPY services/control/data /app/data
+COPY services/control/ui/dist /app/ui/dist
+COPY deployment/docker/control-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+EXPOSE 8080 9443 9100
+ENTRYPOINT ["/entrypoint.sh"]

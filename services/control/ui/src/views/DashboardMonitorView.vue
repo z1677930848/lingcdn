@@ -6,45 +6,50 @@
         <p class="subtitle">流量、命中率与健康状态实时查看</p>
       </div>
       <div class="header-actions">
-        <t-button :loading="metricsLoading" @click="handleRefresh">查询</t-button>
+        <el-button :loading="metricsLoading" @click="handleRefresh">查询</el-button>
       </div>
     </div>
 
-    <t-card class="section-card" bordered>
-      <t-tabs v-model="tab">
-        <t-tab-panel value="basic" label="基础数据" />
-        <t-tab-panel value="quality" label="质量监控" />
-        <t-tab-panel value="origin" label="回源监控" />
-      </t-tabs>
+    <el-alert v-if="metrics?.demo_data" theme="info" class="monitor-alert">
+      Elasticsearch 未配置或暂不可用，图表为零值占位。配置 ES 并采集 access.log 后将展示真实监控数据。
+    </el-alert>
+
+    <el-card class="section-card">
+      <el-tabs v-model="tab">
+        <el-tab-pane name="basic" label="基础数据" />
+        <el-tab-pane name="quality" label="质量监控" />
+        <el-tab-pane name="origin" label="回源监控" />
+      </el-tabs>
 
       <div class="section-body">
         <div class="filters">
           <div class="filter-item">
-            <t-input v-model="domainInput" placeholder="输入域名，多个空格分隔" clearable style="min-width:220px" />
+            <el-input v-model="domainInput" placeholder="输入域名，多个空格分隔" clearable style="min-width:220px" />
           </div>
           <div class="filter-item">
-            <t-input v-model="portInput" placeholder="输入监听端口" clearable style="width:140px" />
+            <el-input v-model="portInput" placeholder="输入监听端口" clearable style="width:140px" />
           </div>
           <div class="filter-item time-buttons">
-            <t-button
+            <el-button
               v-for="item in timeRanges"
               :key="item.value"
               size="small"
-              :theme="activeTimeRange === item.value ? 'primary' : 'default'"
+              :type="activeTimeRange === item.value ? 'primary' : 'info'"
               :variant="activeTimeRange === item.value ? 'base' : 'outline'"
               @click="selectTimeRange(item.value)"
             >
               {{ item.label }}
-            </t-button>
+            </el-button>
           </div>
           <div v-if="activeTimeRange === 'custom'" class="filter-item">
-            <t-input v-model="customFrom" placeholder="开始 YYYY-MM-DD HH:mm:ss" style="width:200px" />
+            <el-input v-model="customFrom" placeholder="开始 YYYY-MM-DD HH:mm:ss" style="width:200px" />
             <span class="muted">~</span>
-            <t-input v-model="customTo" placeholder="结束 YYYY-MM-DD HH:mm:ss" style="width:200px" />
+            <el-input v-model="customTo" placeholder="结束 YYYY-MM-DD HH:mm:ss" style="width:200px" />
           </div>
         </div>
 
-        <div v-if="metricsLoading" style="text-align:center;padding:40px 0"><t-loading /></div>
+        <LoadingState v-if="metricsLoading && seriesList.length === 0" />
+        <ErrorState v-else-if="metricsError" :message="metricsError" @retry="loadMetrics" />
         <div v-else class="series-grid">
           <div v-if="seriesList.length === 0" class="muted" style="padding:20px 0;text-align:center">暂无数据</div>
           <div v-for="series in seriesList" :key="series.key" class="series-card">
@@ -59,20 +64,23 @@
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
 import { api, type DomainHealthMetricsResponse, type DomainHealthSeries } from "@/lib/api"
 import LineAreaChart from "@/components/charts/LineAreaChart.vue"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const tab = ref<"basic" | "quality" | "origin">("basic")
 const domainInput = ref("")
 const portInput = ref("")
 const metricsLoading = ref(false)
+const metricsError = ref("")
 const metrics = ref<DomainHealthMetricsResponse | null>(null)
 const activeTimeRange = ref("1h")
 const customFrom = ref("")
@@ -113,6 +121,7 @@ const loadMetrics = async () => {
   if (metricsLoading.value) return
   try {
     metricsLoading.value = true
+    metricsError.value = ""
     const { fromUnix, toUnix } = resolveRange()
     const domains = parseDomains()
     const port = parseInt(portInput.value) || undefined
@@ -125,8 +134,9 @@ const loadMetrics = async () => {
       points: 60,
     })
     metrics.value = res
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载监控数据失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载监控数据失败"
+    metricsError.value = msg
   } finally {
     metricsLoading.value = false
   }
@@ -205,93 +215,3 @@ const seriesList = computed(() => metrics.value?.series || [])
 onMounted(() => { loadMetrics() })
 watch(tab, () => { loadMetrics() })
 </script>
-
-<style scoped>
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.section-body {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-}
-
-.filter-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  color: #475569;
-}
-
-.time-buttons {
-  display: flex;
-  gap: 0;
-}
-
-.series-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
-}
-
-.series-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 18px;
-  background: #fff;
-  transition: all 0.2s ease;
-}
-
-.series-card:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-}
-
-.series-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 12px;
-  align-items: center;
-}
-
-.series-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #475569;
-}
-
-.series-value {
-  font-size: 22px;
-  font-weight: 700;
-  color: #0f172a;
-  letter-spacing: -0.02em;
-}
-
-.muted {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-@media (max-width: 768px) {
-  .filters {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .series-grid {
-    grid-template-columns: 1fr;
-  }
-}
-</style>

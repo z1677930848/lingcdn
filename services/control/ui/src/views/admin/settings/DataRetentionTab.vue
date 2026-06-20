@@ -1,11 +1,14 @@
 <template>
   <div class="settings-tab">
-    <p class="desc">设置各类数据的保留天数，超过保留期的数据将被自动清理。设置为 <code>0</code> 表示不自动清理。</p>
+    <ErrorState v-if="error" :message="error" @retry="loadSettings" />
+    <LoadingState v-else-if="loading" />
+    <template v-else>
+    <p class="tab-desc">设置各类数据的保留天数，超过保留期的数据将被自动清理。设置为 <code>0</code> 表示不自动清理。</p>
 
-    <t-form layout="vertical" label-align="top" :disabled="loading || saving">
-      <t-form-item v-for="item in retentionItems" :key="item.key" :label="item.label">
+    <el-form label-position="top" :disabled="loading || saving">
+      <el-form-item v-for="item in retentionItems" :key="item.key" :label="item.label">
         <div class="input-with-unit">
-          <t-input
+          <el-input
             :value="retentionText(item.key)"
             @change="(v: string) => setRetention(item.key, v)"
             type="number"
@@ -14,19 +17,22 @@
           <span class="unit">天</span>
         </div>
         <div class="hint">{{ item.hint }}</div>
-      </t-form-item>
+      </el-form-item>
 
       <div class="actions">
-        <t-button theme="primary" @click="handleSave" :loading="saving">保存</t-button>
+        <el-button type="primary" @click="handleSave" :loading="saving">保存</el-button>
       </div>
-    </t-form>
+    </el-form>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
 import { api } from "@/lib/api"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 type RetentionSettings = {
   retention_system_logs: number
@@ -80,11 +86,13 @@ const retentionItems = [
 ] as const
 
 const loading = ref(false)
+const error = ref("")
 const saving = ref(false)
 
 const loadSettings = async () => {
   try {
     loading.value = true
+    error.value = ""
     const { settings: data } = await api.getSettings()
     if (data) {
       settings.value = {
@@ -94,8 +102,9 @@ const loadSettings = async () => {
         retention_upgrade_logs: Number(data.retention_upgrade_logs ?? 30),
       }
     }
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载设置失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载设置失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -118,52 +127,3 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
-.desc {
-  color: var(--app-text-muted);
-  font-size: 13px;
-  margin: 0 0 16px;
-  line-height: 1.6;
-}
-
-.desc code {
-  background: var(--app-surface-muted);
-  border: 1px solid var(--app-border);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  color: var(--app-text-strong);
-}
-
-.input-with-unit {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.unit {
-  font-size: 14px;
-  color: var(--app-text);
-  flex-shrink: 0;
-}
-
-.hint {
-  font-size: 12px;
-  color: var(--app-text-faint);
-  margin-top: 6px;
-}
-
-.actions {
-  margin-top: 12px;
-}
-
-@media (max-width: 768px) {
-  .input-with-unit {
-    width: 100%;
-  }
-
-  .input-with-unit :deep(.t-input-number) {
-    flex: 1;
-  }
-}
-</style>

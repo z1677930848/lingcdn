@@ -56,36 +56,80 @@ impl PurgeAgent {
     }
 
     async fn execute_purge(&self, command: &PurgeCommand) -> PurgeResult {
-        info!("Executing purge: request_id={}, urls={}", command.request_id, command.urls.len());
+        let purge_type = if command.purge_type.is_empty() {
+            "url"
+        } else {
+            command.purge_type.as_str()
+        };
 
-        let mut success_count = 0;
-        let mut error_count = 0;
+        info!(
+            "Executing purge: request_id={}, type={}, urls={}, prefixes={}, tags={}",
+            command.request_id,
+            purge_type,
+            command.urls.len(),
+            command.prefixes.len(),
+            command.tags.len()
+        );
+
+        let mut success_count = 0u32;
+        let mut error_count = 0u32;
         let mut errors = Vec::new();
 
-        for url in &command.urls {
-            match self.cache.purge_by_url(url) {
-                Ok(removed) => {
-                    if removed {
-                        success_count += 1;
-                        info!("Purged: {}", url);
-                    } else {
-                        warn!("URL not in cache: {}", url);
+        match purge_type {
+            "prefix" => {
+                for prefix in &command.prefixes {
+                    match self.cache.purge_by_prefix(prefix) {
+                        Ok(n) => success_count += n,
+                        Err(e) => {
+                            error_count += 1;
+                            errors.push(format!("prefix {}: {}", prefix, e));
+                        }
                     }
                 }
-                Err(e) => {
-                    error_count += 1;
-                    let err_msg = format!("Failed to purge {}: {}", url, e);
-                    error!("{}", err_msg);
-                    errors.push(err_msg);
+            }
+            "tag" => {
+                for tag in &command.tags {
+                    match self.cache.purge_by_tag(tag) {
+                        Ok(n) => success_count += n,
+                        Err(e) => {
+                            error_count += 1;
+                            errors.push(format!("tag {}: {}", tag, e));
+                        }
+                    }
+                }
+            }
+            _ => {
+                for url in &command.urls {
+                    match self.cache.purge_by_url(url) {
+                        Ok(removed) => {
+                            if removed {
+                                success_count += 1;
+                                info!("Purged: {}", url);
+                            } else {
+                                warn!("URL not in cache: {}", url);
+                            }
+                        }
+                        Err(e) => {
+                            error_count += 1;
+                            let err_msg = format!("Failed to purge {}: {}", url, e);
+                            error!("{}", err_msg);
+                            errors.push(err_msg);
+                        }
+                    }
                 }
             }
         }
 
         let ok = error_count == 0;
         let reason = if ok {
-            format!("Purged {} URLs successfully", success_count)
+            format!("Purged {} entries successfully", success_count)
         } else {
-            format!("Purged {} URLs, {} errors: {}", success_count, error_count, errors.join("; "))
+            format!(
+                "Purged {} entries, {} errors: {}",
+                success_count,
+                error_count,
+                errors.join("; ")
+            )
         };
 
         PurgeResult {

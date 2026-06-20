@@ -69,12 +69,17 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   const logout = async () => {
+    try {
+      await api.logout()
+    } catch {
+      // ignore
+    }
     user.value = null
     clearAuthToken()
     notify({
       variant: "default",
       title: "已退出登录",
-      description: "已清理本地会话",
+      description: "会话已结束",
     })
   }
 

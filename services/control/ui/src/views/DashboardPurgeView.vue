@@ -7,12 +7,14 @@
       </div>
     </div>
 
-    <t-card class="section-card" bordered>
+    <PermissionNotice :show="hasRestrictions && !canPurgeExecute" />
+
+    <el-card class="section-card">
       <div class="section-body">
-        <t-tabs v-model="purgeType">
-          <t-tab-panel value="url" label="URL 刷新" />
-          <t-tab-panel value="dir" label="目录刷新" />
-        </t-tabs>
+        <el-tabs v-model="purgeType">
+          <el-tab-pane name="url" label="URL 刷新" />
+          <el-tab-pane name="dir" label="目录刷新" />
+        </el-tabs>
 
         <div class="purge-form">
           <div class="form-tip" v-if="purgeType === 'url'">
@@ -21,16 +23,17 @@
           <div class="form-tip" v-else>
             请输入需要刷新的目录路径，每行一个（如 http://example.com/images/），最多 10 条。
           </div>
-          <t-textarea
+          <el-input
             v-model="purgeInput"
+            :readonly="!canPurgeExecute"
             :placeholder="purgeType === 'url' ? 'https://example.com/path/file.js\nhttps://example.com/path/file.css' : 'https://example.com/images/\nhttps://example.com/static/'"
             :rows="8"
             :maxlength="purgeType === 'url' ? 5000 : 2000"
           />
           <div class="purge-actions">
-            <t-button theme="primary" :loading="purging" @click="handlePurge">
+            <el-button type="primary" :loading="purging" :disabled="!canPurgeExecute" @click="handlePurge">
               提交刷新
-            </t-button>
+            </el-button>
             <span class="muted">{{ urlCount }} 条</span>
           </div>
         </div>
@@ -39,24 +42,29 @@
           <div class="purge-history-title">最近提交</div>
           <div v-for="item in purgeHistory" :key="item.id" class="purge-history-item">
             <div class="purge-history-main">
-              <t-tag :theme="item.ok ? 'success' : 'danger'" variant="light" size="small">
+              <el-tag :type="item.ok ? 'success' : 'danger'" effect="light" size="small">
                 {{ item.ok ? "已提交" : "失败" }}
-              </t-tag>
+              </el-tag>
               <span class="muted" :title="formatTimeFull(item.time)">{{ formatTime(item.time) }}</span>
             </div>
             <div class="purge-history-urls">{{ item.urls.slice(0, 3).join(", ") }}{{ item.urls.length > 3 ? ` ...共${item.urls.length}条` : "" }}</div>
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
+import { MessagePlugin } from "@/lib/ep-message"
 import { computed, ref } from "vue"
-import { DialogPlugin, MessagePlugin } from "tdesign-vue-next"
+import { DialogPlugin } from "@/lib/ep-dialog"
 import { api } from "@/lib/api"
 import { formatTime, formatTimeFull } from "@/lib/time"
+import PermissionNotice from "@/components/common/PermissionNotice.vue"
+import { useUserPermissions } from "@/composables/useUserPermissions"
+
+const { canPurgeExecute, hasRestrictions } = useUserPermissions()
 
 const purgeType = ref<"url" | "dir">("url")
 const purgeInput = ref("")
@@ -156,63 +164,3 @@ const submitPurge = async (urls: string[]) => {
 }
 </script>
 
-<style scoped>
-.section-body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.purge-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 720px;
-}
-
-.form-tip {
-  font-size: 13px;
-  color: #94a3b8;
-}
-
-.purge-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.muted {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.purge-history {
-  border-top: 1px solid #f1f5f9;
-  padding-top: 16px;
-}
-
-.purge-history-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #0f172a;
-  margin-bottom: 12px;
-}
-
-.purge-history-item {
-  padding: 10px 0;
-  border-bottom: 1px solid #f8fafc;
-}
-
-.purge-history-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.purge-history-urls {
-  font-size: 13px;
-  color: #64748b;
-  word-break: break-all;
-}
-</style>

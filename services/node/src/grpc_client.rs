@@ -12,6 +12,7 @@ use crate::proto::node::{
     ConfigAck, ConfigEnvelope,
     MetricsBatch,
     PurgeCommand, PurgeResult,
+    PreloadCommand, PreloadResult,
     CertificateRequest, CertificateResponse,
     GetCertificateRequest, GetCertificateResponse,
     WafBanReport, ReportWafBanRequest, ReportWafBanResponse,
@@ -195,6 +196,45 @@ impl GrpcClient {
         Ok((tx, response))
     }
 
+    pub async fn stream_preload(
+        &mut self,
+        node_id: &str,
+        token: &str,
+    ) -> Result<(
+        tokio::sync::mpsc::Sender<PreloadResult>,
+        Streaming<PreloadCommand>,
+    )> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<PreloadResult>(32);
+
+        let outbound = async_stream::stream! {
+            while let Some(res) = rx.recv().await {
+                yield res;
+            }
+        };
+
+        let mut request = Request::new(outbound);
+        request.metadata_mut().insert("node-id", MetadataValue::try_from(node_id).context("invalid node-id metadata")?);
+        request.metadata_mut().insert("node-token", MetadataValue::try_from(token).context("invalid node-token metadata")?);
+
+        let response = match self.client.stream_preload(request).await {
+            Ok(resp) => resp.into_inner(),
+            Err(status) => {
+                tracing::error!(
+                    code = ?status.code(),
+                    message = %status.message(),
+                    "stream_preload RPC failed"
+                );
+                return Err(anyhow::anyhow!(
+                    "stream_preload failed: code={:?} message={}",
+                    status.code(),
+                    status.message()
+                ));
+            }
+        };
+
+        Ok((tx, response))
+    }
+
     pub async fn report_metrics(&mut self, node_id: &str, token: &str, batch: MetricsBatch) -> Result<HeartbeatResponse> {
         let mut request = Request::new(batch);
         request.metadata_mut().insert("node-id", MetadataValue::try_from(node_id).context("invalid node-id metadata")?);
@@ -225,14 +265,21 @@ impl GrpcClient {
     pub async fn request_certificate(
         &mut self,
         node_id: &str,
+        token: &str,
         domain: &str,
         csr_pem: String,
     ) -> Result<CertificateResponse> {
+        // Control plane's RequestCertificate requires a non-empty token
+        // (see node_control.go::RequestCertificate -> validateNodeToken).
+        // Previously this was hard-coded to `String::new()`, which meant
+        // every CSR-based cert issuance came back Unauthenticated and the
+        // node-side TLS self-heal path at main.rs (cert_manager.request_...)
+        // was 100% broken.
         let req = CertificateRequest {
             node_id: node_id.to_string(),
             domain: domain.to_string(),
             csr_pem,
-            token: String::new(),
+            token: token.to_string(),
         };
         let response = self.client
             .request_certificate(Request::new(req))

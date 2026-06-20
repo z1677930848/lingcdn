@@ -7,9 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/lingcdn/control/internal/dnsprovider"
-	"github.com/lingcdn/control/internal/store"
 )
 
 type systemTask struct {
@@ -132,46 +129,15 @@ func (s *Servers) handleSystemTaskAction(w http.ResponseWriter, r *http.Request)
 	case "sync":
 		newTask = s.runDNSSyncNow(task.Subject, "retry")
 	case "recover":
-		newTask = s.runDNSProviderTaskNow(r.Context(), "recover", task.Subject)
+		newTask = s.runDNSSyncNow("recover", "retry recover")
 	case "cleanup":
-		newTask = s.runDNSProviderTaskNow(r.Context(), "cleanup", task.Subject)
+		newTask = s.runDNSCleanupNow("cleanup", "retry cleanup")
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "该任务类型不支持重试"})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task_id": newTask.ID})
-}
-
-func (s *Servers) runDNSProviderTaskNow(reqCtx context.Context, kind, subject string) *dnsTask {
-	ctx, cancel := store.WithTimeout(reqCtx)
-	defer cancel()
-
-	cfg, _ := s.store.GetDNSConfig(ctx)
-	if cfg == nil {
-		return s.runDNSTask(kind, subject, "manual", func() (string, error) { return "dns config missing", nil })
-	}
-	client, err := dnsprovider.NewClient(cfg)
-	if err != nil {
-		return s.runDNSTask(kind, subject, cfg.Provider, func() (string, error) { return "", err })
-	}
-
-	switch kind {
-	case "recover":
-		return s.runDNSTask(kind, subject, cfg.Provider, func() (string, error) {
-			taskCtx, taskCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer taskCancel()
-			return client.Recover(taskCtx)
-		})
-	case "cleanup":
-		return s.runDNSTask(kind, subject, cfg.Provider, func() (string, error) {
-			taskCtx, taskCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer taskCancel()
-			return client.Cleanup(taskCtx)
-		})
-	default:
-		return s.runDNSTask(kind, subject, cfg.Provider, func() (string, error) { return "unsupported task", nil })
-	}
 }
 
 func (s *Servers) collectSystemTasks(ctx context.Context, limit int) []systemTask {

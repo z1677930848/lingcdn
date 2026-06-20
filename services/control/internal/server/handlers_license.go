@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // License HTTP handlers: admin-only status/activate/import endpoints.
 // resolvePublicIP lives here because it is only invoked via the license
@@ -37,6 +37,7 @@ func (s *Servers) handleLicenseStatus(w http.ResponseWriter, r *http.Request) {
 		"license":      st,
 		"active_nodes": len(nodes),
 		"mode":         s.licenseMode(),
+		"portal_base":  s.portalBase(),
 		"now":          time.Now(),
 		"control_id":   strings.TrimSpace(s.cfg.ControlID),
 		"license_ip":   licenseIP,
@@ -87,6 +88,38 @@ func (s *Servers) handleLicenseActivate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	key := strings.TrimSpace(req.LicenseKey)
+	if indexURL := s.staticLicenseIndexURL(); indexURL != "" {
+		st, err := s.lookupLicenseFromStaticIndex(r.Context(), indexURL, key)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "静态授权索引验证失败: " + err.Error()})
+			return
+		}
+		now := time.Now()
+		st.LicenseKey = key
+		st.LastChecked = now
+		st.UpdatedAt = now
+		st.GraceUntil = time.Time{}
+		if st.Status == "" {
+			st.Status = "active"
+		}
+		switch strings.ToLower(strings.TrimSpace(st.Status)) {
+		case "active", "expired", "limited":
+		default:
+			reason := strings.TrimSpace(st.Reason)
+			if reason == "" {
+				reason = "授权不可用"
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": reason})
+			return
+		}
+		s.setLicenseState(st)
+		writeJSON(w, http.StatusOK, map[string]any{"license": st})
+		return
+	}
+	if s.isOfflineLicenseMode() {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "离线授权模式需要配置 LICENSE_STATIC_INDEX_URL"})
+		return
+	}
 	statusCode, verifyResp, err := s.requestPortalLicenseVerify(r.Context(), key)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "官方授权验证失败: " + err.Error()})

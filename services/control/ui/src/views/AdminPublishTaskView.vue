@@ -6,19 +6,23 @@
         <p class="subtitle">任务 ID：{{ taskId || '-' }}</p>
       </div>
       <div class="header-actions">
-        <t-button variant="outline" @click="goBack">返回</t-button>
-        <t-button variant="outline" @click="() => load(true)" :loading="loading">刷新</t-button>
+        <el-button plain @click="goBack">返回</el-button>
+        <el-button plain @click="() => load(true)" :loading="loading">刷新</el-button>
       </div>
     </div>
 
-    <t-card v-if="!taskId" class="section-card" bordered>
+    <el-card v-if="!taskId" class="section-card">
       <div class="section-body">缺少任务 ID 参数</div>
-    </t-card>
+    </el-card>
 
     <template v-else>
-      <t-card class="section-card" bordered>
+      <LoadingState v-if="loading && !task" />
+      <ErrorState v-else-if="error && !task" :message="error" @retry="() => load(true)" />
+      <template v-else>
+      <el-alert v-if="error" theme="error" :message="error" style="margin-bottom: 16px" />
+      <el-card class="section-card">
         <div class="section-body">
-          <div class="meta-row">
+          <div class="meta-strip">
             <span class="meta">版本：{{ task?.version || '-' }}</span>
             <span class="meta">触发：{{ task?.trigger || '-' }}</span>
             <span class="meta">原因：{{ task?.reason || '-' }}</span>
@@ -30,36 +34,35 @@
             </span>
           </div>
 
-          <div class="meta-row">
+          <div class="meta-strip">
             <span class="meta">节点总数：{{ task?.total_nodes ?? 0 }}</span>
             <span class="meta success">成功：{{ task?.success_nodes ?? 0 }}</span>
             <span class="meta danger">失败：{{ task?.failed_nodes ?? 0 }}</span>
             <div class="auto-refresh">
-              <t-switch v-model="autoRefresh" />
+              <el-switch v-model="autoRefresh" />
               <span class="muted">自动刷新（8s）</span>
             </div>
           </div>
         </div>
-      </t-card>
+      </el-card>
 
-      <t-card class="section-card" bordered>
+      <el-card class="section-card">
         <div class="admin-desktop-only">
-          <t-table
+          <EpDataTable
             :data="nodes"
             :columns="columns"
             row-key="node_id"
-            bordered
             hover
             stripe
-            size="medium"
+            size="default"
             :loading="loading"
-            empty="暂无节点"
+            empty-text="暂无节点"
           />
         </div>
 
         <div class="admin-mobile-only">
-          <div v-if="loading" style="text-align:center;padding:24px;color:#94a3b8">加载中…</div>
-          <div v-else-if="nodes.length === 0" style="text-align:center;padding:24px;color:#94a3b8">暂无节点</div>
+          <div v-if="loading" style="text-align:center;padding:24px;color:var(--app-text-faint)">加载中…</div>
+          <div v-else-if="nodes.length === 0" style="text-align:center;padding:24px;color:var(--app-text-faint)">暂无节点</div>
           <div v-else class="admin-mobile-cards">
             <div v-for="row in nodes" :key="row.node_id" class="admin-mobile-card">
               <div class="admin-mobile-card-header">
@@ -86,16 +89,19 @@
             </div>
           </div>
         </div>
-      </t-card>
+      </el-card>
+      </template>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpDataTable from "@/components/ep/EpDataTable.vue"
 import { computed, h, onMounted, onUnmounted, ref } from "vue"
 import { useRoute, useRouter } from "vue-router"
-import { MessagePlugin } from "tdesign-vue-next"
 import { api, type PublishTask, type PublishTaskNode } from "@/lib/api"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const route = useRoute()
 const router = useRouter()
@@ -104,13 +110,14 @@ const taskId = computed(() => String(route.params.id || "").trim())
 const task = ref<PublishTask | null>(null)
 const nodes = ref<PublishTaskNode[]>([])
 const loading = ref(true)
+const error = ref("")
 const autoRefresh = ref(true)
 
 const statusMetaMap: Record<string, { text: string; color: string; bg: string }> = {
-  running: { text: "运行中", color: "#635BFF", bg: "rgba(99, 91, 255, 0.12)" },
-  success: { text: "成功", color: "#1f9d5b", bg: "rgba(31, 157, 91, 0.12)" },
-  failed: { text: "失败", color: "#ef4444", bg: "rgba(245, 34, 45, 0.12)" },
-  unknown: { text: "未知", color: "#cbd5e1", bg: "rgba(203, 213, 225, 0.2)" },
+  running: { text: "运行中", color: "#409EFF", bg: "rgba(64, 158, 255, 0.12)" },
+  success: { text: "成功", color: "var(--app-success-strong)", bg: "rgba(31, 157, 91, 0.12)" },
+  failed: { text: "失败", color: "var(--app-danger)", bg: "rgba(245, 34, 45, 0.12)" },
+  unknown: { text: "未知", color: "var(--app-border-strong)", bg: "rgba(203, 213, 225, 0.2)" },
 }
 
 const statusMeta = computed(() => statusMetaMap[task.value?.status || "unknown"] || statusMetaMap.unknown)
@@ -122,8 +129,9 @@ const load = async (showLoading = true) => {
     const res = await api.getPublishTask(taskId.value)
     task.value = res.task || null
     nodes.value = res.nodes || []
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载发布任务失败")
+    error.value = ""
+  } catch (err: unknown) {
+    error.value = err instanceof Error ? err.message : "加载发布任务失败"
   } finally {
     if (showLoading) loading.value = false
   }
@@ -187,54 +195,3 @@ onUnmounted(() => {
   if (timer) clearInterval(timer)
 })
 </script>
-
-<style scoped>
-.header-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.meta-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.meta {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.success {
-  color: #1f9d5b;
-}
-
-.danger {
-  color: #ef4444;
-}
-
-.badge {
-  padding: 2px 8px;
-  border-radius: 8px;
-  font-size: 12px;
-}
-
-.auto-refresh {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.muted {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-@media (max-width: 768px) {
-  .meta-row {
-    flex-direction: column;
-    gap: 6px;
-  }
-}
-</style>

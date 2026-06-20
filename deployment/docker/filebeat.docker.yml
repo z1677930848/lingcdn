@@ -1,0 +1,43 @@
+filebeat.inputs:
+  - type: filestream
+    id: lingcdn-access
+    enabled: true
+    paths:
+      - /var/log/lingcdn/access.log
+    parsers:
+      - ndjson:
+          target: ""
+          overwrite_keys: true
+          add_error_key: true
+          expand_keys: true
+    fields:
+      log_source: lingcdn
+    fields_under_root: true
+
+  - type: filestream
+    id: lingcdn-error
+    enabled: true
+    paths:
+      - /var/log/lingcdn/error.log
+    parsers:
+      - ndjson:
+          target: ""
+          overwrite_keys: true
+          add_error_key: true
+          expand_keys: true
+    fields:
+      log_source: lingcdn
+    fields_under_root: true
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  index: "cdn-access-%{+yyyy.MM.dd}"
+
+setup.template.name: "cdn-access"
+setup.template.pattern: "cdn-access-*"
+setup.template.enabled: true
+setup.template.overwrite: false
+setup.ilm.enabled: false
+
+logging.level: info
+logging.to_stderr: true

@@ -16,6 +16,7 @@ mod ops_listener;
 mod http_types;
 mod limited_body;
 mod purge;
+mod preload;
 mod config_agent;
 mod certificate_manager;
 mod cert_store;
@@ -25,6 +26,13 @@ mod xdp;
 mod log_reporter;
 mod node_state;
 mod origin_health;
+mod stream_listener;
+mod stream_proxy;
+mod edge_enhance;
+mod edge_script;
+mod l2_fetch;
+mod media;
+mod stream_health;
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -45,8 +53,11 @@ use crate::config_agent::ConfigAgent;
 use crate::grpc_client::GrpcClient;
 use crate::listener::Listener;
 use crate::ops_listener::OpsListener;
+use crate::stream_listener::StreamListener;
+use crate::stream_health::StreamHealthChecker;
 use crate::metrics::Metrics;
 use crate::purge::PurgeAgent;
+use crate::preload::PreloadAgent;
 use crate::proxy::{ProxyService, BanEvent};
 use crate::telemetry::TelemetryReporter;
 use crate::certificate_manager::CertificateManager;
@@ -441,7 +452,13 @@ async fn main() -> Result<()> {
     if node_config.tls_enabled && cert_store.is_none() && runtime_config.certificates.is_empty() {
         if let Some(ref node_id) = node_config.node_id {
             let mut cert_manager = CertificateManager::new(base_grpc_client.clone());
-            match cert_manager.request_certificates(node_id, &runtime_config.domains).await {
+            // `token` is required by control plane's RequestCertificate
+            // (node_control.go::validateNodeToken). Previously this call
+            // path was dead because the token was hard-coded to "".
+            match cert_manager
+                .request_certificates(node_id, &register_response.token, &runtime_config.domains)
+                .await
+            {
                 Ok(new_certs) => {
                     if new_certs.is_empty() {
                         warn!("未获取到新的证书，TLS 可能不可用");
@@ -559,7 +576,11 @@ async fn main() -> Result<()> {
     });
 
     // Start telemetry reporter
-    let telemetry_reporter = TelemetryReporter::new(metrics.clone(), 60);
+    // 10s cadence gives the control plane near-real-time CPU/memory
+    // readings (previously hardcoded to 60s, so the admin dashboard saw
+    // a stale snapshot at best and zeros if the CPU sample interval bug
+    // in telemetry.rs::system_snapshot was active).
+    let telemetry_reporter = TelemetryReporter::new(metrics.clone(), 10);
     let telemetry_handle = tokio::spawn({
         let grpc_client_for_telemetry = base_grpc_client.clone();
         let node_id_for_telemetry = register_response.node_id.clone();
@@ -595,6 +616,37 @@ async fn main() -> Result<()> {
         }
     });
 
+    let proxy_for_preload = proxy_service.clone();
+    let grpc_client_for_preload = base_grpc_client.clone();
+    let node_id_for_preload = register_response.node_id.clone();
+    let token_for_preload = register_response.token.clone();
+    let mut preload_shutdown = shutdown_tx.subscribe();
+    let _preload_handle = tokio::spawn(async move {
+        let mut backoff_secs = 5u64;
+        loop {
+            let agent = PreloadAgent::new(proxy_for_preload.clone());
+            match agent
+                .start(
+                    grpc_client_for_preload.clone(),
+                    node_id_for_preload.clone(),
+                    token_for_preload.clone(),
+                    preload_shutdown.resubscribe(),
+                )
+                .await
+            {
+                Ok(_) => break,
+                Err(e) => {
+                    error!("Preload agent error: {:#}, retrying in {}s", e, backoff_secs);
+                    tokio::select! {
+                        _ = sleep(Duration::from_secs(backoff_secs)) => {}
+                        _ = preload_shutdown.recv() => break,
+                    }
+                    backoff_secs = (backoff_secs.saturating_mul(2)).min(60);
+                }
+            }
+        }
+    });
+
     // Start listener
     let listener = Listener::new(
         node_config.listen_addr.clone(),
@@ -619,6 +671,26 @@ async fn main() -> Result<()> {
         }
     });
 
+    // L4 stream health checker + forwarding listener
+    let stream_health = Arc::new(StreamHealthChecker::new(config_holder.clone()));
+    let _stream_health_handle = tokio::spawn({
+        let checker = stream_health.clone();
+        let shutdown = shutdown_tx.subscribe();
+        async move {
+            checker.run(shutdown).await;
+        }
+    });
+
+    let stream_listener = Arc::new(StreamListener::new(config_holder.clone(), stream_health.clone()));
+    let stream_listener_handle = tokio::spawn({
+        let shutdown = shutdown_tx.subscribe();
+        async move {
+            if let Err(e) = stream_listener.start(shutdown).await {
+                error!("Stream listener error: {}", e);
+            }
+        }
+    });
+
     // Wait for shutdown signal
     signal::ctrl_c().await?;
     info!("Shutdown signal received");
@@ -634,6 +706,14 @@ async fn main() -> Result<()> {
             Err(e) => warn!("Listener task join error: {}", e),
         },
         Err(_) => warn!("Timeout waiting for listener to shut down"),
+    }
+
+    match timeout(shutdown_timeout, stream_listener_handle).await {
+        Ok(join_result) => match join_result {
+            Ok(()) => {}
+            Err(e) => warn!("Stream listener task join error: {}", e),
+        },
+        Err(_) => warn!("Timeout waiting for stream listener to shut down"),
     }
 
     match timeout(shutdown_timeout, ops_listener_handle).await {
@@ -815,7 +895,15 @@ async fn start_heartbeat(
     upgrade_cmd_tx: Option<tokio::sync::mpsc::Sender<UpgradeTrigger>>,
     proxy_service: Arc<ProxyService>,
 ) {
+    // Default `MissedTickBehavior` is Burst: if the previous iteration
+    // took longer than 30s (slow gRPC call, suspended VM, tokio-runtime
+    // starvation under load), tick() returns immediately for every
+    // missed period, triggering a burst of back-to-back heartbeats that
+    // the control plane then has to de-duplicate. Delay "resets the
+    // clock" after each tick, which is what a heartbeat loop actually
+    // wants — one beat per interval, no catch-up storms.
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut consecutive_failures: u32 = 0;
 
     loop {

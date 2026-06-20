@@ -1,65 +1,69 @@
 ﻿<template>
   <div class="settings-tab">
-    <t-form layout="vertical" label-align="top" :disabled="loading || saving">
-      <t-form-item label="通知间隔">
+    <ErrorState v-if="error" :message="error" @retry="loadSettings" />
+    <LoadingState v-else-if="loading" />
+    <el-form v-else label-position="top" :disabled="saving">
+      <el-form-item label="通知间隔">
         <div class="input-with-unit">
-          <t-input-number v-model="settings.notify_interval" :min="0" />
+          <el-input-number v-model="settings.notify_interval" :min="0" />
           <span class="unit">分钟</span>
         </div>
         <div class="hint">通知同一节点后，下次通知间隔，输入 0 表示实时通知</div>
-      </t-form-item>
+      </el-form-item>
 
-      <t-form-item label="节点 CPU 阈值">
+      <el-form-item label="节点 CPU 阈值">
         <div class="input-with-unit">
-          <t-input-number v-model="settings.threshold_cpu" :min="0" :max="100" />
+          <el-input-number v-model="settings.threshold_cpu" :min="0" :max="100" />
           <span class="unit">%</span>
         </div>
         <div class="hint">超过即触发通知，输入 0 表示不启用</div>
-      </t-form-item>
+      </el-form-item>
 
-      <t-form-item label="节点内存阈值">
+      <el-form-item label="节点内存阈值">
         <div class="input-with-unit">
-          <t-input-number v-model="settings.threshold_memory" :min="0" :max="100" />
+          <el-input-number v-model="settings.threshold_memory" :min="0" :max="100" />
           <span class="unit">%</span>
         </div>
         <div class="hint">超过即触发通知，输入 0 表示不启用</div>
-      </t-form-item>
+      </el-form-item>
 
-      <t-form-item label="节点磁盘阈值">
+      <el-form-item label="节点磁盘阈值">
         <div class="input-with-unit">
-          <t-input-number v-model="settings.threshold_disk" :min="0" :max="100" />
+          <el-input-number v-model="settings.threshold_disk" :min="0" :max="100" />
           <span class="unit">%</span>
         </div>
         <div class="hint">超过即触发通知，输入 0 表示不启用</div>
-      </t-form-item>
+      </el-form-item>
 
-      <t-form-item label="节点带宽（上行）阈值">
+      <el-form-item label="节点带宽（上行）阈值">
         <div class="input-with-unit">
-          <t-input-number v-model="settings.threshold_bandwidth_up" :min="0" />
+          <el-input-number v-model="settings.threshold_bandwidth_up" :min="0" />
           <span class="unit">KB/s</span>
         </div>
         <div class="hint">超过即触发通知，输入 0 表示不启用</div>
-      </t-form-item>
+      </el-form-item>
 
-      <t-form-item label="节点带宽（下行）阈值">
+      <el-form-item label="节点带宽（下行）阈值">
         <div class="input-with-unit">
-          <t-input-number v-model="settings.threshold_bandwidth_down" :min="0" />
+          <el-input-number v-model="settings.threshold_bandwidth_down" :min="0" />
           <span class="unit">KB/s</span>
         </div>
         <div class="hint">超过即触发通知，输入 0 表示不启用</div>
-      </t-form-item>
+      </el-form-item>
 
       <div class="actions">
-        <t-button theme="primary" @click="handleSave" :loading="saving">保存</t-button>
+        <el-button type="primary" @click="handleSave" :loading="saving">保存</el-button>
       </div>
-    </t-form>
+    </el-form>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
 import { api } from "@/lib/api"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 type ThresholdSettings = {
   notify_interval: number
@@ -80,11 +84,13 @@ const settings = ref<ThresholdSettings>({
 })
 
 const loading = ref(false)
+const error = ref("")
 const saving = ref(false)
 
 const loadSettings = async () => {
   try {
     loading.value = true
+    error.value = ""
     const { settings: data } = await api.getSettings()
     if (data) {
       settings.value = {
@@ -96,8 +102,9 @@ const loadSettings = async () => {
         threshold_bandwidth_down: Number(data.threshold_bandwidth_down ?? 0),
       }
     }
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载设置失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载设置失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -119,37 +126,4 @@ onMounted(() => {
   loadSettings()
 })
 </script>
-
-<style scoped>
-.input-with-unit {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.unit {
-  font-size: 12px;
-  color: var(--app-text-faint);
-}
-
-.hint {
-  font-size: 12px;
-  color: var(--app-text-faint);
-  margin-top: 6px;
-}
-
-.actions {
-  margin-top: 12px;
-}
-
-@media (max-width: 768px) {
-  .input-with-unit {
-    width: 100%;
-  }
-
-  .input-with-unit :deep(.t-input-number) {
-    flex: 1;
-  }
-}
-</style>
 

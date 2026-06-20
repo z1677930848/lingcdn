@@ -63,8 +63,29 @@ func (s *Service) PurgeURLs(ctx context.Context, urls []string) error {
 }
 
 func (s *Service) PurgeURLsWithID(ctx context.Context, urls []string) (string, error) {
-	if len(urls) == 0 {
-		return "", fmt.Errorf("no URLs to purge")
+	return s.PurgeWithOptions(ctx, "url", urls, nil, nil)
+}
+
+// PurgeWithOptions dispatches purge by url, prefix, or tag.
+func (s *Service) PurgeWithOptions(ctx context.Context, purgeType string, urls, prefixes, tags []string) (string, error) {
+	if purgeType == "" {
+		purgeType = "url"
+	}
+	switch purgeType {
+	case "url":
+		if len(urls) == 0 {
+			return "", fmt.Errorf("no URLs to purge")
+		}
+	case "prefix":
+		if len(prefixes) == 0 {
+			return "", fmt.Errorf("no prefixes to purge")
+		}
+	case "tag":
+		if len(tags) == 0 {
+			return "", fmt.Errorf("no tags to purge")
+		}
+	default:
+		return "", fmt.Errorf("unsupported purge type: %s", purgeType)
 	}
 
 	requestID := uuid.NewString()
@@ -76,34 +97,36 @@ func (s *Service) PurgeURLsWithID(ctx context.Context, urls []string) (string, e
 		Results:   make(map[string]*NodePurgeResult),
 	}
 
-	// Store request for tracking
 	s.mu.Lock()
 	s.requests[requestID] = req
 	s.mu.Unlock()
 	s.persistRequest(req)
 
-	// Get all connected nodes
 	nodeIDs := s.hub.ListNodeIDs()
 	req.TotalNodes = len(nodeIDs)
 
 	if len(nodeIDs) == 0 {
 		log.Ctx(ctx).Warn().Msg("no nodes connected for purge")
-		return "", fmt.Errorf("no nodes connected")
+		return requestID, fmt.Errorf("no nodes connected")
+	}
+
+	cmd := &controlpb.PurgeCommand{
+		Urls:      urls,
+		RequestId: requestID,
+		PurgeType: purgeType,
+		Prefixes:  prefixes,
+		Tags:      tags,
 	}
 
 	log.Ctx(ctx).Info().
 		Str("request_id", requestID).
+		Str("type", purgeType).
 		Int("urls", len(urls)).
+		Int("prefixes", len(prefixes)).
+		Int("tags", len(tags)).
 		Int("nodes", len(nodeIDs)).
 		Msg("starting purge operation")
 
-	// Build purge command
-	cmd := &controlpb.PurgeCommand{
-		Urls:      urls,
-		RequestId: requestID,
-	}
-
-	// Send to all nodes
 	var mu sync.Mutex
 	_ = taskutils.RunConcurrent(ctx, nodeIDs, defaultPurgeConcurrency, func(ctx context.Context, nid string) error {
 		resultCh := make(chan *controlpb.PurgeResult, 1)
@@ -164,7 +187,6 @@ func (s *Service) PurgeURLsWithID(ctx context.Context, urls []string) (string, e
 	req.CompletedAt = time.Now()
 	s.persistRequest(req)
 
-	// Count successes and failures
 	successCount := 0
 	failCount := 0
 	for _, result := range req.Results {

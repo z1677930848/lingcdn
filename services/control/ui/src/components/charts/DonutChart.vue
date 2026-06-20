@@ -56,30 +56,3 @@ const percentText = computed(() => `${(clamped.value * 100).toFixed(2)}%`)
 export default { name: "DonutChart" }
 </script>
 
-<style scoped>
-.donut-wrap {
-  position: relative;
-}
-
-.donut-center {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.donut-percent {
-  font-size: 26px;
-  font-weight: 700;
-  color: var(--app-text-strong);
-  font-variant-numeric: tabular-nums;
-}
-
-.donut-label {
-  font-size: 12px;
-  color: var(--app-text-faint);
-}
-</style>

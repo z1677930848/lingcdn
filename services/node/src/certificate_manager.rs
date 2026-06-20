@@ -16,9 +16,14 @@ impl CertificateManager {
     }
 
     /// Request certificates for domains missing TLS material; returns configs keyed by domain.
+    ///
+    /// `token` is the per-node token handed out by RegisterNode — the control
+    /// plane's RequestCertificate rejects empty tokens (previously this
+    /// function passed "" and the entire self-heal path was dead code).
     pub async fn request_certificates(
         &mut self,
         node_id: &str,
+        token: &str,
         domains: &[DomainConfig],
     ) -> Result<HashMap<String, CertificateConfig>> {
         let mut generated = HashMap::new();
@@ -28,7 +33,7 @@ impl CertificateManager {
 
             match self
                 .client
-                .request_certificate(node_id, &domain.name, csr.csr_pem.clone())
+                .request_certificate(node_id, token, &domain.name, csr.csr_pem.clone())
                 .await
             {
                 Ok(resp) => {

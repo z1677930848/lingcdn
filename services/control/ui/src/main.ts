@@ -1,13 +1,22 @@
-﻿import { createApp } from "vue"
+import { createApp } from "vue"
 import { createPinia } from "pinia"
-import TDesign from "tdesign-vue-next"
+import ElementPlus from "element-plus"
+import zhCn from "element-plus/es/locale/lang/zh-cn"
 import { MotionPlugin } from "@vueuse/motion"
-import "tdesign-vue-next/es/style/index.css"
+import "element-plus/dist/index.css"
 import "./styles/tokens.css"
-import "./styles/tdesign-theme.css"
+import "./styles/element-plus-theme.css"
 import "./styles/globals.css"
 import "./styles/shared.css"
+import "./styles/layout.css"
+import "./styles/components.css"
+import "./styles/settings.css"
+import "./styles/admin-views.css"
+import "./styles/domain-detail.css"
 import "./styles/admin-shared.css"
+import "./styles/overview.css"
+import "./styles/dashboard.css"
+import "./styles/pages.css"
 import "./styles/auth.css"
 import App from "./App.vue"
 import router from "./router"
@@ -16,11 +25,7 @@ const app = createApp(App)
 
 app.use(createPinia())
 app.use(router)
-app.use(TDesign)
-// MotionPlugin enables the `v-motion` directive used by the dashboard
-// hero/cards for entrance animations. It respects prefers-reduced-motion
-// out of the box, so users with motion preferences disabled see static
-// layouts. Lightweight (~6KB) and tree-shakeable.
+app.use(ElementPlus, { locale: zhCn })
 app.use(MotionPlugin)
 
 app.mount("#app")
@@ -31,4 +36,3 @@ if (boot) {
   boot.style.opacity = "0"
   setTimeout(() => boot.remove(), 280)
 }
-

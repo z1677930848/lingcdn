@@ -5,10 +5,86 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/lingcdn/control/internal/store"
 )
+
+// trustedProxyNets is an atomic snapshot of the parsed TrustedProxies config.
+// It's consulted by getRequestIP to decide whether X-Forwarded-For /
+// X-Real-IP from the current peer may be trusted. Kept as an atomic value
+// so we don't need a mutex on every request.
+var trustedProxyNets atomic.Pointer[[]*net.IPNet]
+
+// setTrustedProxies replaces the trusted-proxy CIDR list used by
+// getRequestIP. The string is the same format accepted by cfg.TrustedProxies:
+// comma-separated CIDR or bare IP entries. Invalid entries are dropped with
+// no error to keep startup resilient; callers that want to surface parse
+// errors should call parseTrustedProxies directly.
+func setTrustedProxies(list string) {
+	nets := parseTrustedProxies(list)
+	// Store a pointer to the slice (may be empty); nil means "no trusted
+	// proxies configured, ignore XFF entirely".
+	if len(nets) == 0 {
+		var empty []*net.IPNet
+		trustedProxyNets.Store(&empty)
+		return
+	}
+	trustedProxyNets.Store(&nets)
+}
+
+// parseTrustedProxies parses a comma-separated list of CIDR blocks or bare
+// IPs into *net.IPNet entries. A bare IP "a.b.c.d" becomes "a.b.c.d/32" and
+// "::1" becomes "::1/128". Invalid tokens are skipped.
+func parseTrustedProxies(list string) []*net.IPNet {
+	var out []*net.IPNet
+	for _, raw := range strings.Split(list, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		if !strings.Contains(entry, "/") {
+			if ip := net.ParseIP(entry); ip != nil {
+				if ip4 := ip.To4(); ip4 != nil {
+					entry = ip4.String() + "/32"
+				} else {
+					entry = ip.String() + "/128"
+				}
+			}
+		}
+		_, ipnet, err := net.ParseCIDR(entry)
+		if err != nil || ipnet == nil {
+			continue
+		}
+		out = append(out, ipnet)
+	}
+	return out
+}
+
+// isTrustedProxyIP reports whether ip belongs to any of the configured
+// trusted-proxy CIDRs. Loopback addresses (127.0.0.1 / ::1) are always
+// treated as trusted so a co-located Nginx reverse proxy works out of the
+// box without TRUSTED_PROXIES — external clients still cannot spoof XFF
+// because their TCP peer is never loopback.
+func isTrustedProxyIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	ptr := trustedProxyNets.Load()
+	if ptr == nil {
+		return false
+	}
+	for _, n := range *ptr {
+		if n != nil && n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 // handleAdminSystemLogs lists system logs for admin.
 func (s *Servers) handleAdminSystemLogs(w http.ResponseWriter, r *http.Request) {
@@ -169,23 +245,57 @@ func (s *Servers) resolveIPLocation(ip string) string {
 	return strings.TrimSpace(strings.Join(parts, " / "))
 }
 
-// getRequestIP extracts client IP from common proxy headers.
+// getRequestIP extracts the client IP honoring the TrustedProxies config.
+//
+// Security note: when the immediate TCP peer is not a trusted proxy we MUST
+// NOT look at X-Forwarded-For / X-Real-IP, because a client can send
+// "X-Forwarded-For: <random>" to rotate through rate-limiter buckets.
+// Loopback peers (same-host Nginx) are always trusted. Additional CIDRs
+// (CDN / upstream LB) can be listed in TRUSTED_PROXIES.
 func getRequestIP(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
+	peer := remoteAddrIP(r)
+	// When no trusted proxies are configured we simply use the peer IP.
+	// This is the correct default for a control plane reachable directly,
+	// and it also guarantees that a misconfigured deployment fails-closed
+	// rather than fails-open for the rate limiters.
+	if !isTrustedProxyIP(net.ParseIP(peer)) {
+		return peer
+	}
+
+	// Peer is a trusted proxy — honor X-Forwarded-For, walking the chain
+	// from right (closest hop) to left (originating client). The first
+	// entry that's NOT itself a trusted proxy is the real client IP.
 	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
 		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			ip := strings.TrimSpace(parts[0])
-			if ip != "" {
-				return ip
+		for i := len(parts) - 1; i >= 0; i-- {
+			candidate := strings.TrimSpace(parts[i])
+			if candidate == "" {
+				continue
+			}
+			ip := net.ParseIP(candidate)
+			if ip == nil {
+				continue
+			}
+			if !isTrustedProxyIP(ip) {
+				return candidate
 			}
 		}
+		// All entries were trusted proxies (unusual) — fall through to
+		// X-Real-IP / RemoteAddr rather than returning a proxy address.
 	}
 	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
 		return xr
 	}
+	return peer
+}
+
+// remoteAddrIP returns the host portion of r.RemoteAddr, trimmed of any
+// port suffix and surrounding whitespace. It's the IP of the immediate
+// TCP peer and is never influenced by headers.
+func remoteAddrIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err == nil && host != "" {
 		return host

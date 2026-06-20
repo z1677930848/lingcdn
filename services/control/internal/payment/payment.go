@@ -95,8 +95,8 @@ func (m *mockProvider) VerifyCallback(r *http.Request) (*CallbackResult, error) 
 	amountStr := r.FormValue("amount_cents")
 	var amountCents int64
 	fmt.Sscanf(amountStr, "%d", &amountCents)
-	if amountCents == 0 {
-		amountCents = 10000 // default fallback for testing
+	if amountCents <= 0 {
+		return nil, fmt.Errorf("missing or invalid amount_cents")
 	}
 	return &CallbackResult{
 		OutTradeNo:  outTradeNo,

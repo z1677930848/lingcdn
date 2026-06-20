@@ -30,24 +30,35 @@ func (s *Servers) adminMux() http.Handler {
 	mux.HandleFunc("/api/auth/password/reset/confirm", rateLimit(s.authLimiter, "too many reset attempts, try again later", s.handlePasswordResetConfirm))
 	mux.HandleFunc("/api/auth/captcha", s.handleCaptcha)
 	mux.HandleFunc("/api/auth/me", s.withAuth(s.handleMe))
+	mux.HandleFunc("/api/auth/logout", s.withAuth(s.handleLogout))
 	mux.HandleFunc("/api/auth/password/change", s.withAuth(s.handleChangePassword))
 	mux.HandleFunc("/api/public/settings", s.handlePublicSettings)
 	mux.HandleFunc("/api/public/announcements", s.handlePublicAnnouncements)
 	mux.HandleFunc("/api/public/license/status", s.handlePublicLicenseStatus)
-	mux.HandleFunc("/api/settings", s.withAuth(s.handleSettings))
+	// Offline-only local bundle distribution for node install (LICENSE_MODE=offline).
+	mux.HandleFunc("/local/node_install.sh", s.handleLocalNodeInstallScript)
+	mux.HandleFunc("/api/local/upgrade/latest", s.handleLocalUpgradeLatest)
+	mux.HandleFunc("/api/local/bundles/", s.handleLocalBundleDownload)
+	mux.HandleFunc("/api/admin/local-bundles", s.withAdmin(s.handleAdminLocalBundles))
+	mux.HandleFunc("/api/admin/local-bundles/", s.withAdmin(s.handleAdminLocalBundleDelete))
+	mux.HandleFunc("/api/admin/control-domain", s.withAdmin(s.handleControlDomainInfo))
+	mux.HandleFunc("/api/admin/control-domain/verify", s.withAdmin(s.handleControlDomainVerify))
+	mux.HandleFunc("/api/settings", s.withAdmin(s.handleSettings))
 
 	// API Tokens
-	mux.HandleFunc("/api/api-tokens", s.withAuth(s.handleAPITokens))
-	mux.HandleFunc("/api/api-tokens/", s.withAuth(s.handleAPITokenByID))
+	mux.HandleFunc("/api/api-tokens", s.withAdmin(s.handleAPITokens))
+	mux.HandleFunc("/api/api-tokens/", s.withAdmin(s.handleAPITokenByID))
 
 	// Domain Blacklist
-	mux.HandleFunc("/api/domain-blacklist", s.withAuth(s.handleDomainBlacklist))
-	mux.HandleFunc("/api/domain-blacklist/", s.withAuth(s.handleDomainBlacklistByID))
+	mux.HandleFunc("/api/domain-blacklist", s.withAdmin(s.handleDomainBlacklist))
+	mux.HandleFunc("/api/domain-blacklist/", s.withAdmin(s.handleDomainBlacklistByID))
 
 	// Users
-	mux.HandleFunc("/api/users", s.withAuth(s.handleUsers))
-	mux.HandleFunc("/api/users/bulk", s.withAuth(s.handleUsersBulk))
-	mux.HandleFunc("/api/users/", s.withAuth(s.handleUserByID))
+	mux.HandleFunc("/api/users", s.withAdmin(s.handleUsers))
+	mux.HandleFunc("/api/users/bulk", s.withAdmin(s.handleUsersBulk))
+	mux.HandleFunc("/api/users/", s.withAdmin(s.handleUserByID))
+	mux.HandleFunc("/api/admin/user-groups", s.withAdmin(s.handleAdminUserGroups))
+	mux.HandleFunc("/api/admin/user-groups/", s.withAdmin(s.handleAdminUserGroupByID))
 
 	// Products (plans)
 	mux.HandleFunc("/api/product-groups", s.withAuth(s.handleProductGroups))
@@ -55,8 +66,8 @@ func (s *Servers) adminMux() http.Handler {
 	mux.HandleFunc("/api/products", s.withAuth(s.handleProducts))
 	mux.HandleFunc("/api/products/", s.withAuth(s.handleProductByID))
 
-	// Overview
-	mux.HandleFunc("/api/overview", s.withAuth(s.handleOverview))
+	// Overview — full platform stats; admin-only (see handleOverview).
+	mux.HandleFunc("/api/overview", s.withAdmin(s.handleOverview))
 
 	// User balance API
 	mux.HandleFunc("/api/balance/account", s.withAuth(s.handleBalanceAccount))
@@ -66,10 +77,14 @@ func (s *Servers) adminMux() http.Handler {
 
 	// Payment callbacks (no auth, signature verified by provider)
 	mux.HandleFunc("/api/payments/notify/", s.handlePaymentNotify)
-	mux.HandleFunc("/api/payments/mock/", s.handlePaymentMock)
+	mux.HandleFunc("/api/payments/mock/", s.withAuth(s.handlePaymentMock))
 
 	// User orders API
 	mux.HandleFunc("/api/user/orders", s.withAuth(s.handleUserOrders))
+
+	// Support tickets
+	mux.HandleFunc("/api/tickets", s.withAuth(s.handleTickets))
+	mux.HandleFunc("/api/tickets/", s.withAuth(s.handleTicketByID))
 
 	// Admin API. Every /api/admin/* endpoint is gated by withAdmin (which
 	// layers on withAuth) as the single source of truth. Handlers that also
@@ -79,7 +94,7 @@ func (s *Servers) adminMux() http.Handler {
 	// particular was previously only behind withAuth, which let any
 	// authenticated user see aggregate counts (users/domains/licenses); that
 	// leak is closed here.
-	mux.HandleFunc("/api/admin/ping", s.withAuth(s.handlePing))
+	mux.HandleFunc("/api/admin/ping", s.withAdmin(s.handlePing))
 	mux.HandleFunc("/api/admin/stats", s.withAdmin(s.handleAdminStats))
 	mux.HandleFunc("/api/admin/logs", s.withAdmin(s.handleAdminSystemLogs))
 	mux.HandleFunc("/api/system/info", s.withAuth(s.handleSystemInfo))
@@ -87,6 +102,8 @@ func (s *Servers) adminMux() http.Handler {
 	mux.HandleFunc("/api/admin/announcements/", s.withAdmin(s.handleAdminAnnouncementByID))
 	mux.HandleFunc("/api/admin/orders", s.withAdmin(s.handleAdminOrders))
 	mux.HandleFunc("/api/admin/orders/", s.withAdmin(s.handleAdminOrderByID))
+	mux.HandleFunc("/api/admin/tickets", s.withAdmin(s.handleAdminTickets))
+	mux.HandleFunc("/api/admin/tickets/", s.withAdmin(s.handleAdminTicketByID))
 	mux.HandleFunc("/api/admin/balance/accounts", s.withAdmin(s.handleAdminBalanceAccounts))
 	mux.HandleFunc("/api/admin/balance/recharges", s.withAdmin(s.handleAdminBalanceRecharges))
 	mux.HandleFunc("/api/admin/balance/recharges/", s.withAdmin(s.handleAdminBalanceRechargeByID))
@@ -98,19 +115,24 @@ func (s *Servers) adminMux() http.Handler {
 	// Nodes API
 	mux.HandleFunc("/api/nodes", s.withAuth(s.handleNodes))
 	mux.HandleFunc("/api/nodes/", s.withAuth(s.handleNodeByID))
-	mux.HandleFunc("/api/nodes/overview", s.withAuth(s.handleNodesOverview))
-	mux.HandleFunc("/api/nodes/install-command", s.withAuth(s.handleNodeInstallCommand))
-	mux.HandleFunc("/api/nodes/install-ssh", s.withAuth(s.handleNodeInstallSSH))
-	mux.HandleFunc("/api/nodes/bootstrap-token", s.withAuth(s.handleNodeBootstrapToken))
-	mux.HandleFunc("/api/nodes/monitor/rank", s.withAuth(s.handleNodeMonitorRank))
-	mux.HandleFunc("/api/nodes/monitor/series", s.withAuth(s.handleNodeMonitorSeries))
-	mux.HandleFunc("/api/nodes/monitor/stream", s.withAuth(s.handleNodeMonitorStream))
+	mux.HandleFunc("/api/nodes/overview", s.withAdmin(s.handleNodesOverview))
+	mux.HandleFunc("/api/nodes/install-command", s.withAdmin(s.handleNodeInstallCommand))
+	mux.HandleFunc("/api/nodes/install-ssh", s.withAdmin(s.handleNodeInstallSSH))
+	mux.HandleFunc("/api/nodes/bootstrap-token", s.withAdmin(s.handleNodeBootstrapToken))
+	mux.HandleFunc("/api/nodes/monitor/rank", s.withAdmin(s.handleNodeMonitorRank))
+	mux.HandleFunc("/api/nodes/monitor/series", s.withAdmin(s.handleNodeMonitorSeries))
+	mux.HandleFunc("/api/nodes/monitor/stream", s.withAdmin(s.handleNodeMonitorStream))
 
 	// Domains API
 	mux.HandleFunc("/api/domains", s.withAuth(s.handleDomains))
 	mux.HandleFunc("/api/domains/", s.withAuth(s.handleDomainByID))
-	mux.HandleFunc("/api/domains/health/metrics", s.withAuth(s.handleDomainHealthMetrics))
-	mux.HandleFunc("/api/domains/health/rank", s.withAuth(s.handleDomainHealthRank))
+	mux.HandleFunc("/api/domains/health/metrics", s.withAdmin(s.handleDomainHealthMetrics))
+	mux.HandleFunc("/api/domains/health/rank", s.withAdmin(s.handleDomainHealthRank))
+
+	// L4 stream forwarding API
+	mux.HandleFunc("/api/stream-forwards", s.withAuth(s.handleStreamForwards))
+	mux.HandleFunc("/api/stream-forwards/", s.withAuth(s.handleStreamForwardByID))
+	mux.HandleFunc("/api/admin/stream-forwards", s.withAdmin(s.handleAdminStreamForwards))
 
 	// Origins API
 	mux.HandleFunc("/api/origins", s.withAuth(s.handleOrigins))
@@ -122,28 +144,41 @@ func (s *Servers) adminMux() http.Handler {
 	mux.HandleFunc("/api/certificates/acme", s.withAuth(s.handleACMECertificate))
 
 	// Cache Rules API
-	mux.HandleFunc("/api/cache-rules", s.withAuth(s.handleCacheRules))
-	mux.HandleFunc("/api/cache-rules/", s.withAuth(s.handleCacheRuleByID))
+	// Cache rules, publish, purge, version history are fleet-wide admin
+	// operations. They must not be exposed to tenant users: previously
+	// gated only by withAuth, which let any logged-in user mutate global
+	// cache behaviour or trigger a fleet publish/purge. Promoted to
+	// withAdmin so the middleware rejects non-admins before the handler.
+	mux.HandleFunc("/api/cache-rules", s.withAdmin(s.handleCacheRules))
+	mux.HandleFunc("/api/cache-rules/", s.withAdmin(s.handleCacheRuleByID))
 
 	// Config API
-	mux.HandleFunc("/api/config/publish", s.withAuth(s.handlePublish))
-	mux.HandleFunc("/api/config/versions", s.withAuth(s.handleConfigVersions))
+	mux.HandleFunc("/api/config/publish", s.withAdmin(s.handlePublish))
+	mux.HandleFunc("/api/config/versions", s.withAdmin(s.handleConfigVersions))
 
 	// Purge API
-	mux.HandleFunc("/api/purge", s.withAuth(s.handlePurge))
-	mux.HandleFunc("/api/purge/", s.withAuth(s.handlePurgeByID))
+	mux.HandleFunc("/api/purge", s.withAdmin(s.handlePurge))
+	mux.HandleFunc("/api/purge/", s.withAdmin(s.handlePurgeByID))
+	mux.HandleFunc("/api/preload", s.withAdmin(s.handlePreload))
+	mux.HandleFunc("/api/preload/", s.withAdmin(s.handlePreloadByID))
 
-	// DNS API
-	mux.HandleFunc("/api/dns/config", s.withAuth(s.handleDNSConfig))
-	mux.HandleFunc("/api/dns/providers", s.withAuth(s.handleDNSProviders))
-	mux.HandleFunc("/api/dns/config/recover", s.withAuth(s.handleDNSRecover))
-	mux.HandleFunc("/api/dns/config/cleanup", s.withAuth(s.handleDNSCleanup))
-	mux.HandleFunc("/api/dns/sync", s.withAuth(s.handleDNSSync))
-	mux.HandleFunc("/api/dns/provider-options", s.withAuth(s.handleDNSProviderOptions))
-	mux.HandleFunc("/api/dns/domain-options", s.withAuth(s.handleDNSDomainOptions))
-	mux.HandleFunc("/api/dns/provider-domains", s.withAuth(s.handleDNSProviderDomains))
-	mux.HandleFunc("/api/dns/lines", s.withAuth(s.handleDNSLines))
-	mux.HandleFunc("/api/dns/tasks", s.withAuth(s.handleDNSTasks))
+	// DNS API — every endpoint carries provider credentials or triggers
+	// destructive provider-side operations (recover/cleanup delete real
+	// DNS records). Must be admin-only. The previous withAuth gating let
+	// any authenticated tenant read DNS provider tokens and nuke records.
+	mux.HandleFunc("/api/dns/config", s.withAdmin(s.handleDNSConfig))
+	mux.HandleFunc("/api/dns/providers", s.withAdmin(s.handleDNSProviders))
+	mux.HandleFunc("/api/dns/config/recover", s.withAdmin(s.handleDNSRecover))
+	mux.HandleFunc("/api/dns/config/cleanup", s.withAdmin(s.handleDNSCleanup))
+	mux.HandleFunc("/api/dns/sync", s.withAdmin(s.handleDNSSync))
+	mux.HandleFunc("/api/dns/provider-options", s.withAdmin(s.handleDNSProviderOptions))
+	mux.HandleFunc("/api/dns/domain-options", s.withAdmin(s.handleDNSDomainOptions))
+	mux.HandleFunc("/api/dns/provider-domains", s.withAdmin(s.handleDNSProviderDomains))
+	mux.HandleFunc("/api/dns/lines", s.withAdmin(s.handleDNSLines))
+	mux.HandleFunc("/api/dns/tasks", s.withAdmin(s.handleDNSTasks))
+
+	mux.HandleFunc("/api/alerts", s.withAdmin(s.handleAlertRules))
+	mux.HandleFunc("/api/alerts/", s.withAdmin(s.handleAlertRuleByID))
 
 	// Cluster API
 	mux.HandleFunc("/api/clusters", s.withAuth(s.handleClusters))
@@ -154,29 +189,36 @@ func (s *Servers) adminMux() http.Handler {
 	mux.HandleFunc("/api/waf/cc", s.withAuth(s.handleCCPolicy))
 	mux.HandleFunc("/api/waf/bans", s.withAuth(s.handleWAFBans))
 	mux.HandleFunc("/api/waf/whitelist", s.withAuth(s.handleWAFWhitelist))
-	mux.HandleFunc("/api/ddos/xdp/stats", s.withAuth(s.handleDdosXdpStats))
-	mux.HandleFunc("/api/logs/es/health", s.withAuth(s.handleESHealth))
+	mux.HandleFunc("/api/waf/rulesets/", s.withAdmin(s.handleWAFRulesetApply))
+	mux.HandleFunc("/api/ddos/xdp/stats", s.withAdmin(s.handleDdosXdpStats))
+	// ES log search: admins see all tenants; users are scoped to owned domains.
+	mux.HandleFunc("/api/logs/es/health", s.withAdmin(s.handleESHealth))
+	mux.HandleFunc("/api/logs/status", s.withAuth(s.handleLogsStatus))
 	mux.HandleFunc("/api/logs/search", s.withAuth(s.handleLogsSearch))
 	// License API. Method and store-timeout concerns are handled by the
 	// middleware chain so the handlers can focus purely on business logic.
 	mux.HandleFunc("/api/license/status", s.withAuthNoLicense(chain(s.handleLicenseStatus, methodOnly(http.MethodGet), withStoreTimeout)))
 	mux.HandleFunc("/api/license/activate", s.withAuthNoLicense(chain(s.handleLicenseActivate, methodOnly(http.MethodPost))))
 	mux.HandleFunc("/api/license/import", s.withAuthNoLicense(chain(s.handleLicenseImport, methodOnly(http.MethodPost))))
-	// System upgrade API (stub)
-	mux.HandleFunc("/api/system/upgrade", s.withAuth(s.handleUpgradeInfo))
-	mux.HandleFunc("/api/system/upgrade/precheck", s.withAuth(s.handleUpgradePrecheck))
-	mux.HandleFunc("/api/system/upgrade/control", s.withAuth(s.handleUpgradeControl))
-	mux.HandleFunc("/api/system/upgrade/nodes", s.withAuth(s.handleUpgradeNodes))
-	mux.HandleFunc("/api/system/upgrade/tasks", s.withAuth(s.handleUpgradeTasks))
-	mux.HandleFunc("/api/system/upgrade/tasks/", s.withAuth(s.handleUpgradeTaskLogs))
-	mux.HandleFunc("/api/system/email/test", s.withAuth(s.handleEmailTest))
-	mux.HandleFunc("/api/system/templates", s.withAuth(s.handleGlobalTemplates))
-	mux.HandleFunc("/api/system/templates/", s.withAuth(s.handleGlobalTemplateByKey))
-	mux.HandleFunc("/api/system/tasks", s.withAuth(s.handleSystemTasks))
-	mux.HandleFunc("/api/system/tasks/", s.withAuth(s.handleSystemTaskAction))
-	mux.HandleFunc("/api/system/publish/tasks", s.withAuth(s.handlePublishTasks))
-	mux.HandleFunc("/api/system/publish/tasks/", s.withAuth(s.handlePublishTaskByID))
+	// System upgrade API (admin-only; queries auth.lingcdn.cloud portal)
+	// System-level operations are admin-only (upgrade, template edits,
+	// SMTP diagnostics). Handlers still perform internal checks, but the
+	// middleware shortcut keeps the intent obvious in the router.
+	mux.HandleFunc("/api/system/upgrade", s.withAdmin(s.handleUpgradeInfo))
+	mux.HandleFunc("/api/system/upgrade/precheck", s.withAdmin(s.handleUpgradePrecheck))
+	mux.HandleFunc("/api/system/upgrade/control", s.withAdmin(s.handleUpgradeControl))
+	mux.HandleFunc("/api/system/upgrade/nodes", s.withAdmin(s.handleUpgradeNodes))
+	mux.HandleFunc("/api/system/upgrade/tasks", s.withAdmin(s.handleUpgradeTasks))
+	mux.HandleFunc("/api/system/upgrade/tasks/", s.withAdmin(s.handleUpgradeTaskLogs))
+	mux.HandleFunc("/api/system/email/test", s.withAdmin(s.handleEmailTest))
+	mux.HandleFunc("/api/system/templates", s.withAdmin(s.handleGlobalTemplates))
+	mux.HandleFunc("/api/system/templates/", s.withAdmin(s.handleGlobalTemplateByKey))
+	mux.HandleFunc("/api/system/tasks", s.withAdmin(s.handleSystemTasks))
+	mux.HandleFunc("/api/system/tasks/", s.withAdmin(s.handleSystemTaskAction))
+	mux.HandleFunc("/api/system/publish/tasks", s.withAdmin(s.handlePublishTasks))
+	mux.HandleFunc("/api/system/publish/tasks/", s.withAdmin(s.handlePublishTaskByID))
 	mux.HandleFunc("/api/sync/active", s.withAuth(s.handleSyncActive))
+	mux.HandleFunc("/api/sync/stream", s.withAuth(s.handleSyncStream))
 
 	mux.HandleFunc("/api/geoip/latest", s.withAuthNoLicense(s.handleGeoIPLatest))
 	mux.HandleFunc("/api/geoip/file", s.withAuthNoLicense(s.handleGeoIPFile))
@@ -201,5 +243,5 @@ func (s *Servers) adminMux() http.Handler {
 	})
 
 	// Wrap with metrics and body-size-limit middleware
-	return s.withMetrics(s.withBodyLimit(mux))
+	return s.withControlDomainRedirect(s.withMetrics(s.withBodyLimit(mux)))
 }

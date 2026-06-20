@@ -1,0 +1,26 @@
+# Local dev node config for Windows smoke test
+control_endpoint    = "http://127.0.0.1:9443"
+control_tls_enabled = false
+bootstrap_token     = "ae522405ee548b30fdce20f7c3496c46314463965b32b3c003b13f053fe60425"
+capabilities        = ["http", "https", "cache"]
+
+listen_addr         = "127.0.0.1:8088"
+ops_listen_addr     = "127.0.0.1:9101"
+tls_enabled         = false
+
+cache_dir                       = "d:/lingcdn/cdn系统程序/services/node/data/cache"
+memory_cache_capacity           = 1000
+max_request_body_bytes          = 33554432
+max_response_body_bytes         = 536870912
+max_cache_object_bytes          = 33554432
+disk_cache_max_bytes            = 1073741824
+disk_cache_gc_interval_seconds  = 60
+disk_cache_recreate_on_exceed   = true
+max_connections                 = 256
+
+access_log_path = "d:/lingcdn/cdn系统程序/services/node/data/logs/access.log"
+error_log_path  = "d:/lingcdn/cdn系统程序/services/node/data/logs/error.log"
+
+upgrade_channel           = "stable"
+upgrade_check_seconds     = 86400
+xdp_enabled               = false

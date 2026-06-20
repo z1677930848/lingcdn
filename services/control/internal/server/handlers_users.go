@@ -42,21 +42,33 @@ func (s *Servers) handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, "list users", err)
 			return
 		}
+		groups, _ := s.store.ListUserGroups(ctx)
+		groupNames := make(map[string]string, len(groups))
+		for _, g := range groups {
+			if g != nil {
+				groupNames[g.ID] = g.Name
+			}
+		}
 		// Strip password hashes and other sensitive fields before returning.
 		safe := make([]map[string]any, 0, len(users))
 		for _, u := range users {
-			safe = append(safe, map[string]any{
+			item := map[string]any{
 				"id":                  u.ID,
 				"numeric_id":          u.NumericID,
 				"username":            u.Username,
 				"email":               u.Email,
 				"role":                u.Role,
 				"status":              u.Status,
+				"group_id":            u.GroupID,
 				"created_at":          u.CreatedAt,
 				"last_login_at":       u.LastLoginAt,
 				"last_login_ip":       u.LastLoginIP,
 				"last_login_location": u.LastLoginLocation,
-			})
+			}
+			if u.GroupID != "" {
+				item["group_name"] = groupNames[u.GroupID]
+			}
+			safe = append(safe, item)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"users": safe})
 
@@ -71,6 +83,7 @@ func (s *Servers) handleUsers(w http.ResponseWriter, r *http.Request) {
 			Password string `json:"password"`
 			Role     string `json:"role"`
 			Status   string `json:"status"`
+			GroupID  string `json:"group_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
@@ -110,6 +123,15 @@ func (s *Servers) handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "邮箱已被注册"})
 			return
 		}
+		req.GroupID = strings.TrimSpace(req.GroupID)
+		if err := s.validateUserGroupRef(ctx, req.GroupID); err != nil {
+			if err == errUserGroupNotFound {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return
+			}
+			writeInternalError(w, "validate user group", err)
+			return
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if err != nil {
 			writeInternalError(w, "hash password", err)
@@ -122,6 +144,7 @@ func (s *Servers) handleUsers(w http.ResponseWriter, r *http.Request) {
 			PasswordHash: string(hash),
 			Role:         role,
 			Status:       status,
+			GroupID:      req.GroupID,
 			CreatedAt:    time.Now(),
 			UpdatedAt:    time.Now(),
 		}
@@ -136,6 +159,7 @@ func (s *Servers) handleUsers(w http.ResponseWriter, r *http.Request) {
 			"email":      u.Email,
 			"role":       u.Role,
 			"status":     u.Status,
+			"group_id":   u.GroupID,
 		})
 
 	default:
@@ -323,12 +347,15 @@ func (s *Servers) handleUserByID(w http.ResponseWriter, r *http.Request) {
 			Status   *string `json:"status"`
 			Role     *string `json:"role"`
 			Password *string `json:"password"`
+			GroupID  *string `json:"group_id"`
+			Email    *string `json:"email"`
+			Username *string `json:"username"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
 			return
 		}
-		if req.Status == nil && req.Role == nil && req.Password == nil {
+		if req.Status == nil && req.Role == nil && req.Password == nil && req.GroupID == nil && req.Email == nil && req.Username == nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "没有需要更新的字段"})
 			return
 		}
@@ -375,6 +402,51 @@ func (s *Servers) handleUserByID(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := s.store.UpdateUserPasswordHash(ctx, id, string(hash)); err != nil {
 				writeInternalError(w, "update user password", err)
+				return
+			}
+		}
+		if req.GroupID != nil {
+			groupID := strings.TrimSpace(*req.GroupID)
+			if err := s.validateUserGroupRef(ctx, groupID); err != nil {
+				if err == errUserGroupNotFound {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+					return
+				}
+				writeInternalError(w, "validate user group", err)
+				return
+			}
+			if err := s.store.UpdateUserGroupID(ctx, id, groupID); err != nil {
+				writeInternalError(w, "update user group", err)
+				return
+			}
+		}
+		if req.Email != nil {
+			email := strings.ToLower(strings.TrimSpace(*req.Email))
+			if email == "" || !strings.Contains(email, "@") {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "邮箱格式无效"})
+				return
+			}
+			if existing, _ := s.store.GetUserByEmail(ctx, email); existing != nil && existing.ID != id {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "邮箱已被注册"})
+				return
+			}
+			if err := s.store.UpdateUserEmail(ctx, id, email); err != nil {
+				writeInternalError(w, "update user email", err)
+				return
+			}
+		}
+		if req.Username != nil {
+			username := strings.ToLower(strings.TrimSpace(*req.Username))
+			if username == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "用户名不能为空"})
+				return
+			}
+			if existing, _ := s.store.GetUserByUsername(ctx, username); existing != nil && existing.ID != id {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "用户名已存在"})
+				return
+			}
+			if err := s.store.UpdateUserUsername(ctx, id, username); err != nil {
+				writeInternalError(w, "update user username", err)
 				return
 			}
 		}

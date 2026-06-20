@@ -11,10 +11,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lingcdn/control/internal/store"
 )
 
 // handleESHealth proxies GET _cluster/health to the configured ES cluster.
@@ -69,10 +73,55 @@ func (s *Servers) handleESHealth(w http.ResponseWriter, r *http.Request) {
 	applied := pushESIndexTemplates(r.Context(), settings)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":             resp.StatusCode,
-		"body":               data,
-		"templates_applied":  applied,
+		"status":            resp.StatusCode,
+		"body":              data,
+		"templates_applied": applied,
 	})
+}
+
+// handleLogsStatus exposes whether ES log search is configured (authenticated users).
+func (s *Servers) handleLogsStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+		return
+	}
+	settings := s.resolveSettings(r.Context())
+	configured := strings.TrimSpace(settings.ElasticsearchURL) != ""
+	healthy := false
+	if configured {
+		healthy = s.pingESCluster(r.Context(), settings) == nil
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"configured": configured,
+		"healthy":    healthy,
+	})
+}
+
+func (s *Servers) pingESCluster(ctx context.Context, settings *store.Settings) error {
+	if settings == nil {
+		return fmt.Errorf("es not configured")
+	}
+	esURL := strings.TrimSpace(settings.ElasticsearchURL)
+	if esURL == "" {
+		return fmt.Errorf("es not configured")
+	}
+	target := strings.TrimRight(esURL, "/") + "/_cluster/health"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return err
+	}
+	if settings.ElasticsearchUser != "" {
+		req.SetBasicAuth(settings.ElasticsearchUser, settings.ElasticsearchPass)
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("es health status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // handleLogsSearch builds an ES _search query from simple UI-level filters
@@ -84,7 +133,8 @@ func (s *Servers) handleLogsSearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
 		return
 	}
-	settings := s.resolveSettings(r.Context())
+	ctx := r.Context()
+	settings := s.resolveSettings(ctx)
 	esURL := strings.TrimSpace(settings.ElasticsearchURL)
 	if esURL == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ES_URL未配置"})
@@ -92,22 +142,64 @@ func (s *Servers) handleLogsSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Index     string   `json:"index"`
-		Query     string   `json:"query"`
-		Domain    string   `json:"domain"`
-		IP        string   `json:"ip"`
-		Status    int      `json:"status"`
-		From      string   `json:"from"`
-		To        string   `json:"to"`
-		Size      int      `json:"size"`
-		FromHit   int      `json:"from_hit"`
-		Fields    []string `json:"fields"`
-		Highlight bool     `json:"highlight"`
-		TimeoutMs int      `json:"timeout_ms"`
+		Index       string   `json:"index"`
+		Query       string   `json:"query"`
+		Domain      string   `json:"domain"`
+		IP          string   `json:"ip"`
+		Status      any      `json:"status"`
+		From        string   `json:"from"`
+		To          string   `json:"to"`
+		Size        int      `json:"size"`
+		FromHit     int      `json:"from_hit"`
+		Fields      []string `json:"fields"`
+		Highlight   bool     `json:"highlight"`
+		TimeoutMs   int      `json:"timeout_ms"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
 		return
+	}
+
+	var domainAllowlist []string
+	if !isAdmin(ctx) {
+		userID := getUserID(ctx)
+		if userID == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "未登录或登录已过期"})
+			return
+		}
+		domains, err := s.store.ListDomainsByUser(ctx, userID)
+		if err != nil {
+			writeInternalError(w, "list user domains", err)
+			return
+		}
+		for _, d := range domains {
+			if d == nil {
+				continue
+			}
+			name := strings.TrimSpace(d.Name)
+			if name != "" {
+				domainAllowlist = append(domainAllowlist, name)
+			}
+		}
+		if len(domainAllowlist) == 0 {
+			writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}, "total": 0, "hits": []any{}})
+			return
+		}
+		filterDomain := strings.TrimSpace(req.Domain)
+		if filterDomain != "" {
+			allowed := false
+			for _, n := range domainAllowlist {
+				if strings.EqualFold(n, filterDomain) {
+					allowed = true
+					req.Domain = n
+					break
+				}
+			}
+			if !allowed {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "无权查询该域名的访问日志"})
+				return
+			}
+		}
 	}
 	if len(req.Query) > 1024 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "查询内容过长"})
@@ -139,10 +231,8 @@ func (s *Servers) handleLogsSearch(w http.ResponseWriter, r *http.Request) {
 	if tsField == "" {
 		tsField = "@timestamp"
 	}
-	domainField := strings.TrimSpace(settings.ElasticsearchDomainField)
-	if domainField == "" {
-		domainField = "domain.keyword"
-	}
+	domainField := resolveESDomainField(settings)
+	clientIPField := resolveESClientIPField()
 
 	must := []map[string]any{}
 	if req.Query != "" {
@@ -162,14 +252,21 @@ func (s *Servers) handleLogsSearch(w http.ResponseWriter, r *http.Request) {
 	if req.IP != "" {
 		must = append(must, map[string]any{
 			"term": map[string]any{
-				"client_ip.keyword": req.IP,
+				clientIPField: req.IP,
 			},
 		})
 	}
-	if req.Status > 0 {
+	if statusRange := parseLogStatusFilter(req.Status); statusRange != nil {
 		must = append(must, map[string]any{
-			"term": map[string]any{
-				"status": req.Status,
+			"range": map[string]any{
+				"status": statusRange,
+			},
+		})
+	}
+	if len(domainAllowlist) > 0 && strings.TrimSpace(req.Domain) == "" {
+		must = append(must, map[string]any{
+			"terms": map[string]any{
+				domainField: domainAllowlist,
 			},
 		})
 	}
@@ -254,10 +351,16 @@ func (s *Servers) handleLogsSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Flatten hits into a lighter-weight view that the UI renders directly.
-	// The full raw response is also returned so consumers can access aggs
-	// or _shards info without a second request.
 	hits := []map[string]any{}
+	var total int64
 	if h, ok := data["hits"].(map[string]any); ok {
+		if t, ok := h["total"].(map[string]any); ok {
+			if v, ok := t["value"].(float64); ok {
+				total = int64(v)
+			}
+		} else if v, ok := h["total"].(float64); ok {
+			total = int64(v)
+		}
 		if arr, ok := h["hits"].([]any); ok {
 			for _, item := range arr {
 				if m, ok := item.(map[string]any); ok {
@@ -276,9 +379,88 @@ func (s *Servers) handleLogsSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	entries := flattenLogEntries(hits)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status": resp.StatusCode,
-		"hits":   hits,
-		"raw":    data,
+		"status":  resp.StatusCode,
+		"hits":    hits,
+		"entries": entries,
+		"total":   total,
+		"raw":     data,
 	})
+}
+
+func parseLogStatusFilter(raw any) map[string]any {
+	switch v := raw.(type) {
+	case float64:
+		n := int(v)
+		if n > 0 {
+			return map[string]any{"gte": n, "lte": n}
+		}
+	case int:
+		if v > 0 {
+			return map[string]any{"gte": v, "lte": v}
+		}
+	case int64:
+		if v > 0 {
+			n := int(v)
+			return map[string]any{"gte": n, "lte": n}
+		}
+	case string:
+		s := strings.TrimSpace(strings.ToLower(v))
+		switch s {
+		case "2xx":
+			return map[string]any{"gte": 200, "lte": 299}
+		case "3xx":
+			return map[string]any{"gte": 300, "lte": 399}
+		case "4xx":
+			return map[string]any{"gte": 400, "lte": 499}
+		case "5xx":
+			return map[string]any{"gte": 500, "lte": 599}
+		default:
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				return map[string]any{"gte": n, "lte": n}
+			}
+		}
+	}
+	return nil
+}
+
+func flattenLogEntries(hits []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(hits))
+	for _, hit := range hits {
+		src, _ := hit["source"].(map[string]any)
+		if src == nil {
+			continue
+		}
+		entry := map[string]any{
+			"id": hit["_id"],
+		}
+		for _, key := range []string{"domain", "path", "method", "client_ip", "bytes", "timestamp", "ua", "@timestamp"} {
+			if val, ok := src[key]; ok && val != nil {
+				entry[key] = val
+			}
+		}
+		if ts, ok := entry["timestamp"]; !ok || ts == nil || ts == "" {
+			if ts2, ok := src["@timestamp"]; ok {
+				entry["timestamp"] = ts2
+			}
+		}
+		if st, ok := src["status"]; ok {
+			switch n := st.(type) {
+			case float64:
+				entry["status"] = int(n)
+			case int:
+				entry["status"] = n
+			case json.Number:
+				if i, err := n.Int64(); err == nil {
+					entry["status"] = int(i)
+				}
+			default:
+				entry["status"] = st
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }

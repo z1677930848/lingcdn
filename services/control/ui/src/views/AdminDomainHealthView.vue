@@ -6,23 +6,23 @@
         <p class="subtitle">按域名查看基础数据、质量与回源指标，并支持排行筛选。</p>
       </div>
       <div class="header-actions">
-        <t-button :loading="tab === 'rank' ? rankLoading : metricsLoading" @click="handleRefresh">刷新</t-button>
+        <el-button :loading="tab === 'rank' ? rankLoading : metricsLoading" @click="handleRefresh">刷新</el-button>
       </div>
     </div>
 
-    <t-card class="section-card" bordered>
-      <t-tabs v-model="tab">
-        <t-tab-panel value="basic" label="基础数据" />
-        <t-tab-panel value="quality" label="质量监控" />
-        <t-tab-panel value="origin" label="回源监控" />
-        <t-tab-panel value="rank" label="数据排行" />
-      </t-tabs>
+    <el-card class="section-card">
+      <el-tabs v-model="tab">
+        <el-tab-pane name="basic" label="基础数据" />
+        <el-tab-pane name="quality" label="质量监控" />
+        <el-tab-pane name="origin" label="回源监控" />
+        <el-tab-pane name="rank" label="数据排行" />
+      </el-tabs>
 
       <div class="section-body">
         <div class="filters">
           <div class="filter-item">
             <span>域名</span>
-            <t-select
+            <EpSelect
               v-model="selectedDomains"
               :options="domainOptions"
               multiple
@@ -35,41 +35,46 @@
           <div class="filter-item">
             <span>时间</span>
             <div class="range-inputs">
-              <t-input v-model="dateRange[0]" placeholder="开始时间 YYYY-MM-DD HH:mm:ss" />
+              <el-input v-model="dateRange[0]" placeholder="开始时间 YYYY-MM-DD HH:mm:ss" />
               <span class="muted">~</span>
-              <t-input v-model="dateRange[1]" placeholder="结束时间 YYYY-MM-DD HH:mm:ss" />
+              <el-input v-model="dateRange[1]" placeholder="结束时间 YYYY-MM-DD HH:mm:ss" />
             </div>
           </div>
           <div v-if="tab === 'rank'" class="filter-item">
             <span>排行指标</span>
             <div class="rank-buttons">
-              <t-button
+              <el-button
                 v-for="item in rankMetrics"
                 :key="item.value"
                 size="small"
-                :theme="rankMetric === item.value ? 'primary' : 'default'"
+                :type="rankMetric === item.value ? 'primary' : 'info'"
                 :variant="rankMetric === item.value ? 'base' : 'outline'"
                 @click="rankMetric = item.value"
               >
                 {{ item.label }}
-              </t-button>
+              </el-button>
             </div>
           </div>
         </div>
 
+        <el-alert v-if="domainError" type="warning" :message="domainError" />
+
         <template v-if="tab === 'rank'">
+          <LoadingState v-if="rankLoading && rankItems.length === 0" />
+          <ErrorState v-else-if="rankError" :message="rankError" @retry="loadRank" />
+          <template v-else>
           <div class="admin-desktop-only">
-            <t-table
+            <EpDataTable
               :data="rankItems"
               :columns="rankColumns"
               row-key="domain"
               size="small"
               :loading="rankLoading"
-              empty="暂无数据"
+              empty-text="暂无数据"
             />
           </div>
           <div class="admin-mobile-only">
-            <div v-if="rankLoading" style="text-align:center;padding:32px 0"><t-loading /></div>
+            <div v-if="rankLoading" style="text-align:center;padding:32px 0"><div v-loading="true" style="min-height:48px" /></div>
             <div v-else-if="rankItems.length === 0" class="admin-mobile-card-empty">暂无数据</div>
             <div v-else class="admin-mobile-cards">
               <div v-for="item in rankItems" :key="item.domain" class="admin-mobile-card">
@@ -109,8 +114,12 @@
               </div>
             </div>
           </div>
+          </template>
         </template>
-        <div v-else class="series-grid">
+        <template v-else>
+          <LoadingState v-if="metricsLoading && seriesList.length === 0" />
+          <ErrorState v-else-if="metricsError" :message="metricsError" @retry="loadMetrics" />
+          <div v-else class="series-grid">
           <div v-if="seriesList.length === 0" class="muted">暂无数据</div>
           <div v-for="series in seriesList" :key="series.key" class="series-card">
             <div class="series-head">
@@ -122,17 +131,21 @@
             </div>
             <LineAreaChart :values="seriesValues(series)" :labels="seriesLabels(series)" :height="220" />
           </div>
-        </div>
+          </div>
+        </template>
       </div>
-    </t-card>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
 import { computed, onMounted, ref, watch } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
 import { api, type Domain, type DomainHealthMetricsResponse, type DomainHealthRankEntry, type DomainHealthSeries } from "@/lib/api"
 import LineAreaChart from "@/components/charts/LineAreaChart.vue"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const tab = ref<"basic" | "quality" | "origin" | "rank">("basic")
 const domains = ref<Domain[]>([])
@@ -144,9 +157,12 @@ const dateRange = ref<[string, string]>((() => {
   return [formatDateTime(start), formatDateTime(end)]
 })())
 const metricsLoading = ref(false)
+const metricsError = ref("")
 const metrics = ref<DomainHealthMetricsResponse | null>(null)
 const rankLoading = ref(false)
+const rankError = ref("")
 const rankItems = ref<DomainHealthRankEntry[]>([])
+const domainError = ref("")
 const rankMetric = ref("bandwidth")
 
 const rankMetrics = [
@@ -182,10 +198,11 @@ const resolveRange = () => {
 const loadDomains = async () => {
   try {
     domainLoading.value = true
+    domainError.value = ""
     const res = await api.listDomains()
     domains.value = res.domains || []
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载网站列表失败")
+  } catch (err: unknown) {
+    domainError.value = err instanceof Error ? err.message : "加载网站列表失败"
   } finally {
     domainLoading.value = false
   }
@@ -195,6 +212,7 @@ const loadMetrics = async () => {
   if (metricsLoading.value || tab.value === "rank") return
   try {
     metricsLoading.value = true
+    metricsError.value = ""
     const { fromUnix, toUnix } = resolveRange()
     const res = await api.getDomainHealthMetrics({
       group: tab.value,
@@ -204,8 +222,8 @@ const loadMetrics = async () => {
       points: 60,
     })
     metrics.value = res
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载健康指标失败")
+  } catch (err: unknown) {
+    metricsError.value = err instanceof Error ? err.message : "加载健康指标失败"
   } finally {
     metricsLoading.value = false
   }
@@ -215,6 +233,7 @@ const loadRank = async () => {
   if (rankLoading.value || tab.value !== "rank") return
   try {
     rankLoading.value = true
+    rankError.value = ""
     const { fromUnix, toUnix } = resolveRange()
     const res = await api.getDomainHealthRank({
       metric: rankMetric.value,
@@ -224,8 +243,8 @@ const loadRank = async () => {
       limit: 100,
     })
     rankItems.value = res.items || []
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载数据排行失败")
+  } catch (err: unknown) {
+    rankError.value = err instanceof Error ? err.message : "加载数据排行失败"
   } finally {
     rankLoading.value = false
   }
@@ -331,115 +350,3 @@ watch(rankMetric, () => {
 })
 </script>
 
-<style scoped>
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.section-body {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: center;
-}
-
-.filter-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 14px;
-  color: #475569;
-}
-
-.range-inputs {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.rank-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.series-grid {
-  display: grid;
-  gap: 16px;
-}
-
-.series-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 16px;
-  background: #fff;
-  transition: all 0.2s ease;
-}
-
-.series-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 12px;
-  align-items: center;
-}
-
-.series-title {
-  font-size: 14px;
-  color: #475569;
-}
-
-.series-value {
-  font-size: 20px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.muted {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-@media (max-width: 768px) {
-  .filters {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .filter-item {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .filter-item > span {
-    font-weight: 600;
-    margin-bottom: 4px;
-  }
-
-  .range-inputs {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .rank-buttons {
-    width: 100%;
-  }
-}
-
-@media (max-width: 720px) {
-  .range-inputs {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-}
-</style>

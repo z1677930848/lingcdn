@@ -6,26 +6,27 @@
         <p class="subtitle">查看被 WAF/CC 防护拦截的访问记录</p>
       </div>
       <div class="header-actions">
-        <t-button :loading="loading" @click="loadBans">刷新</t-button>
+        <el-button :loading="loading" @click="loadBans">刷新</el-button>
       </div>
     </div>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
-        <div v-if="loading" style="text-align:center;padding:40px 0"><t-loading /></div>
+        <LoadingState v-if="loading && bans.length === 0" />
+        <ErrorState v-else-if="error" :message="error" @retry="loadBans" />
         <template v-else>
           <div v-if="bans.length === 0" class="empty-state">暂无拦截记录</div>
 
           <div v-else>
             <div class="admin-desktop-only">
-              <t-table :data="bans" :columns="columns" row-key="ip" size="small" empty="暂无数据" />
+              <EpDataTable :data="bans" :columns="columns" row-key="ip" size="small" empty-text="暂无数据" />
             </div>
             <div class="admin-mobile-only">
               <div class="admin-mobile-cards">
                 <div v-for="ban in bans" :key="ban.ip" class="admin-mobile-card">
                   <div class="admin-mobile-card-header">
                     <span class="admin-mobile-card-title">{{ ban.ip }}</span>
-                    <t-tag theme="danger" variant="light" size="small">已拦截</t-tag>
+                    <el-tag type="danger" effect="light" size="small">已拦截</el-tag>
                   </div>
                   <div class="admin-mobile-card-rows">
                     <div class="admin-mobile-card-row">
@@ -55,14 +56,17 @@
           </div>
         </template>
       </div>
-    </t-card>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpDataTable from "@/components/ep/EpDataTable.vue"
 import { onMounted, ref } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
 import { api } from "@/lib/api"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 interface WAFBan {
   ip: string
@@ -74,6 +78,7 @@ interface WAFBan {
 }
 
 const loading = ref(false)
+const error = ref("")
 const bans = ref<WAFBan[]>([])
 
 const formatTime = (value?: string) => {
@@ -85,11 +90,13 @@ const formatTime = (value?: string) => {
 
 const loadBans = async () => {
   loading.value = true
+  error.value = ""
   try {
     const res = await api.listWAFBans()
     bans.value = res.bans || []
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载拦截日志失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载拦截日志失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -107,23 +114,4 @@ const columns = [
 onMounted(() => { loadBans() })
 </script>
 
-<style scoped>
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
 
-.section-body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 48px 0;
-  color: #94a3b8;
-  font-size: 14px;
-}
-</style>

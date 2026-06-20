@@ -1,47 +1,51 @@
 ﻿<template>
   <div class="settings-tab">
-    <t-form layout="vertical" label-align="top" :disabled="loading || saving">
-      <t-form-item label="ES 地址">
-        <t-input v-model="settings.elasticsearch_url" placeholder="https://es.example.com:9200" />
+    <ErrorState v-if="error" :message="error" @retry="loadSettings" />
+    <LoadingState v-else-if="loading" />
+    <el-form v-else label-position="top" :disabled="saving">
+      <el-form-item label="ES 地址">
+        <el-input v-model="settings.elasticsearch_url" placeholder="https://es.example.com:9200" />
         <div class="hint">留空表示禁用 ES 数据统计与日志检索</div>
-      </t-form-item>
+      </el-form-item>
 
-      <t-form-item label="ES 用户名">
-        <t-input v-model="settings.elasticsearch_user" />
-      </t-form-item>
+      <el-form-item label="ES 用户名">
+        <el-input v-model="settings.elasticsearch_user" />
+      </el-form-item>
 
-      <t-form-item label="ES 密码">
-        <t-input type="password" v-model="settings.elasticsearch_pass" />
+      <el-form-item label="ES 密码">
+        <el-input type="password" v-model="settings.elasticsearch_pass" />
         <div class="hint">留空则沿用当前已保存的密码</div>
-      </t-form-item>
+      </el-form-item>
 
-      <t-form-item v-if="settings.elasticsearch_url.trim() !== ''" label="日志采集">
+      <el-form-item v-if="settings.elasticsearch_url.trim() !== ''" label="日志采集">
         <div class="hint">
           节点安装时同步部署 Filebeat，分别将 <code>/var/log/lingcdn/access.log</code> 与 <code>/var/log/lingcdn/error.log</code> 直推 ES（索引：<code>cdn-access-*</code> / <code>cdn-error-*</code>）。“添加节点”生成的安装命令会自动携带 ES 参数；【已运行的老节点】需在机器上补跑：
           <pre class="hint-cmd">curl -fsSL https://auth.lingcdn.cloud/install-filebeat.sh | bash -s -- --es_host &lt;ES_IP&gt; --es_user elastic --es_pass &lt;PASSWORD&gt;</pre>
           保存设置或点击“测试连接”后，控制面会自动向 ES PUT <code>cdn-access</code> / <code>cdn-error</code> 索引模板。
         </div>
-      </t-form-item>
+      </el-form-item>
 
-      <div v-if="health.status !== 'idle'" class="health">
-        <t-tag :theme="health.status === 'ok' ? 'success' : 'danger'" variant="light">
+      <div v-if="health.status !== 'idle'" class="health-row">
+        <el-tag :type="health.status === 'ok' ? 'success' : 'danger'" effect="light">
           {{ health.status === 'ok' ? 'ES 连接正常' : 'ES 连接失败' }}
-        </t-tag>
+        </el-tag>
         <span v-if="health.message" class="health-message">{{ health.message }}</span>
       </div>
 
-      <div class="actions">
-        <t-button theme="primary" @click="handleSave" :loading="saving">保存</t-button>
-        <t-button variant="outline" @click="handleTest" :loading="testing" :disabled="saving">测试连接</t-button>
+      <div class="settings-actions">
+        <el-button type="primary" @click="handleSave" :loading="saving">保存</el-button>
+        <el-button plain @click="handleTest" :loading="testing" :disabled="saving">测试连接</el-button>
       </div>
-    </t-form>
+    </el-form>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
 import { api } from "@/lib/api"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 type ESSettings = {
   elasticsearch_url: string
@@ -59,11 +63,12 @@ const settings = ref<ESSettings>({
   elasticsearch_pass: "",
   elasticsearch_index: "cdn-access",
   elasticsearch_ts_field: "@timestamp",
-  elasticsearch_domain_field: "domain.keyword",
+  elasticsearch_domain_field: "domain",
   elasticsearch_bytes_field: "bytes",
 })
 
 const loading = ref(false)
+const error = ref("")
 const saving = ref(false)
 const testing = ref(false)
 const health = ref<{ status: "idle" | "ok" | "error"; message?: string }>({ status: "idle" })
@@ -71,6 +76,7 @@ const health = ref<{ status: "idle" | "ok" | "error"; message?: string }>({ stat
 const loadSettings = async () => {
   try {
     loading.value = true
+    error.value = ""
     const { settings: data } = await api.getSettings()
     if (data) {
       const pickNonEmpty = (value: any, fallback: string) => {
@@ -83,12 +89,13 @@ const loadSettings = async () => {
         elasticsearch_pass: "",
         elasticsearch_index: pickNonEmpty(data.elasticsearch_index, "cdn-access"),
         elasticsearch_ts_field: pickNonEmpty(data.elasticsearch_ts_field, "@timestamp"),
-        elasticsearch_domain_field: pickNonEmpty(data.elasticsearch_domain_field, "domain.keyword"),
+        elasticsearch_domain_field: pickNonEmpty(data.elasticsearch_domain_field, "domain"),
         elasticsearch_bytes_field: pickNonEmpty(data.elasticsearch_bytes_field, "bytes"),
       }
     }
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载设置失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载设置失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -146,61 +153,4 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
-.hint {
-  font-size: 12px;
-  color: var(--app-text-faint);
-  margin-top: 6px;
-  line-height: 1.6;
-}
-
-.hint code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  background: rgba(99, 91, 255, 0.08);
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-
-.hint-cmd {
-  margin: 6px 0 0;
-  padding: 6px 8px;
-  background: rgba(15, 23, 42, 0.04);
-  border-radius: 4px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--app-text-muted);
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.actions {
-  margin-top: 12px;
-  display: flex;
-  gap: 8px;
-}
-
-.health {
-  margin-top: 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  flex-wrap: wrap;
-}
-
-.health-message {
-  color: var(--app-text-muted);
-}
-
-@media (max-width: 768px) {
-  .actions {
-    flex-direction: column;
-  }
-
-  .actions > * {
-    width: 100%;
-  }
-}
-</style>
 

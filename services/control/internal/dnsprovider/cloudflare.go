@@ -106,14 +106,14 @@ func (c *CloudflareClient) Recover(ctx context.Context) (string, error) {
 	if err := c.Ping(ctx); err != nil {
 		return "", err
 	}
-	return "Cloudflare credentials verified", nil
+	return syncVerifiedMessage("Cloudflare"), nil
 }
 
 func (c *CloudflareClient) Cleanup(ctx context.Context) (string, error) {
 	if err := c.Ping(ctx); err != nil {
 		return "", err
 	}
-	return "Cloudflare credentials verified", nil
+	return syncVerifiedMessage("Cloudflare"), nil
 }
 
 // ListProviderDomains returns all zones from the Cloudflare account.

@@ -101,6 +101,10 @@ func (s *Servers) handleClusterByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
+		if !isAdmin(ctx) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "仅管理员可操作"})
+			return
+		}
 		cluster, err := s.store.GetCluster(ctx, id)
 		if err != nil {
 			writeInternalError(w, "get cluster", err)

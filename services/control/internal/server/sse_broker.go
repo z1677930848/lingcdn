@@ -350,6 +350,72 @@ func sseValueAt(pts []nodeMetricPoint, at time.Time, metric string) float64 {
 	}
 }
 
+// handleSyncStream serves sync-only SSE for authenticated users. Unlike
+// handleNodeMonitorStream (admin-only, includes node telemetry), this
+// endpoint forwards only "sync" task events filtered by domain ownership
+// so tenant dashboards can show publish progress without exposing infra.
+func (s *Servers) handleSyncStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
+		return
+	}
+	ctx := r.Context()
+	ownedDomains, adminAll := s.syncOwnedDomainIDs(ctx)
+	if !adminAll && len(ownedDomains) == 0 && getUserID(ctx) == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "未登录或登录已过期"})
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "不支持流式传输"})
+		return
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	client := s.sseBroker.subscribe()
+	defer s.sseBroker.unsubscribe(client)
+
+	keepalive := time.NewTicker(sseKeepalive)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case frame, ok := <-client.ch:
+			if !ok {
+				return
+			}
+			if frame.event != "sync" {
+				continue
+			}
+			var evt syncTaskEvent
+			if err := json.Unmarshal(frame.data, &evt); err != nil {
+				continue
+			}
+			if !s.allowSyncSubject(adminAll, ownedDomains, evt.Subject) {
+				continue
+			}
+			fmt.Fprintf(w, "event: sync\ndata: %s\n\n", frame.data)
+			flusher.Flush()
+		case <-keepalive.C:
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		case <-client.done:
+			return
+		}
+	}
+}
+
 // handleNodeMonitorStream serves SSE connections for real-time monitoring.
 func (s *Servers) handleNodeMonitorStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

@@ -1,25 +1,27 @@
 ﻿<template>
   <div class="settings-tab">
+    <ErrorState v-if="error && tokens.length === 0" :message="error" @retry="loadTokens" />
+
     <div class="toolbar">
-      <t-button theme="primary" @click="dialogVisible = true">
-        <template #icon><t-icon name="add" /></template>
+      <el-button type="primary" @click="dialogVisible = true">
+        <template #icon><EpIcon name="add" /></template>
         创建新令牌
-      </t-button>
+      </el-button>
     </div>
 
     <div class="admin-desktop-only">
-      <t-table :data="tokens" :columns="columns" row-key="id" :loading="loading" empty="暂无 API 令牌" size="small" />
+      <EpDataTable :data="tokens" :columns="columns" row-key="id" :loading="loading" empty-text="暂无 API 令牌" size="small" />
     </div>
     <div class="admin-mobile-only">
-      <div v-if="loading" class="loading-row"><t-loading /></div>
+      <LoadingState v-if="loading && tokens.length === 0" />
       <div v-else-if="tokens.length === 0" class="admin-mobile-card-empty">暂无 API 令牌</div>
       <div v-else class="admin-mobile-cards">
         <div v-for="token in tokens" :key="token.id" class="admin-mobile-card">
           <div class="admin-mobile-card-header">
             <span class="admin-mobile-card-title"><code>{{ token.token_prefix }}...</code></span>
             <div class="admin-mobile-card-tags">
-              <t-tag v-if="!token.expires_at" theme="success" variant="light" size="small">永不过期</t-tag>
-              <t-tag v-else-if="new Date(token.expires_at) < new Date()" theme="danger" variant="light" size="small">已过期</t-tag>
+              <el-tag v-if="!token.expires_at" type="success" effect="light" size="small">永不过期</el-tag>
+              <el-tag v-else-if="new Date(token.expires_at) < new Date()" type="danger" effect="light" size="small">已过期</el-tag>
             </div>
           </div>
           <div class="admin-mobile-card-rows">
@@ -37,60 +39,67 @@
             </div>
           </div>
           <div class="admin-mobile-card-actions">
-            <t-popconfirm content="确定要删除此令牌吗？删除后无法恢复。" @confirm="handleDelete(token.id)">
-              <t-button theme="danger" variant="text" size="small">删除</t-button>
-            </t-popconfirm>
+            <el-popconfirm content="确定要删除此令牌吗？删除后无法恢复。" @confirm="handleDelete(token.id)">
+              <el-button type="danger" link size="small">删除</el-button>
+            </el-popconfirm>
           </div>
         </div>
       </div>
     </div>
 
-    <t-dialog
-      v-model:visible="dialogVisible"
-      :header="newToken ? '令牌创建成功' : '创建 API 令牌'"
+    <EpDialog append-to-body
+      v-model="dialogVisible"
+      :title="newToken ? '令牌创建成功' : '创建 API 令牌'"
       @close="handleCloseDialog"
     >
       <template #footer>
-        <t-button v-if="newToken" theme="primary" @click="handleCloseDialog">关闭</t-button>
+        <el-button v-if="newToken" type="primary" @click="handleCloseDialog">关闭</el-button>
         <template v-else>
-          <t-button variant="outline" @click="handleCloseDialog">取消</t-button>
-          <t-button theme="primary" @click="handleCreate" :loading="creating">创建</t-button>
+          <el-button plain @click="handleCloseDialog">取消</el-button>
+          <el-button type="primary" @click="handleCreate" :loading="creating">创建</el-button>
         </template>
       </template>
 
       <div v-if="newToken">
         <div class="warning-banner" role="alert">
-          <t-icon name="error-circle" />
+          <EpIcon name="error-circle" />
           <span>请立即复制并保存此令牌，关闭后将无法再次查看。</span>
         </div>
         <div class="token-box">{{ newToken }}</div>
-        <t-button theme="primary" variant="outline" block @click="handleCopyToken">
-          <template #icon><t-icon name="file-copy" /></template>
+        <el-button type="primary" plain block @click="handleCopyToken">
+          <template #icon><EpIcon name="file-copy" /></template>
           复制令牌
-        </t-button>
+        </el-button>
       </div>
-      <t-form v-else layout="vertical" label-align="top">
-        <t-form-item label="令牌描述">
-          <t-input v-model="formData.description" placeholder="例如：监控告警系统" />
-        </t-form-item>
-        <t-form-item label="有效期（天）">
-          <t-input-number v-model="formData.ttl_days" :min="0" style="width:100%" />
+      <el-form v-else label-position="top">
+        <el-form-item label="令牌描述">
+          <el-input v-model="formData.description" placeholder="例如：监控告警系统" />
+        </el-form-item>
+        <el-form-item label="有效期（天）">
+          <el-input-number v-model="formData.ttl_days" :min="0" style="width:100%" />
           <div class="hint">输入 0 表示永不过期</div>
-        </t-form-item>
-      </t-form>
-    </t-dialog>
+        </el-form-item>
+      </el-form>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
+import EpIcon from "@/components/ep/EpIcon.vue"
 import { computed, h, onMounted, ref } from "vue"
-import { MessagePlugin, Tag, Button } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
+import { ElTag, ElButton, ElPopconfirm } from "element-plus"
 import { api, type APIToken } from "@/lib/api"
 import { copyText } from "@/lib/clipboard"
 import { formatTime } from "@/lib/time"
+import ErrorState from "@/components/common/ErrorState.vue"
+import LoadingState from "@/components/common/LoadingState.vue"
 
 const tokens = ref<APIToken[]>([])
 const loading = ref(false)
+const error = ref("")
 const dialogVisible = ref(false)
 const creating = ref(false)
 const newToken = ref<string | null>(null)
@@ -99,10 +108,12 @@ const formData = ref({ description: "", ttl_days: 0 })
 const loadTokens = async () => {
   try {
     loading.value = true
+    error.value = ""
     const { tokens: data } = await api.listAPITokens()
     tokens.value = data || []
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载令牌列表失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载令牌列表失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -169,12 +180,12 @@ const columns = computed(() => [
     width: 180,
     cell: (_h: any, { row }: { row: APIToken }) => {
       if (!row.expires_at) {
-        return h(Tag, { theme: "success", variant: "light" }, () => "永不过期")
+        return h(ElTag, { type: "success", effect: "light" }, () => "永不过期")
       }
       const exp = new Date(row.expires_at)
       const now = new Date()
       if (exp < now) {
-        return h(Tag, { theme: "danger", variant: "light" }, () => "已过期")
+        return h(ElTag, { type: "danger", effect: "light" }, () => "已过期")
       }
       return formatTime(row.expires_at)
     },
@@ -191,11 +202,11 @@ const columns = computed(() => [
     width: 120,
     cell: (_h: any, { row }: { row: APIToken }) =>
       h(
-        "t-popconfirm",
-        { content: "确定要删除此令牌吗？删除后无法恢复。", onConfirm: () => handleDelete(row.id) },
+        ElPopconfirm,
+        { title: "确定要删除此令牌吗？删除后无法恢复。", onConfirm: () => handleDelete(row.id) },
         {
-          default: () =>
-            h(Button, { theme: "danger", variant: "text", size: "small" }, () => "删除"),
+          reference: () =>
+            h(ElButton, { type: "danger", link: true, size: "small" }, () => "删除"),
         }
       ),
   },
@@ -205,47 +216,4 @@ onMounted(() => {
   loadTokens()
 })
 </script>
-
-<style scoped>
-.toolbar {
-  margin-bottom: 16px;
-}
-
-.loading-row {
-  text-align: center;
-  padding: 32px 0;
-}
-
-.warning-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding: 10px 14px;
-  border-radius: var(--app-input-radius);
-  background: var(--app-warning-soft-bg);
-  border: 1px solid var(--td-warning-color-2);
-  color: var(--app-warning-soft-fg);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.token-box {
-  background: var(--app-surface-muted);
-  border: 1px dashed var(--app-border-strong);
-  padding: 14px 16px;
-  border-radius: var(--app-input-radius);
-  word-break: break-all;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
-  color: var(--app-text-strong);
-  margin-bottom: 12px;
-}
-
-.hint {
-  font-size: 12px;
-  color: var(--app-text-faint);
-  margin-top: 6px;
-}
-</style>
 

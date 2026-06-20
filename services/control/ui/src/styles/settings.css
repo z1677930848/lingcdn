@@ -1,0 +1,527 @@
+/* Admin settings shell + tabs */
+
+/* --- src/views/AdminSettingsView.vue --- */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-page-gap);
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.settings-shell {
+  display: block;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* ---- Nav (left rail) ---- */
+.settings-nav {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-card-radius);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: var(--app-shadow-card);
+  align-self: flex-start;
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - var(--app-header-height) - var(--app-content-padding-y) * 2 - 48px);
+  overflow-y: auto;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-nav-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--app-text-faint);
+  letter-spacing: 0.4px;
+  padding: 4px 8px 6px;
+  text-transform: uppercase;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border-radius: var(--app-input-radius);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--app-text);
+  width: 100%;
+  transition: background var(--app-anim-fast) var(--app-easing-standard),
+              border-color var(--app-anim-fast) var(--app-easing-standard),
+              color var(--app-anim-fast) var(--app-easing-standard);
+}
+
+.settings-nav-item:hover {
+  background: var(--app-surface-hover);
+  color: var(--app-text-strong);
+}
+
+.settings-nav-item.active {
+  background: var(--app-brand-soft-bg);
+  color: var(--app-brand-strong);
+  border-color: var(--app-brand-soft-border);
+}
+
+.settings-nav-item.active .settings-nav-title {
+  color: var(--app-brand-strong);
+  font-weight: 600;
+}
+
+.settings-nav-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--app-input-radius);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.settings-nav-icon.tone-info {
+  background: var(--app-info-soft-bg);
+  color: var(--app-info-soft-fg);
+}
+
+.settings-nav-icon.tone-warning {
+  background: var(--app-warning-soft-bg);
+  color: var(--app-warning-soft-fg);
+}
+
+.settings-nav-icon.tone-danger {
+  background: var(--app-danger-soft-bg);
+  color: var(--app-danger-soft-fg);
+}
+
+.settings-nav-icon.tone-success {
+  background: var(--app-success-soft-bg);
+  color: var(--app-success-soft-fg);
+}
+
+.settings-nav-icon.tone-neutral {
+  background: var(--app-neutral-soft-bg);
+  color: var(--app-neutral-soft-fg);
+}
+
+.settings-nav-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-nav-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--app-text-strong);
+  line-height: 1.3;
+}
+
+.settings-nav-desc {
+  font-size: 11px;
+  color: var(--app-text-faint);
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* ---- Right panel ---- */
+.settings-panel {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-card-radius);
+  box-shadow: var(--app-shadow-card);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-panel-head {
+  padding: 20px 24px 14px;
+  border-bottom: 1px solid var(--app-divider);
+}
+
+.settings-panel-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.settings-panel-desc {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin: 4px 0 0;
+}
+
+.settings-panel-body {
+  padding: 20px 24px 24px;
+  min-width: 0;
+}
+
+/* ---- Mobile: stack the two panes vertically; nav becomes a horizontal
+ * scroller so all 7 entries stay reachable without scrolling the page. */
+@media (max-width: 960px) {
+  .settings-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-nav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 8px;
+    gap: 4px;
+  }
+
+  .settings-nav-group {
+    flex-direction: row;
+    flex-shrink: 0;
+    gap: 4px;
+  }
+
+  .settings-nav-group-label {
+    display: none;
+  }
+
+  .settings-nav-item {
+    flex-shrink: 0;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    min-width: 96px;
+    padding: 10px 8px;
+  }
+
+  .settings-nav-desc {
+    display: none;
+  }
+
+  .settings-panel-head {
+    padding: 16px 16px 12px;
+  }
+
+  .settings-panel-body {
+    padding: 16px;
+  }
+}
+
+/* --- src/views/admin/settings/SiteSettingsTab.vue --- */
+.site-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.block {
+  padding-top: 4px;
+}
+
+.block-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  margin-bottom: 4px;
+}
+
+.block-desc {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.section-divider {
+  height: 1px;
+  background: var(--app-divider);
+  margin: 20px 0;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--app-text-faint);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.hint code {
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--app-text);
+}
+
+.renewal-window-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.input-unit {
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.brand-preview {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: var(--app-input-radius);
+  border: 1px dashed var(--app-border-strong);
+  background: var(--app-surface-muted);
+}
+
+.brand-preview-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-preview-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--app-input-radius);
+  background: var(--app-brand-gradient);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.brand-preview-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.brand-preview-avatar--logo {
+  width: auto;
+  max-width: 160px;
+  height: 40px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px dashed var(--app-border-strong);
+}
+
+.brand-preview-avatar--logo img {
+  width: auto;
+  max-width: 100%;
+  max-height: 36px;
+  object-fit: contain;
+  background: transparent;
+}
+
+.brand-preview-meta--solo {
+  flex: 1;
+}
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.brand-preview-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  letter-spacing: 0.2px;
+}
+
+.brand-preview-sub {
+  font-size: 12px;
+  color: var(--app-text-faint);
+}
+
+.toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toggle-list.disabled .toggle-row {
+  opacity: 0.7;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-input-radius);
+  background: var(--app-surface);
+  transition: border-color var(--app-anim-base) var(--app-easing-standard),
+              background var(--app-anim-base) var(--app-easing-standard);
+}
+
+.toggle-row:hover {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-muted);
+}
+
+.toggle-meta {
+  min-width: 0;
+}
+
+.toggle-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+
+.toggle-desc {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.actions-spacer {
+  flex: 1;
+}
+
+.dirty-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--app-pill-radius);
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--app-warning-soft-bg);
+  color: var(--app-warning-soft-fg);
+}
+
+.dirty-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--app-warning);
+  animation: dirty-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes dirty-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 720px) {
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .actions-spacer {
+    display: none;
+  }
+
+  .dirty-pill {
+    justify-content: center;
+  }
+}
+
+/* --- src/views/admin/settings/ControlDomainSettingsTab.vue --- */
+.settings-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.block-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  margin-bottom: 4px;
+}
+
+.block-desc {
+  font-size: 13px;
+  color: var(--app-text-muted);
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.preview-card {
+  background: var(--app-surface-muted);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-input-radius);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.preview-label {
+  font-size: 12px;
+  color: var(--app-text-faint);
+  margin-bottom: 4px;
+}
+
+.preview-value {
+  font-family: var(--app-font-mono, monospace);
+  font-size: 14px;
+  color: var(--app-brand-strong);
+}
+
+.preview-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-text-faint);
+  line-height: 1.4;
+}
+
+.verify-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.verify-detail {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  line-height: 1.6;
+}
+
+.verify-error {
+  color: var(--app-danger);
+}
+
+@media (max-width: 768px) {
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+}

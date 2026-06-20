@@ -1,19 +1,21 @@
 ﻿<template>
   <div class="settings-tab">
-    <p class="desc">添加到黑名单的域名将无法被用户添加。支持通配符，例如：<code>*.example.com</code></p>
+    <p class="tab-desc">添加到黑名单的域名将无法被用户添加。支持通配符，例如：<code>*.example.com</code></p>
+
+    <ErrorState v-if="error && list.length === 0" :message="error" @retry="loadList" />
 
     <div class="toolbar">
-      <t-button theme="primary" @click="dialogVisible = true">
-        <template #icon><t-icon name="add" /></template>
+      <el-button type="primary" @click="dialogVisible = true">
+        <template #icon><EpIcon name="add" /></template>
         添加黑名单
-      </t-button>
+      </el-button>
     </div>
 
     <div class="admin-desktop-only">
-      <t-table :data="list" :columns="columns" row-key="id" :loading="loading" empty="暂无黑名单记录" size="small" />
+      <EpDataTable :data="list" :columns="columns" row-key="id" :loading="loading" empty-text="暂无黑名单记录" size="small" />
     </div>
     <div class="admin-mobile-only">
-      <div v-if="loading" class="loading-row"><t-loading /></div>
+      <LoadingState v-if="loading && list.length === 0" />
       <div v-else-if="list.length === 0" class="admin-mobile-card-empty">暂无黑名单记录</div>
       <div v-else class="admin-mobile-cards">
         <div v-for="item in list" :key="item.id" class="admin-mobile-card">
@@ -31,39 +33,46 @@
             </div>
           </div>
           <div class="admin-mobile-card-actions">
-            <t-popconfirm content="确定要删除此黑名单记录吗？" @confirm="handleDelete(item.id)">
-              <t-button theme="danger" variant="text" size="small">删除</t-button>
-            </t-popconfirm>
+            <el-popconfirm content="确定要删除此黑名单记录吗？" @confirm="handleDelete(item.id)">
+              <el-button type="danger" link size="small">删除</el-button>
+            </el-popconfirm>
           </div>
         </div>
       </div>
     </div>
 
-    <t-dialog v-model:visible="dialogVisible" header="添加域名黑名单">
+    <EpDialog append-to-body v-model="dialogVisible" header="添加域名黑名单">
       <template #footer>
-        <t-button variant="outline" @click="dialogVisible = false">取消</t-button>
-        <t-button theme="primary" @click="handleCreate" :loading="creating">添加</t-button>
+        <el-button plain @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleCreate" :loading="creating">添加</el-button>
       </template>
-      <t-form layout="vertical" label-align="top">
-        <t-form-item label="域名">
-          <t-input v-model="formData.domain" placeholder="example.com 或 *.example.com" />
-        </t-form-item>
-        <t-form-item label="原因（可选）">
-          <t-input v-model="formData.reason" />
-        </t-form-item>
-      </t-form>
-    </t-dialog>
+      <el-form label-position="top">
+        <el-form-item label="域名">
+          <el-input v-model="formData.domain" placeholder="example.com 或 *.example.com" />
+        </el-form-item>
+        <el-form-item label="原因（可选）">
+          <el-input v-model="formData.reason" />
+        </el-form-item>
+      </el-form>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
+import EpIcon from "@/components/ep/EpIcon.vue"
 import { computed, h, onMounted, ref } from "vue"
-import { MessagePlugin, Button } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
+import { ElButton, ElPopconfirm } from "element-plus"
 import { api, type DomainBlacklist } from "@/lib/api"
 import { formatTime } from "@/lib/time"
+import ErrorState from "@/components/common/ErrorState.vue"
+import LoadingState from "@/components/common/LoadingState.vue"
 
 const list = ref<DomainBlacklist[]>([])
 const loading = ref(false)
+const error = ref("")
 const dialogVisible = ref(false)
 const creating = ref(false)
 const formData = ref({ domain: "", reason: "" })
@@ -71,10 +80,12 @@ const formData = ref({ domain: "", reason: "" })
 const loadList = async () => {
   try {
     loading.value = true
+    error.value = ""
     const { blacklist } = await api.listDomainBlacklist()
     list.value = blacklist || []
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载黑名单失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载黑名单失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -132,11 +143,11 @@ const columns = computed(() => [
     width: 120,
     cell: (_h: any, { row }: { row: DomainBlacklist }) =>
       h(
-        "t-popconfirm",
-        { content: "确定要删除此黑名单记录吗？", onConfirm: () => handleDelete(row.id) },
+        ElPopconfirm,
+        { title: "确定要删除此黑名单记录吗？", onConfirm: () => handleDelete(row.id) },
         {
-          default: () =>
-            h(Button, { theme: "danger", variant: "text", size: "small" }, () => "删除"),
+          reference: () =>
+            h(ElButton, { type: "danger", link: true, size: "small" }, () => "删除"),
         }
       ),
   },
@@ -146,31 +157,4 @@ onMounted(() => {
   loadList()
 })
 </script>
-
-<style scoped>
-.desc {
-  color: var(--app-text-muted);
-  font-size: 13px;
-  margin: 0 0 16px;
-  line-height: 1.6;
-}
-
-.desc code {
-  background: var(--app-surface-muted);
-  border: 1px solid var(--app-border);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  color: var(--app-text-strong);
-}
-
-.toolbar {
-  margin-bottom: 16px;
-}
-
-.loading-row {
-  text-align: center;
-  padding: 32px 0;
-}
-</style>
 

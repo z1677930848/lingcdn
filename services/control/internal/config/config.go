@@ -58,6 +58,9 @@ type Config struct {
 	UpgradePubKey              string
 	PublicGRPCEndpoint         string
 	PublicIP                   string
+	ControlDomain              string
+	ControlPublicHTTPS         bool
+	ControlRedirectToDomain    bool
 	ElasticsearchTSField       string
 	ElasticsearchDomainField   string
 	ElasticsearchBytesField    string
@@ -73,6 +76,7 @@ type Config struct {
 	LicenseFile                string
 	LicenseMode                string
 	LicenseStaticIndexURL      string
+	LocalBundleDir             string
 	LicenseGraceHours          int
 	LicenseVerifyInterval      time.Duration
 	SystemReportInterval       time.Duration
@@ -99,6 +103,15 @@ type Config struct {
 	PaymentEPayNotifyURL    string `json:"payment_epay_notify_url"`
 	PaymentEPayReturnURL    string `json:"payment_epay_return_url"`
 	PaymentMinRechargeCents int64  `json:"payment_min_recharge_cents"`
+
+	// TrustedProxies is a comma-separated list of CIDR ranges whose
+	// X-Forwarded-For / X-Real-IP headers should be honored when resolving
+	// the client IP for rate limiting and audit logging. When empty, the
+	// control plane refuses to read those headers and uses RemoteAddr only,
+	// which prevents trivial spoofing that lets attackers bypass the
+	// per-IP login / email rate limits. Entries can be CIDR blocks such as
+	// "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16" or bare IPs ("1.2.3.4").
+	TrustedProxies string `json:"trusted_proxies"`
 }
 
 // LoadOptions controls how runtime config is loaded.
@@ -234,14 +247,17 @@ func defaultConfig() Config {
 		UpgradePubKey:              "",
 		PublicGRPCEndpoint:         "",
 		PublicIP:                   "",
+		ControlDomain:              "",
+		ControlPublicHTTPS:         false,
+		ControlRedirectToDomain:    false,
 		ElasticsearchTSField:       "@timestamp",
-		ElasticsearchDomainField:   "domain.keyword",
+		ElasticsearchDomainField:   "domain",
 		ElasticsearchBytesField:    "bytes",
 		CACertFile:                 "",
 		CAKeyFile:                  "",
 		ACMEEnable:                 false,
 		ACMEEmail:                  "",
-		ACMECacheDir:               "/etc/lingcdn/acme",
+		ACMECacheDir:               "data/acme",
 		ACMEStaging:                false,
 		HTTPSAddr:                  ":443",
 		ACMECertFile:               "",
@@ -249,6 +265,7 @@ func defaultConfig() Config {
 		LicenseFile:                "data/license.json",
 		LicenseMode:                NormalizeLicenseMode("online"),
 		LicenseStaticIndexURL:      "",
+		LocalBundleDir:             "data/bundles",
 		LicenseGraceHours:          24,
 		LicenseVerifyInterval:      5 * time.Minute,
 		SystemReportInterval:       10 * time.Minute,
@@ -274,6 +291,8 @@ func defaultConfig() Config {
 		PaymentEPayNotifyURL:    "",
 		PaymentEPayReturnURL:    "",
 		PaymentMinRechargeCents: 100,
+
+		TrustedProxies: "127.0.0.1/32,::1/128",
 	}
 }
 
@@ -309,6 +328,9 @@ func applyOverrides(cfg *Config, src valueSource, locked bool) {
 	cfg.UpgradePubKey = lookupString(src, "UPGRADE_PUBKEY", cfg.UpgradePubKey)
 	cfg.PublicGRPCEndpoint = lookupString(src, "PUBLIC_GRPC_ENDPOINT", cfg.PublicGRPCEndpoint)
 	cfg.PublicIP = lookupString(src, "PUBLIC_IP", cfg.PublicIP)
+	cfg.ControlDomain = lookupString(src, "CONTROL_DOMAIN", cfg.ControlDomain)
+	cfg.ControlPublicHTTPS = lookupBool(src, "CONTROL_PUBLIC_HTTPS", cfg.ControlPublicHTTPS)
+	cfg.ControlRedirectToDomain = lookupBool(src, "CONTROL_REDIRECT_TO_DOMAIN", cfg.ControlRedirectToDomain)
 	cfg.ElasticsearchTSField = lookupString(src, "ES_FIELD_TIMESTAMP", cfg.ElasticsearchTSField)
 	cfg.ElasticsearchDomainField = lookupString(src, "ES_FIELD_DOMAIN", cfg.ElasticsearchDomainField)
 	cfg.ElasticsearchBytesField = lookupString(src, "ES_FIELD_BYTES", cfg.ElasticsearchBytesField)
@@ -322,12 +344,13 @@ func applyOverrides(cfg *Config, src valueSource, locked bool) {
 	cfg.ACMECertFile = lookupString(src, "ACME_CERT_FILE", cfg.ACMECertFile)
 	cfg.ACMEKeyFile = lookupString(src, "ACME_KEY_FILE", cfg.ACMEKeyFile)
 	cfg.LicenseFile = lookupString(src, "LICENSE_FILE", cfg.LicenseFile)
-	cfg.LicenseMode = NormalizeLicenseMode(cfg.LicenseMode)
-	cfg.LicenseStaticIndexURL = ""
+	cfg.LicenseMode = NormalizeLicenseMode(lookupString(src, "LICENSE_MODE", cfg.LicenseMode))
+	cfg.LicenseStaticIndexURL = lookupString(src, "LICENSE_STATIC_INDEX_URL", cfg.LicenseStaticIndexURL)
+	cfg.LocalBundleDir = lookupString(src, "LOCAL_BUNDLE_DIR", cfg.LocalBundleDir)
 	cfg.LicenseGraceHours = lookupInt(src, "LICENSE_GRACE_HOURS", cfg.LicenseGraceHours)
 	cfg.LicenseVerifyInterval = lookupDuration(src, "LICENSE_VERIFY_INTERVAL", cfg.LicenseVerifyInterval)
 	cfg.SystemReportInterval = lookupDuration(src, "SYSTEM_REPORT_INTERVAL", cfg.SystemReportInterval)
-	cfg.AllowInsecureLicensePubKey = false
+	cfg.AllowInsecureLicensePubKey = lookupBool(src, "ALLOW_INSECURE_LICENSE_PUBKEY", cfg.AllowInsecureLicensePubKey)
 	cfg.SMTPHost = lookupString(src, "SMTP_HOST", cfg.SMTPHost)
 	cfg.SMTPPort = lookupInt(src, "SMTP_PORT", cfg.SMTPPort)
 	cfg.SMTPUser = lookupString(src, "SMTP_USER", cfg.SMTPUser)
@@ -350,8 +373,14 @@ func applyOverrides(cfg *Config, src valueSource, locked bool) {
 	cfg.PaymentEPayReturnURL = lookupString(src, "PAYMENT_EPAY_RETURN_URL", cfg.PaymentEPayReturnURL)
 	cfg.PaymentMinRechargeCents = lookupInt64(src, "PAYMENT_MIN_RECHARGE_CENTS", cfg.PaymentMinRechargeCents)
 
+	cfg.TrustedProxies = lookupString(src, "TRUSTED_PROXIES", cfg.TrustedProxies)
+
 	cfg.PortalReportSecret = lookupString(src, "PORTAL_REPORT_SECRET", cfg.WebhookSecret)
-	cfg.PortalBase = DefaultPortalBase
+	if !locked {
+		cfg.PortalBase = lookupString(src, "PORTAL_BASE", cfg.PortalBase)
+	} else {
+		cfg.PortalBase = DefaultPortalBase
+	}
 	if !locked {
 		cfg.LicensePubKey = lookupString(src, "LICENSE_PUBKEY", cfg.LicensePubKey)
 	}
@@ -582,9 +611,13 @@ func renderConfigYAML(cfg Config, locked bool) ([]byte, error) {
 	writeGroup(&b, "Network identity", []configEntry{
 		{Key: "PUBLIC_GRPC_ENDPOINT", Value: cfg.PublicGRPCEndpoint},
 		{Key: "PUBLIC_IP", Value: cfg.PublicIP},
+		{Key: "CONTROL_DOMAIN", Value: cfg.ControlDomain},
+		{Key: "CONTROL_PUBLIC_HTTPS", Value: cfg.ControlPublicHTTPS},
+		{Key: "CONTROL_REDIRECT_TO_DOMAIN", Value: cfg.ControlRedirectToDomain},
 		{Key: "PORTAL_BASE", Value: cfg.PortalBase, Omit: locked},
 		{Key: "UPGRADE_API", Value: cfg.UpgradeAPI},
 		{Key: "UPGRADE_PUBKEY", Value: cfg.UpgradePubKey},
+		{Key: "TRUSTED_PROXIES", Value: cfg.TrustedProxies},
 	})
 	writeGroup(&b, "Logging", []configEntry{
 		{Key: "LOG_LEVEL", Value: cfg.LogLevel},
@@ -608,6 +641,7 @@ func renderConfigYAML(cfg Config, locked bool) ([]byte, error) {
 		{Key: "LICENSE_FILE", Value: cfg.LicenseFile},
 		{Key: "LICENSE_MODE", Value: cfg.LicenseMode},
 		{Key: "LICENSE_STATIC_INDEX_URL", Value: cfg.LicenseStaticIndexURL},
+		{Key: "LOCAL_BUNDLE_DIR", Value: cfg.LocalBundleDir},
 		{Key: "LICENSE_GRACE_HOURS", Value: cfg.LicenseGraceHours},
 		{Key: "LICENSE_VERIFY_INTERVAL", Value: cfg.LicenseVerifyInterval.String()},
 		{Key: "LICENSE_PUBKEY", Value: cfg.LicensePubKey, Omit: locked},
@@ -827,5 +861,10 @@ func getEnvDuration(key string, def time.Duration) time.Duration {
 }
 
 func NormalizeLicenseMode(mode string) string {
-	return "online"
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "open", "offline", "online":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "online"
+	}
 }

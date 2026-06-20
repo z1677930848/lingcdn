@@ -19,9 +19,11 @@ type Memory struct {
 	usersByUsername         map[string]*User // key: username lowercase
 	usersOrdered            []*User
 	nodes                   map[string]*Node
+	nodeMetricSamples       map[string][]NodeMetricSample
 	domains                 map[string]*Domain
 	origins                 map[string]*Origin
 	domainOrigins           map[string][]*DomainOrigin // key: domain_id
+	streamForwards          map[string]*StreamForward
 	certs                   map[int64]*Certificate
 	certSeq                 int64
 	configVersions          map[string]*ConfigVersion
@@ -53,9 +55,13 @@ type Memory struct {
 	balanceRecharges        map[string]*BalanceRecharge
 	balanceWithdrawals      map[string]*BalanceWithdrawal
 	announcements           map[string]*Announcement
+	userGroups              map[string]*UserGroup
 	clusters                map[string]*Cluster
 	systemLogs              []*SystemLog
 	userTraffic             map[string]int64 // key: "userID:month"
+	alertRules              map[string]*AlertRule
+	tickets                 map[string]*Ticket
+	ticketReplies           map[string][]*TicketReply
 }
 
 func NewMemory(serviceToken, bootstrapToken string) *Memory {
@@ -67,6 +73,7 @@ func NewMemory(serviceToken, bootstrapToken string) *Memory {
 		domains:                 make(map[string]*Domain),
 		origins:                 make(map[string]*Origin),
 		domainOrigins:           make(map[string][]*DomainOrigin),
+		streamForwards:          make(map[string]*StreamForward),
 		certs:                   make(map[int64]*Certificate),
 		configVersions:          make(map[string]*ConfigVersion),
 		cacheRules:              make(map[string]*CacheRule),
@@ -94,10 +101,14 @@ func NewMemory(serviceToken, bootstrapToken string) *Memory {
 		balanceRecharges:        make(map[string]*BalanceRecharge),
 		balanceWithdrawals:      make(map[string]*BalanceWithdrawal),
 		announcements:           make(map[string]*Announcement),
+		userGroups:              make(map[string]*UserGroup),
 		clusters:                make(map[string]*Cluster),
 		systemLogs:              make([]*SystemLog, 0, 32),
 		userTraffic:             make(map[string]int64),
 		settings:                DefaultSettings(),
+		alertRules:              make(map[string]*AlertRule),
+		tickets:                 make(map[string]*Ticket),
+		ticketReplies:           make(map[string][]*TicketReply),
 	}
 }
 
@@ -117,6 +128,13 @@ func (m *Memory) CreateUser(ctx context.Context, user *User) error {
 	if strings.TrimSpace(user.Status) == "" {
 		user.Status = "active"
 	}
+	var nextNumericID int64
+	for _, existing := range m.usersOrdered {
+		if existing.NumericID > nextNumericID {
+			nextNumericID = existing.NumericID
+		}
+	}
+	user.NumericID = nextNumericID + 1
 	email := strings.ToLower(user.Email)
 	username := strings.ToLower(user.Username)
 	m.users[email] = user
@@ -239,6 +257,93 @@ func (m *Memory) UpdateUserRole(ctx context.Context, id string, role string) err
 		}
 	}
 	return sql.ErrNoRows
+}
+
+func (m *Memory) UpdateUserGroupID(ctx context.Context, id, groupID string) error {
+	_ = ctx
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return sql.ErrNoRows
+	}
+	groupID = strings.TrimSpace(groupID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.users {
+		if u.ID == id {
+			u.GroupID = groupID
+			u.UpdatedAt = time.Now()
+			return nil
+		}
+	}
+	return sql.ErrNoRows
+}
+
+func (m *Memory) UpdateUserEmail(ctx context.Context, id, email string) error {
+	_ = ctx
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return sql.ErrNoRows
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var target *User
+	var oldKey string
+	for key, u := range m.users {
+		if u.ID == id {
+			target = u
+			oldKey = key
+			break
+		}
+	}
+	if target == nil {
+		return sql.ErrNoRows
+	}
+	if oldKey != email {
+		if _, exists := m.users[email]; exists {
+			return fmt.Errorf("email already exists")
+		}
+		delete(m.users, oldKey)
+		target.Email = email
+		m.users[email] = target
+	} else {
+		target.Email = email
+	}
+	target.UpdatedAt = time.Now()
+	return nil
+}
+
+func (m *Memory) UpdateUserUsername(ctx context.Context, id, username string) error {
+	_ = ctx
+	username = strings.ToLower(strings.TrimSpace(username))
+	if username == "" {
+		return sql.ErrNoRows
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var target *User
+	var oldKey string
+	for key, u := range m.usersByUsername {
+		if u.ID == id {
+			target = u
+			oldKey = key
+			break
+		}
+	}
+	if target == nil {
+		return sql.ErrNoRows
+	}
+	if oldKey != username {
+		if _, exists := m.usersByUsername[username]; exists {
+			return fmt.Errorf("username already exists")
+		}
+		delete(m.usersByUsername, oldKey)
+		target.Username = username
+		m.usersByUsername[username] = target
+	} else {
+		target.Username = username
+	}
+	target.UpdatedAt = time.Now()
+	return nil
 }
 
 func (m *Memory) UpdateUserPasswordHash(ctx context.Context, id string, passwordHash string) error {
@@ -590,6 +695,9 @@ func (m *Memory) UpdateNodeTelemetry(ctx context.Context, id string, t NodeTelem
 	n.TCPSynRecv = t.TCPSynRecv
 	n.TCPTimeWait = t.TCPTimeWait
 	n.NginxRunning = t.NginxRunning
+	n.RequestsTotal = t.RequestsTotal
+	n.CacheHits = t.CacheHits
+	n.CacheMisses = t.CacheMisses
 	n.LastMetricsAt = now
 	n.UpdatedAt = now
 	return nil
@@ -600,6 +708,7 @@ func (m *Memory) DeleteNode(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.nodes, id)
+	delete(m.nodeMetricSamples, id)
 	// Mirror the Postgres ON DELETE CASCADE on cluster_nodes(node_id):
 	// remove this node from every cluster/line it is a member of so
 	// memory-backed tests observe the same behavior as production.
@@ -721,6 +830,7 @@ func (m *Memory) CreateDomain(ctx context.Context, domain *Domain) error {
 	if domain.OriginPort <= 0 {
 		domain.OriginPort = 80
 	}
+	domain.ListenPort = normalizeDomainListenPort(domain.ListenPort)
 	if strings.TrimSpace(domain.OriginHostMode) == "" {
 		domain.OriginHostMode = "request_host"
 	}
@@ -829,8 +939,11 @@ func (m *Memory) UpdateDomain(ctx context.Context, domain *Domain) error {
 		}
 		d.LineGroupID = domain.LineGroupID
 		d.OriginID = domain.OriginID
-		d.CertID = domain.CertID
-		if domain.OriginScheme != "" {
+		if domain.CertID != "" {
+			d.CertID = domain.CertID
+		}
+		d.ListenPort = normalizeDomainListenPort(domain.ListenPort)
+		if strings.TrimSpace(domain.OriginScheme) != "" {
 			d.OriginScheme = domain.OriginScheme
 		}
 		if domain.OriginPort > 0 {
@@ -1011,6 +1124,129 @@ func (m *Memory) DeleteDomainOrigins(ctx context.Context, domainID string) error
 	defer m.mu.Unlock()
 	delete(m.domainOrigins, domainID)
 	return nil
+}
+
+// StreamForward operations
+
+func (m *Memory) ListStreamForwards(ctx context.Context, userID string) ([]*StreamForward, error) {
+	_ = ctx
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*StreamForward
+	for _, sf := range m.streamForwards {
+		if sf.UserID == userID {
+			cp := *sf
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ListenPort != out[j].ListenPort {
+			return out[i].ListenPort < out[j].ListenPort
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (m *Memory) ListStreamForwardsByDomain(ctx context.Context, domainID string) ([]*StreamForward, error) {
+	_ = ctx
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*StreamForward
+	for _, sf := range m.streamForwards {
+		if sf.DomainID == domainID {
+			cp := *sf
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ListenPort != out[j].ListenPort {
+			return out[i].ListenPort < out[j].ListenPort
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (m *Memory) ListAllStreamForwards(ctx context.Context) ([]*StreamForward, error) {
+	_ = ctx
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*StreamForward, 0, len(m.streamForwards))
+	for _, sf := range m.streamForwards {
+		cp := *sf
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UserID != out[j].UserID {
+			return out[i].UserID < out[j].UserID
+		}
+		if out[i].ListenPort != out[j].ListenPort {
+			return out[i].ListenPort < out[j].ListenPort
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (m *Memory) GetStreamForward(ctx context.Context, id string) (*StreamForward, error) {
+	_ = ctx
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	sf, ok := m.streamForwards[id]
+	if !ok {
+		return nil, nil
+	}
+	cp := *sf
+	return &cp, nil
+}
+
+func (m *Memory) CreateStreamForward(ctx context.Context, sf *StreamForward) error {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	cp := *sf
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	m.streamForwards[cp.ID] = &cp
+	return nil
+}
+
+func (m *Memory) UpdateStreamForward(ctx context.Context, sf *StreamForward) error {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.streamForwards[sf.ID]; !ok {
+		return fmt.Errorf("stream forward not found")
+	}
+	cp := *sf
+	cp.UpdatedAt = time.Now()
+	m.streamForwards[cp.ID] = &cp
+	return nil
+}
+
+func (m *Memory) DeleteStreamForward(ctx context.Context, id string) error {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.streamForwards, id)
+	return nil
+}
+
+func (m *Memory) CountEnabledStreamForwardsByUser(ctx context.Context, userID string) (int, error) {
+	_ = ctx
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, sf := range m.streamForwards {
+		if sf.UserID == userID && sf.Enabled {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // Certificate operations
@@ -1445,6 +1681,29 @@ func (m *Memory) AdminListBalanceRecharges(ctx context.Context, userID, status s
 	return all[start:end], total, nil
 }
 
+func (m *Memory) UpdateBalanceRechargePayment(ctx context.Context, id, payURL, qrCode, formHTML string) error {
+	_ = ctx
+	_ = formHTML
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r := m.balanceRecharges[id]
+	if r == nil {
+		return nil
+	}
+	if payURL != "" {
+		r.PaymentURL = payURL
+	}
+	if qrCode != "" {
+		r.QRCode = qrCode
+	}
+	r.UpdatedAt = time.Now()
+	return nil
+}
+
 func (m *Memory) AdminUpdateBalanceRecharge(ctx context.Context, id, status, tradeNo, notifyRaw string, paidAt time.Time) error {
 	_ = ctx
 	id = strings.TrimSpace(id)
@@ -1538,6 +1797,65 @@ func (m *Memory) AdminListBalanceWithdrawals(ctx context.Context, userID, status
 	return all[start:end], total, nil
 }
 
+func (m *Memory) CreateBalanceWithdrawal(ctx context.Context, w *BalanceWithdrawal) error {
+	_ = ctx
+	if w == nil || w.ID == "" || w.UserID == "" {
+		return fmt.Errorf("invalid withdrawal")
+	}
+	if w.AmountCents <= 0 {
+		return fmt.Errorf("invalid withdrawal amount")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a := m.balanceAccounts[w.UserID]
+	if a == nil || a.BalanceCents < w.AmountCents {
+		return errors.New("insufficient balance")
+	}
+	a.BalanceCents -= w.AmountCents
+	a.UpdatedAt = time.Now()
+	cp := *w
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now()
+	}
+	if cp.UpdatedAt.IsZero() {
+		cp.UpdatedAt = cp.CreatedAt
+	}
+	if cp.Status == "" {
+		cp.Status = "pending"
+	}
+	if cp.Currency == "" {
+		cp.Currency = "CNY"
+	}
+	t := &BalanceTransaction{
+		ID:           generateID(),
+		UserID:       w.UserID,
+		Type:         "withdraw",
+		AmountCents:  -w.AmountCents,
+		BalanceCents: a.BalanceCents,
+		Note:         "withdrawal reserved (pending review)",
+		RefType:      "withdrawal",
+		RefID:        cp.ID,
+		CreatedAt:    cp.CreatedAt,
+	}
+	m.balanceTransactions[w.UserID] = append([]*BalanceTransaction{t}, m.balanceTransactions[w.UserID]...)
+	m.balanceWithdrawals[cp.ID] = &cp
+	return nil
+}
+
+func (m *Memory) withdrawalHeldLocked(w *BalanceWithdrawal) bool {
+	if w == nil {
+		return false
+	}
+	for _, txs := range m.balanceTransactions {
+		for _, t := range txs {
+			if t != nil && t.RefType == "withdrawal" && t.RefID == w.ID && t.AmountCents < 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (m *Memory) AdminUpdateBalanceWithdrawal(ctx context.Context, id, status, note string, reviewedAt time.Time) error {
 	_ = ctx
 	id = strings.TrimSpace(id)
@@ -1554,20 +1872,48 @@ func (m *Memory) AdminUpdateBalanceWithdrawal(ctx context.Context, id, status, n
 	if w == nil {
 		return nil
 	}
+	held := m.withdrawalHeldLocked(w)
 	if w.Status == "pending" && (status == "approved" || status == "paid") {
-		a := m.balanceAccounts[w.UserID]
-		if a == nil || a.BalanceCents < w.AmountCents {
-			return errors.New("insufficient balance")
+		if !held {
+			a := m.balanceAccounts[w.UserID]
+			if a == nil || a.BalanceCents < w.AmountCents {
+				return errors.New("insufficient balance")
+			}
+			a.BalanceCents -= w.AmountCents
+			a.UpdatedAt = time.Now()
+			t := &BalanceTransaction{
+				ID:           generateID(),
+				UserID:       w.UserID,
+				Type:         "withdraw",
+				AmountCents:  -w.AmountCents,
+				BalanceCents: a.BalanceCents,
+				Note:         note,
+				RefType:      "withdrawal",
+				RefID:        w.ID,
+				CreatedAt:    reviewedAt,
+			}
+			m.balanceTransactions[w.UserID] = append([]*BalanceTransaction{t}, m.balanceTransactions[w.UserID]...)
 		}
-		a.BalanceCents -= w.AmountCents
+	}
+	if w.Status == "pending" && (status == "rejected" || status == "cancelled" || status == "failed") && held {
+		a := m.balanceAccounts[w.UserID]
+		if a == nil {
+			a = &BalanceAccount{UserID: w.UserID, BalanceCents: 0, Currency: "CNY", UpdatedAt: time.Now()}
+			m.balanceAccounts[w.UserID] = a
+		}
+		a.BalanceCents += w.AmountCents
 		a.UpdatedAt = time.Now()
+		refundNote := strings.TrimSpace(note)
+		if refundNote == "" {
+			refundNote = "withdrawal rejected, balance restored"
+		}
 		t := &BalanceTransaction{
 			ID:           generateID(),
 			UserID:       w.UserID,
-			Type:         "withdraw",
-			AmountCents:  -w.AmountCents,
+			Type:         "adjust",
+			AmountCents:  w.AmountCents,
 			BalanceCents: a.BalanceCents,
-			Note:         note,
+			Note:         refundNote,
 			RefType:      "withdrawal",
 			RefID:        w.ID,
 			CreatedAt:    reviewedAt,
@@ -2308,6 +2654,13 @@ func normalizeLoadBalanceMethod(s string) string {
 	}
 }
 
+func normalizeDomainListenPort(p int32) int32 {
+	if p < 0 || p > 65535 {
+		return 0
+	}
+	return p
+}
+
 // API Tokens
 func (m *Memory) CreateAPIToken(ctx context.Context, description string, ttl time.Duration) (string, *APIToken, error) {
 	_ = ctx
@@ -2623,6 +2976,107 @@ func (m *Memory) DeleteProductGroup(ctx context.Context, id string) error {
 			cp.GroupID = ""
 			cp.UpdatedAt = time.Now()
 			m.products[pid] = &cp
+		}
+	}
+	return nil
+}
+
+func (m *Memory) ListUserGroups(ctx context.Context) ([]*UserGroup, error) {
+	_ = ctx
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var list []*UserGroup
+	for _, g := range m.userGroups {
+		cp := *g
+		list = append(list, &cp)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if !strings.EqualFold(list[i].Name, list[j].Name) {
+			return strings.ToLower(list[i].Name) < strings.ToLower(list[j].Name)
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
+	return list, nil
+}
+
+func (m *Memory) GetUserGroup(ctx context.Context, id string) (*UserGroup, error) {
+	_ = ctx
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if g, ok := m.userGroups[id]; ok && g != nil {
+		cp := *g
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (m *Memory) CreateUserGroup(ctx context.Context, g *UserGroup) error {
+	_ = ctx
+	if g == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	cp := *g
+	if strings.TrimSpace(cp.ID) == "" {
+		cp.ID = generateID()
+	}
+	cp.Name = strings.TrimSpace(cp.Name)
+	cp.Description = strings.TrimSpace(cp.Description)
+	if cp.Permissions != nil {
+		cp.Permissions = append([]string(nil), cp.Permissions...)
+	}
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	m.userGroups[cp.ID] = &cp
+	return nil
+}
+
+func (m *Memory) UpdateUserGroup(ctx context.Context, g *UserGroup) error {
+	_ = ctx
+	if g == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing, ok := m.userGroups[g.ID]
+	if !ok || existing == nil {
+		return sql.ErrNoRows
+	}
+	cp := *g
+	cp.Name = strings.TrimSpace(cp.Name)
+	cp.Description = strings.TrimSpace(cp.Description)
+	if cp.Permissions != nil {
+		cp.Permissions = append([]string(nil), cp.Permissions...)
+	}
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = existing.CreatedAt
+	}
+	cp.UpdatedAt = time.Now()
+	m.userGroups[cp.ID] = &cp
+	return nil
+}
+
+func (m *Memory) DeleteUserGroup(ctx context.Context, id string) error {
+	_ = ctx
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.userGroups, id)
+	for _, u := range m.users {
+		if u != nil && u.GroupID == id {
+			u.GroupID = ""
+			u.UpdatedAt = time.Now()
 		}
 	}
 	return nil

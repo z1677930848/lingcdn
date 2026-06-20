@@ -7,20 +7,17 @@
       </div>
     </div>
 
-    <div v-if="error" class="error-box">
-      <span>{{ error }}</span>
-      <t-button size="small" theme="primary" @click="() => loadAnnouncements(true)">重试</t-button>
-    </div>
+    <ErrorState v-if="error" :message="error" @retry="() => loadAnnouncements(true)" />
 
-    <t-card class="section-card" bordered>
-      <div class="section-body" style="display:flex;gap:12px;flex-wrap:wrap">
-        <t-input v-model="query" clearable placeholder="搜索公告" style="min-width:260px" />
-        <t-button theme="primary" :loading="loading" @click="onSearch">搜索</t-button>
-        <t-button variant="outline" @click="() => loadAnnouncements(true)">刷新</t-button>
+    <el-card class="section-card">
+      <div class="section-body announcements-filter">
+        <el-input v-model="query" clearable placeholder="搜索公告" style="min-width:260px" />
+        <el-button type="primary" :loading="loading" @click="onSearch">搜索</el-button>
+        <el-button plain @click="() => loadAnnouncements(true)">刷新</el-button>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body" style="display:flex;flex-direction:column;gap:12px">
         <div v-if="items.length === 0" class="admin-empty">
           <p class="admin-table-muted" style="margin:0">暂无公告</p>
@@ -33,34 +30,36 @@
         >
           <div class="notice-title">
             <span>{{ item.title }}</span>
-            <t-tag v-if="item.pinned" size="small" theme="primary" variant="light">置顶</t-tag>
+            <el-tag v-if="item.pinned" size="small" type="primary" effect="light">置顶</el-tag>
           </div>
           <div class="notice-content">{{ excerpt(item.content) }}</div>
           <div class="notice-footer">
             <span>{{ formatDateTime(item.updated_at) }}</span>
-            <t-button size="small" variant="text" @click.stop="openDetail(item)">查看详情</t-button>
+            <el-button size="small" link @click.stop="openDetail(item)">查看详情</el-button>
           </div>
         </div>
 
-        <t-button v-if="hasMore" variant="outline" :loading="loading" @click="onLoadMore">加载更多</t-button>
+        <el-button v-if="hasMore" plain :loading="loading" @click="onLoadMore">加载更多</el-button>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-dialog v-model:visible="detailOpen" :header="detailItem?.title || '公告详情'" width="620" cancel-btn="关闭" :confirm-btn="null">
+    <EpDialog append-to-body v-model="detailOpen" :title="detailItem?.title || '公告详情'" width="620" cancel-btn="关闭" :confirm-btn="null">
       <div class="detail-body">
         <div class="detail-meta">
-          <t-tag v-if="detailItem?.pinned" size="small" theme="primary" variant="light">置顶</t-tag>
+          <el-tag v-if="detailItem?.pinned" size="small" type="primary" effect="light">置顶</el-tag>
           <span>{{ formatDateTime(detailItem?.updated_at) }}</span>
         </div>
         <div class="detail-content">{{ detailItem?.content || '-' }}</div>
       </div>
-    </t-dialog>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpDialog from "@/components/ep/EpDialog.vue"
 import { computed, onMounted, ref } from "vue"
 import { api, type Announcement } from "@/lib/api"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const items = ref<Announcement[]>([])
 const total = ref(0)
@@ -146,76 +145,3 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
-.notice-item {
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.notice-item:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-  transform: translateY(-1px);
-}
-
-.notice-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.notice-content {
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.notice-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.detail-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.detail-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.detail-content {
-  color: #334155;
-  font-size: 14px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-}
-
-@media (max-width: 768px) {
-  .section-body {
-    flex-direction: column;
-  }
-  .section-body :deep(.t-input) {
-    min-width: 0 !important;
-    width: 100% !important;
-  }
-}
-</style>

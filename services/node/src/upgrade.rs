@@ -206,10 +206,24 @@ impl UpgradeRunner {
             .unwrap_or_default()
             .trim()
             .to_string();
-        if signature.is_empty() {
-            return Err(anyhow!("upgrade info missing signature"));
+        // Security-critical: the pubkey MUST be baked into the node's
+        // configuration (UPGRADE_PUBKEY env / config file). The previous
+        // implementation fell back to `latest.pubkey` from the HTTP
+        // response, which let a compromised (or MITM'd) portal hand the
+        // node its own pubkey along with a matching signature — bypassing
+        // the entire verification. We now ignore `latest.pubkey` entirely
+        // and require the operator-provisioned key.
+        let pubkey = self.pubkey_b64.trim();
+        if pubkey.is_empty() {
+            return Err(anyhow!(
+                "upgrade refused: no local pubkey configured (set UPGRADE_PUBKEY to the operator's ed25519 public key); signature from portal cannot be trusted without it"
+            ));
         }
-
+        if signature.is_empty() {
+            return Err(anyhow!(
+                "upgrade refused: portal returned no signature for this release; relying on HTTPS + SHA256 is insufficient because HTTPS only authenticates the transport, not the binary"
+            ));
+        }
         let sig_alg = latest.sig_alg.as_deref().unwrap_or_default().trim();
         if !sig_alg.is_empty() && sig_alg != "ed25519" {
             return Err(anyhow!("unsupported sig_alg {}", sig_alg));
@@ -217,13 +231,6 @@ impl UpgradeRunner {
         let sig_target = latest.sig_target.as_deref().unwrap_or_default().trim();
         if !sig_target.is_empty() && sig_target != "sha256" {
             return Err(anyhow!("unsupported sig_target {}", sig_target));
-        }
-
-        let pubkey = self.pubkey_b64.trim();
-        if pubkey.is_empty() {
-            return Err(anyhow!(
-                "missing UPGRADE_PUBKEY (refuse to upgrade without pinned key)"
-            ));
         }
         verify_checksum_signature_sha256(pubkey, &checksum, &signature)?;
 

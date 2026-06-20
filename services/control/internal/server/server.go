@@ -33,6 +33,7 @@ import (
 	"github.com/lingcdn/control/internal/metrics"
 	"github.com/lingcdn/control/internal/nodehub"
 	"github.com/lingcdn/control/internal/payment"
+	"github.com/lingcdn/control/internal/preload"
 	"github.com/lingcdn/control/internal/publisher"
 	"github.com/lingcdn/control/internal/purge"
 	"github.com/lingcdn/control/internal/store"
@@ -46,6 +47,7 @@ type Servers struct {
 	compiler    *compiler.Compiler
 	publisher   *publisher.Publisher
 	purge       *purge.Service
+	preload     *preload.Service
 	cert        *cert.Manager
 	store       store.Store
 	metrics     *metrics.Metrics
@@ -67,6 +69,9 @@ type Servers struct {
 	// Upgrade versions cache.
 	upgradeVersions   map[string]*UpgradeVersion
 	upgradeVersionsMu sync.RWMutex
+	// portalLatestCache caches /api/upgrade/latest responses from the auth portal.
+	portalLatestCache   map[string]portalLatestCacheEntry
+	portalLatestCacheMu sync.RWMutex
 
 	// license state (in memory)
 	licenseMu sync.RWMutex
@@ -80,6 +85,10 @@ type Servers struct {
 
 	geoip       *GeoIPManager
 	payProvider payment.Provider
+
+	// Revoked JWT IDs (jti). In-process only.
+	tokenRevokeMu sync.RWMutex
+	tokenRevoke   map[string]time.Time
 
 	// IP-based rate limiters for sensitive auth endpoints. Protects against
 	// credential brute-forcing and verification-code spam. Initialized in
@@ -235,23 +244,30 @@ var (
 )
 
 // New builds the server bundle with all dependencies injected.
-func New(cfg config.Config, hub *nodehub.Hub, compiler *compiler.Compiler, publisher *publisher.Publisher, purge *purge.Service, cert *cert.Manager, store store.Store, m *metrics.Metrics) *Servers {
+func New(cfg config.Config, hub *nodehub.Hub, compiler *compiler.Compiler, publisher *publisher.Publisher, purge *purge.Service, preload *preload.Service, cert *cert.Manager, st store.Store, m *metrics.Metrics) *Servers {
 	recorder := newNodeMonitorRecorder()
+	// Install the trusted-proxy CIDR list before any handler runs so
+	// getRequestIP cannot accidentally trust spoofed XFF headers during
+	// startup warmup. setTrustedProxies is safe to call at any time
+	// (atomic pointer), but doing it here keeps the happy path trivial.
+	setTrustedProxies(cfg.TrustedProxies)
 	return &Servers{
 		cfg:             cfg,
 		hub:             hub,
 		compiler:        compiler,
 		publisher:       publisher,
 		purge:           purge,
+		preload:         preload,
 		cert:            cert,
-		store:           store,
+		store:           st,
 		metrics:         m,
 		xdpStore:        ddos.NewXdpStore(),
 		nodeMonitor:     recorder,
-		sseBroker:       newSSEBroker(recorder, store),
+		sseBroker:       newSSEBroker(recorder, st),
 		acmeMgr:         nil,
 		startedAt:       time.Now(),
-		upgradeVersions: make(map[string]*UpgradeVersion),
+		upgradeVersions:   make(map[string]*UpgradeVersion),
+		portalLatestCache: make(map[string]portalLatestCacheEntry),
 		license: licenseState{
 			Status:    "unlicensed",
 			UpdatedAt: time.Now(),
@@ -269,6 +285,7 @@ func New(cfg config.Config, hub *nodehub.Hub, compiler *compiler.Compiler, publi
 			EPayReturnURL:    cfg.PaymentEPayReturnURL,
 			MinRechargeCents: cfg.PaymentMinRechargeCents,
 		}),
+		tokenRevoke: make(map[string]time.Time),
 	}
 }
 
@@ -278,11 +295,13 @@ func New(cfg config.Config, hub *nodehub.Hub, compiler *compiler.Compiler, publi
 func (s *Servers) Serve(ctx context.Context) error {
 	// Async writer for WAF bans reported via heartbeat. Buffers up to 4096 bans
 	// and flushes in batches of 128 every 250ms; on shutdown it drains best-effort.
-	s.wafBanQ = newWAFBanQueue(s.store, 4096, 128, 250*time.Millisecond)
+	s.wafBanQ = newWAFBanQueue(s.store, 4096, 128, 250*time.Millisecond, func(ctx context.Context, n int) {
+		_ = s.startPublishTask(ctx, "auto", "", fmt.Sprintf("waf.ban.heartbeat:%d", n), "", nil)
+	})
 	s.wafBanQ.start(ctx)
 	defer s.wafBanQ.shutdown()
 
-	nodeCtl := newNodeControlServer(s.hub, s.compiler, s.publisher, s.purge, s.store, s.xdpStore, s.cfg, s.triggerDNSSync, s.notifyNodeOffline, s.licenseAllowsNewNode, s.nodeMonitor, s.sseBroker.notify, s)
+	nodeCtl := newNodeControlServer(s.hub, s.compiler, s.publisher, s.purge, s.preload, s.store, s.xdpStore, s.cfg, s.triggerDNSSync, s.notifyNodeOffline, s.licenseAllowsNewNode, s.nodeMonitor, s.sseBroker.notify, s)
 	nodeCtl.wafBanQ = s.wafBanQ
 
 	s.grpcServer = grpc.NewServer()
@@ -316,6 +335,7 @@ func (s *Servers) Serve(ctx context.Context) error {
 	// Let's Encrypt certs issued through the UI silently expire at day 90
 	// and users find out when TLS starts failing in production.
 	go s.certificateRenewalLoop(ctx)
+	go s.alertCheckerLoop(ctx)
 	// Rehydrate any pending node-upgrade commands from the store. Without
 	// this, a control-plane restart between "operator clicks upgrade" and
 	// "node heartbeats the next time" silently drops the command, stranding
@@ -360,6 +380,13 @@ func (s *Servers) Serve(ctx context.Context) error {
 		}()
 	}
 
+	// challengeSrv is declared at function scope so the shutdown stanza
+	// below can call Shutdown() on it. Previously it was constructed
+	// inside the goroutine and therefore leaked its listener across
+	// graceful shutdown — Serve() would return early via a forced close,
+	// but any in-flight ACME HTTP-01 challenge would be severed mid-request
+	// instead of draining.
+	var challengeSrv *http.Server
 	if s.cfg.ACMEEnable {
 		s.acmeMgr = &autocert.Manager{
 			Cache:      autocert.DirCache(s.cfg.ACMECacheDir),
@@ -372,18 +399,17 @@ func (s *Servers) Serve(ctx context.Context) error {
 		}
 
 		// HTTP-01 challenge listener on :80
+		challengeSrv = &http.Server{
+			Addr: ":80",
+			Handler: s.acmeMgr.HTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "https://"+r.Host+r.URL.RequestURI(), http.StatusMovedPermanently)
+			})),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      10 * time.Second,
+		}
 		go func() {
-			addr := ":80"
-			log.Info().Str("addr", addr).Msg("starting ACME HTTP challenge listener")
-			challengeSrv := &http.Server{
-				Addr: addr,
-				Handler: s.acmeMgr.HTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					http.Redirect(w, r, "https://"+r.Host+r.URL.RequestURI(), http.StatusMovedPermanently)
-				})),
-				ReadHeaderTimeout: 5 * time.Second,
-				ReadTimeout:       10 * time.Second,
-				WriteTimeout:      10 * time.Second,
-			}
+			log.Info().Str("addr", challengeSrv.Addr).Msg("starting ACME HTTP challenge listener")
 			if err := challengeSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("acme http server: %w", err)
 			}
@@ -431,6 +457,16 @@ func (s *Servers) Serve(ctx context.Context) error {
 	s.grpcServer.GracefulStop()
 	_ = adminSrv.Shutdown(shutdownCtx)
 	_ = metricsSrv.Shutdown(shutdownCtx)
+	// Graceful-stop the ACME-mode servers too. Leaving them on forced
+	// close would sever any in-flight HTTP-01 challenge or HTTPS admin
+	// request mid-response; going through Shutdown lets them finish the
+	// current request within the same 10s budget.
+	if challengeSrv != nil {
+		_ = challengeSrv.Shutdown(shutdownCtx)
+	}
+	if httpsSrv != nil {
+		_ = httpsSrv.Shutdown(shutdownCtx)
+	}
 
 	return nil
 }
@@ -518,7 +554,7 @@ func isUUID(s string) bool {
 
 func (s *Servers) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, ok := authenticateRequest(s.cfg, s.store, r)
+		ctx, ok := authenticateRequest(s, r)
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "未登录或登录已过期"})
 			return
@@ -564,7 +600,7 @@ func (s *Servers) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 // withAuthNoLicense skips license gating for selected endpoints.
 func (s *Servers) withAuthNoLicense(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, ok := authenticateRequest(s.cfg, s.store, r)
+		ctx, ok := authenticateRequest(s, r)
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "未登录或登录已过期"})
 			return
@@ -608,6 +644,9 @@ func (s *Servers) checkLicenseForHTTP(path string) (bool, string) {
 	if os.Getenv("LINGCDN_DEV_BYPASS_LICENSE") == "1" && strings.EqualFold(s.cfg.StoreBackend, "memory") {
 		return true, ""
 	}
+	if s.isOpenLicenseMode() {
+		return true, ""
+	}
 	st := s.ensureLicenseStatus()
 	status := strings.ToLower(strings.TrimSpace(st.Status))
 	if status == "" {
@@ -640,6 +679,9 @@ func stReason(st licenseState, fallback string) string {
 // 已存在的节点在任何非 active 状态（expired / limited / unlicensed 等）均允许重注册，
 // 只有真正的"新"节点需要 active 许可证。
 func (s *Servers) licenseAllowsNewNode(ctx context.Context, existing bool) (licenseState, bool, error) {
+	if s.isOpenLicenseMode() {
+		return s.ensureLicenseStatus(), true, nil
+	}
 	st := s.ensureLicenseStatus()
 	now := time.Now()
 	if st.Status != "active" {
@@ -762,24 +804,31 @@ func (s *Servers) ensureDomainUnique(ctx context.Context, d store.Domain, exclud
 }
 
 // getUserActiveProduct finds the active product for a user, optionally matching a specific line group.
+// When lineGroupID is empty, returns the product tied to the paid order with the latest EndsAt
+// (longest remaining subscription). When lineGroupID is set, returns the matching product.
 // Returns nil product (without error) if no active product is found.
 func (s *Servers) getUserActiveProduct(ctx context.Context, userID, lineGroupID string) (*store.Product, error) {
 	orders, err := s.store.ListOrders(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
+	lineGroupID = strings.TrimSpace(lineGroupID)
+
+	var best *store.Product
+	var bestEnd *time.Time
+
 	for _, o := range orders {
 		if o == nil || o.Status != "paid" {
 			continue
 		}
-		if o.EndsAt != nil && o.EndsAt.Before(time.Now()) {
+		if o.EndsAt != nil && o.EndsAt.Before(now) {
 			continue
 		}
 		p, err := s.store.GetProduct(ctx, o.ProductID)
 		if err != nil || p == nil {
 			continue
 		}
-		// 兼容 cluster_id：如果 line_group_id 为空，使用 cluster_id 作为集群标识
 		productLineGroupID := p.LineGroupID
 		if productLineGroupID == "" {
 			productLineGroupID = p.ClusterID
@@ -788,11 +837,24 @@ func (s *Servers) getUserActiveProduct(ctx context.Context, userID, lineGroupID 
 			if productLineGroupID == lineGroupID {
 				return p, nil
 			}
-		} else {
-			return p, nil
+			continue
+		}
+		if o.EndsAt == nil {
+			if best == nil {
+				best = p
+			}
+			continue
+		}
+		if bestEnd == nil || o.EndsAt.After(*bestEnd) {
+			cp := o.EndsAt.UTC()
+			bestEnd = &cp
+			best = p
 		}
 	}
-	return nil, nil
+	if lineGroupID != "" {
+		return nil, nil
+	}
+	return best, nil
 }
 
 // isPrimaryDomain returns true if the domain name is a primary (top-level) domain.
@@ -952,6 +1014,13 @@ func defaultOriginScheme(val string) string {
 func defaultOriginPort(port int32) int32 {
 	if port <= 0 {
 		return 80
+	}
+	return port
+}
+
+func normalizeListenPort(port int32) int32 {
+	if port < 0 || port > 65535 {
+		return 0
 	}
 	return port
 }
@@ -1295,6 +1364,9 @@ func (s *Servers) acmeHostPolicy() autocert.HostPolicy {
 		if host == "" {
 			return fmt.Errorf("empty host")
 		}
+		if s.isControlDomainHost(host) {
+			return nil
+		}
 		d, err := s.store.GetDomainByName(ctx, host)
 		if err != nil {
 			return err
@@ -1324,7 +1396,7 @@ func (s *Servers) ensureACMEIssuer() *autocert.Manager {
 	}
 	cacheDir := s.cfg.ACMECacheDir
 	if strings.TrimSpace(cacheDir) == "" {
-		cacheDir = "/etc/lingcdn/acme"
+		cacheDir = "data/acme"
 	}
 	mgr := &autocert.Manager{
 		Cache:      autocert.DirCache(cacheDir),

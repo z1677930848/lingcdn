@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lingcdn/control/internal/store"
@@ -38,6 +39,17 @@ type ProviderDomain struct {
 	RecordCount int    `json:"record_count"`
 }
 
+// SyncReady reports whether automatic DNS record sync is implemented for a provider.
+func SyncReady(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "alidns", "aliyun", "dnspod", "dnspod-global", "dnspod_global", "dnspod-intl", "dnspod-int", "cloudflare",
+		"route53", "aws", "huawei", "huaweicloud", "google", "gcp", "googlecloud", "51dns", "dns51", "dnsla", "dns.la":
+		return true
+	default:
+		return false
+	}
+}
+
 // NewClient constructs a provider client based on cfg.Provider.
 func NewClient(cfg *store.DNSConfig) (Client, error) {
 	if cfg == nil {
@@ -52,6 +64,40 @@ func NewClient(cfg *store.DNSConfig) (Client, error) {
 		return NewDNSPodClient(cfg.AccountID, cfg.Token), nil
 	case "cloudflare":
 		return NewCloudflareClient(cfg.Token, cfg.Secret, cfg.AccountID), nil
+	case "route53", "aws":
+		ak, sk := strings.TrimSpace(cfg.AccountID), strings.TrimSpace(cfg.Secret)
+		if ak == "" || sk == "" {
+			return nil, errors.New("route53: access key / secret required")
+		}
+		return NewRoute53Client(ak, sk), nil
+	case "huawei", "huaweicloud":
+		ak, sk := strings.TrimSpace(cfg.AccountID), strings.TrimSpace(cfg.Secret)
+		if ak == "" || sk == "" {
+			return nil, errors.New("huawei dns: access key / secret required")
+		}
+		return NewHuaweiDNSClient(ak, sk), nil
+	case "google", "gcp", "googlecloud":
+		project := strings.TrimSpace(cfg.AccountID)
+		token, secret := strings.TrimSpace(cfg.Token), strings.TrimSpace(cfg.Secret)
+		if project == "" {
+			return nil, errors.New("gcp dns: project id required (account_id)")
+		}
+		if token == "" && secret == "" {
+			return nil, errors.New("gcp dns: token or service account json required")
+		}
+		return NewGoogleDNSClient(project, token, secret), nil
+	case "51dns", "dns51":
+		token, secret := strings.TrimSpace(cfg.Token), strings.TrimSpace(cfg.Secret)
+		if token == "" && secret == "" {
+			return nil, errors.New("51dns: token or secret required")
+		}
+		return NewDNS51Client(token, secret), nil
+	case "dnsla", "dns.la":
+		token, secret := strings.TrimSpace(cfg.Token), strings.TrimSpace(cfg.Secret)
+		if token == "" && secret == "" {
+			return nil, errors.New("dns.la: token or secret required")
+		}
+		return NewDNSLAClient(token, secret), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}

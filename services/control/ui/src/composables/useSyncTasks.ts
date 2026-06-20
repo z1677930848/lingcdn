@@ -3,7 +3,7 @@ import { api, type SyncTask } from "@/lib/api"
 
 // useSyncTasks tracks per-subject sync state (publish + dns) for UI rows.
 // It bootstraps from GET /api/sync/active, then keeps up to date via the
-// shared SSE stream at /api/nodes/monitor/stream (event: sync).
+// shared SSE stream at /api/sync/stream (event: sync).
 //
 // Success tasks are kept for a short fade-out window so the "同步中" → done
 // transition isn't a flash; failed tasks stay until superseded by a success
@@ -59,7 +59,7 @@ export function useSyncTasks(subjectPrefix?: string) {
 
   function connect() {
     if (es) return
-    es = new EventSource("/api/nodes/monitor/stream")
+    es = new EventSource("/api/sync/stream")
     es.addEventListener("sync", (e: MessageEvent) => {
       try {
         const task = JSON.parse(e.data) as SyncTask

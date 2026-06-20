@@ -58,9 +58,11 @@ func (s *Servers) handleNodes(w http.ResponseWriter, r *http.Request) {
 			node.ID = uuid.NewString()
 		}
 		node.Status = "pending"
-		if node.Token == "" {
-			node.Token = uuid.NewString()
+		plaintextToken := strings.TrimSpace(node.Token)
+		if plaintextToken == "" {
+			plaintextToken = uuid.NewString()
 		}
+		node.Token = hashToken(plaintextToken)
 		now := time.Now()
 		node.CreatedAt = now
 		node.UpdatedAt = now
@@ -69,7 +71,9 @@ func (s *Servers) handleNodes(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, "create node", err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, node)
+		created := node
+		created.Token = plaintextToken
+		writeJSON(w, http.StatusCreated, created)
 
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "请求方法不允许"})
@@ -109,8 +113,13 @@ func (s *Servers) handleNodeByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.ID = id
+		var plaintextToken string
 		if req.Token == "reset" || req.Token == "RESET" {
-			req.Token = uuid.NewString()
+			plaintextToken = uuid.NewString()
+			req.Token = hashToken(plaintextToken)
+		} else {
+			// Never persist a raw token from the client body on ordinary updates.
+			req.Token = ""
 		}
 		// Do not allow hostname conflict
 		if req.Hostname != "" {
@@ -139,7 +148,7 @@ func (s *Servers) handleNodeByID(w http.ResponseWriter, r *http.Request) {
 			// best-effort nudge for the rest.
 			_ = s.startPublishTask(ctx, "auto", "node:"+id, "node:enable:"+id, "", []string{id})
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": req.Token})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": plaintextToken})
 
 	case http.MethodDelete:
 		if err := s.store.DeleteNode(ctx, id); err != nil {
@@ -296,7 +305,10 @@ func (s *Servers) handleNodeBootstrapToken(w http.ResponseWriter, r *http.Reques
 		Description string `json:"description"`
 	}
 	if r.Method == http.MethodPost {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的JSON格式"})
+			return
+		}
 	} else {
 		if v := r.URL.Query().Get("ttl_minutes"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {

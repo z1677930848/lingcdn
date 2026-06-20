@@ -6,47 +6,48 @@
         <p class="subtitle">查看与管理系统后台任务运行状态</p>
       </div>
       <div class="header-actions">
-        <t-button variant="outline" @click="load" :loading="loading">刷新</t-button>
+        <el-button plain @click="load" :loading="loading">刷新</el-button>
       </div>
     </div>
 
     <div class="stats">
-      <t-card v-for="item in stats" :key="item.label" class="stat-card">
+      <el-card v-for="item in stats" :key="item.label" class="stat-card">
         <div class="stat-label">{{ item.label }}</div>
         <div class="stat-value">{{ item.value }}</div>
-      </t-card>
+      </el-card>
     </div>
 
-    <t-card class="section-card" bordered>
+    <ErrorState v-if="error" :message="error" @retry="load" />
+
+    <el-card class="section-card">
       <div class="section-body">
         <div class="filters">
-          <t-select v-model="source" :options="sourceOptions" style="width:160px" />
-          <t-select v-model="type" :options="typeOptions" style="width:220px" filterable />
-          <t-select v-model="status" :options="statusOptions" style="width:160px" />
-          <t-select v-model="relID" :options="relIDOptions" style="width:180px" filterable />
-          <t-input v-model="idQuery" style="width:220px" placeholder="搜索任务 ID" />
-          <t-button theme="primary" @click="load" :loading="loading">查询</t-button>
-          <t-button variant="outline" @click="resetFilters">重置</t-button>
+          <EpSelect v-model="source" :options="sourceOptions" style="width:160px" />
+          <EpSelect v-model="type" :options="typeOptions" style="width:220px" filterable />
+          <EpSelect v-model="status" :options="statusOptions" style="width:160px" />
+          <EpSelect v-model="relID" :options="relIDOptions" style="width:180px" filterable />
+          <el-input v-model="idQuery" style="width:220px" placeholder="搜索任务 ID" />
+          <el-button type="primary" @click="load" :loading="loading">查询</el-button>
+          <el-button plain @click="resetFilters">重置</el-button>
         </div>
 
         <div class="admin-desktop-only">
-          <t-table
+          <EpDataTable
             :data="pagedTasks"
             :columns="columns"
             row-key="id"
-            bordered
             hover
             stripe
-            size="medium"
+            size="default"
             :loading="loading"
             :pagination="pagination"
-            empty="暂无任务"
+            empty-text="暂无任务"
           />
         </div>
 
         <div class="admin-mobile-only">
-          <div v-if="loading" style="text-align:center;padding:24px;color:#94a3b8">加载中…</div>
-          <div v-else-if="pagedTasks.length === 0" style="text-align:center;padding:24px;color:#94a3b8">暂无任务</div>
+          <div v-if="loading" style="text-align:center;padding:24px;color:var(--app-text-faint)">加载中…</div>
+          <div v-else-if="pagedTasks.length === 0" style="text-align:center;padding:24px;color:var(--app-text-faint)">暂无任务</div>
           <div v-else class="admin-mobile-cards">
             <div v-for="row in pagedTasks" :key="row.id" class="admin-mobile-card">
               <div class="admin-mobile-card-header">
@@ -84,27 +85,27 @@
                 </div>
               </div>
               <div class="admin-mobile-card-actions">
-                <t-button
+                <el-button
                   v-if="row.retryable"
                   size="small"
-                  variant="outline"
+                  plain
                   :loading="retryingId === row.id"
                   @click="handleRetry(row)"
-                >重试</t-button>
+                >重试</el-button>
                 <router-link v-if="row.detail_url" :to="row.detail_url" class="link">
-                  <t-button size="small" variant="outline">查看详情</t-button>
+                  <el-button size="small" plain>查看详情</el-button>
                 </router-link>
-                <t-button
+                <el-button
                   v-else
                   size="small"
-                  variant="outline"
+                  plain
                   @click="detailTask = row; detailVisible = true"
-                >查看详情</t-button>
+                >查看详情</el-button>
               </div>
             </div>
           </div>
           <div v-if="pagedTasks.length > 0" style="padding:12px 0">
-            <t-pagination
+            <el-pagination
               :current="page"
               :page-size="pageSize"
               :total="tasks.length"
@@ -115,11 +116,11 @@
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-dialog v-model:visible="detailVisible" header="任务详情" width="600">
+    <EpDialog append-to-body v-model="detailVisible" header="任务详情" width="600">
       <template #footer>
-        <t-button variant="outline" @click="detailVisible = false">关闭</t-button>
+        <el-button plain @click="detailVisible = false">关闭</el-button>
       </template>
       <div v-if="detailTask" class="detail">
         <div class="detail-grid">
@@ -186,23 +187,28 @@
           </template>
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
 import { computed, h, onMounted, ref } from "vue"
 import { RouterLink } from "vue-router"
-import { MessagePlugin, Button } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
+import { ElButton } from "element-plus"
 import { api, type SystemTask, type SystemTaskSummary } from "@/lib/api"
 import { formatTime, formatTimeFull } from "@/lib/time"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const statusMeta: Record<string, { text: string; color: string; bg: string }> = {
-  pending: { text: "等待中", color: "#94a3b8", bg: "rgba(148, 163, 184, 0.12)" },
-  running: { text: "运行中", color: "#635BFF", bg: "rgba(99, 91, 255, 0.12)" },
-  success: { text: "成功", color: "#1f9d5b", bg: "rgba(31, 157, 91, 0.12)" },
-  failed: { text: "失败", color: "#ef4444", bg: "rgba(239, 68, 68, 0.12)" },
-  unknown: { text: "未知", color: "#cbd5e1", bg: "rgba(203, 213, 225, 0.2)" },
+  pending: { text: "等待中", color: "var(--app-text-faint)", bg: "rgba(148, 163, 184, 0.12)" },
+  running: { text: "运行中", color: "#409EFF", bg: "rgba(64, 158, 255, 0.12)" },
+  success: { text: "成功", color: "var(--app-success-strong)", bg: "rgba(31, 157, 91, 0.12)" },
+  failed: { text: "失败", color: "var(--app-danger)", bg: "rgba(239, 68, 68, 0.12)" },
+  unknown: { text: "未知", color: "var(--app-border-strong)", bg: "rgba(203, 213, 225, 0.2)" },
 }
 
 const typeLabelMap: Record<string, string> = {
@@ -231,6 +237,7 @@ const typeLabel = (type: string) => typeLabelMap[type] || type
 const sourceLabel = (source: string) => sourceLabelMap[source] || source
 
 const loading = ref(false)
+const error = ref("")
 const summary = ref<SystemTaskSummary | null>(null)
 const tasks = ref<SystemTask[]>([])
 
@@ -250,6 +257,7 @@ const retryingId = ref("")
 const load = async () => {
   try {
     loading.value = true
+    error.value = ""
     const res = await api.listSystemTasks({
       source: source.value || undefined,
       type: type.value || undefined,
@@ -261,8 +269,9 @@ const load = async () => {
     summary.value = res.summary
     tasks.value = (res.tasks || []).filter(t => t.type !== "license.verify")
     page.value = 1
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载任务失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载任务失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -420,11 +429,8 @@ const columns = computed(() => [
     cell: (_h: any, { row }: { row: SystemTask }) =>
       h("div", { style: "display:flex;gap:10px" }, [
         row.retryable
-          ? h(
-              Button,
-              {
-                size: "small",
-                variant: "text",
+          ? h(ElButton, { size: "small",
+                link: true,
                 loading: retryingId.value === row.id,
                 onClick: async () => {
                   try {
@@ -448,11 +454,8 @@ const columns = computed(() => [
               { to: row.detail_url, class: "link" },
               { default: () => "查看详情" }
             )
-          : h(
-              Button,
-              {
-                size: "small",
-                variant: "text",
+          : h(ElButton, { size: "small",
+                link: true,
                 onClick: () => {
                   detailTask.value = row
                   detailVisible.value = true
@@ -490,152 +493,3 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.muted {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px;
-  min-width: 0;
-}
-
-.stat-card {
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-}
-
-.stat-label {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.stat-value {
-  font-size: 20px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.page {
-  min-width: 0;
-}
-
-.section-card {
-  min-width: 0;
-}
-
-.section-body {
-  min-width: 0;
-}
-
-.section-body :deep(.t-table) {
-  min-width: 100%;
-}
-
-@media (max-width: 768px) {
-  .header-actions {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .filters > * {
-    width: 100% !important;
-    min-width: 0 !important;
-  }
-
-  .filters :deep(.t-button) {
-    min-height: 44px;
-  }
-
-  .section-body {
-    padding: 12px;
-  }
-
-  .message {
-    max-width: 220px;
-  }
-}
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.message {
-  display: inline-block;
-  max-width: 360px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.link {
-  color: var(--td-brand-color);
-  font-size: 12px;
-  text-decoration: none;
-}
-
-.detail {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.detail-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px 16px;
-}
-
-.detail-label {
-  font-size: 12px;
-  color: #94a3b8;
-  margin-bottom: 2px;
-}
-
-.detail-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: #94a3b8;
-  margin-left: 6px;
-}
-
-.detail-pre {
-  background: #f8fafc;
-  border-radius: 8px;
-  padding: 8px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12px;
-}
-
-.detail-hint {
-  background: #fff7e6;
-  border: 1px solid #ffe4b5;
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 12px;
-  line-height: 1.8;
-  color: #475569;
-}
-</style>

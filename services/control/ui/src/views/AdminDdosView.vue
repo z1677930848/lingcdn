@@ -11,40 +11,45 @@
         </p>
       </div>
       <div class="header-actions">
-        <t-switch v-model="autoRefresh" />
-        <t-button :loading="loading" @click="load">刷新</t-button>
+        <el-switch v-model="autoRefresh" />
+        <el-button :loading="loading" @click="load">刷新</el-button>
       </div>
     </div>
 
+    <LoadingState v-if="loading && !data" />
+    <ErrorState v-else-if="error && !data" :message="error" @retry="load" />
+    <template v-else>
+      <el-alert v-if="error" theme="error" :message="error" style="margin-bottom: 16px" />
+
     <div class="stat-grid">
-      <t-card class="section-card" bordered>
+      <el-card class="section-card">
         <div class="section-body">
           <div class="stat-label">节点数（总）</div>
           <div class="stat-value">{{ summary.nodesTotal.toLocaleString('zh-CN') }}</div>
         </div>
-      </t-card>
-      <t-card class="section-card" bordered>
+      </el-card>
+      <el-card class="section-card">
         <div class="section-body">
           <div class="stat-label">含 XDP 上报节点</div>
           <div class="stat-value">{{ summary.nodesWithXdp.toLocaleString('zh-CN') }}</div>
         </div>
-      </t-card>
-      <t-card class="section-card" bordered>
+      </el-card>
+      <el-card class="section-card">
         <div class="section-body">
           <div class="stat-label">启用 XDP 节点</div>
           <div class="stat-value">{{ summary.nodesXdpEnabled.toLocaleString('zh-CN') }}</div>
         </div>
-      </t-card>
-      <t-card class="section-card" bordered>
+      </el-card>
+      <el-card class="section-card">
         <div class="section-body">
           <div class="stat-label">总丢弃（估算）</div>
           <div class="stat-value">{{ derived.dropped.toLocaleString('zh-CN') }}</div>
           <div class="muted" style="margin-top:6px">丢弃率：{{ (derived.dropRate * 100).toFixed(2) }}%</div>
         </div>
-      </t-card>
+      </el-card>
     </div>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
         <div class="section-title">数据面板</div>
         <div class="panel-grid">
@@ -55,9 +60,9 @@
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
         <div class="map-title">
           <div class="section-title">世界地图</div>
@@ -119,16 +124,15 @@
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
         <div class="admin-desktop-only">
-          <t-table
+          <EpDataTable
             :data="totalsRows"
             row-key="key"
             :columns="totalsColumns"
-            bordered
             size="small"
           />
         </div>
@@ -149,25 +153,24 @@
           <div v-else class="admin-mobile-card-empty">暂无数据</div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
         <div class="admin-desktop-only">
           <div class="table-scroll">
-            <t-table
+            <EpDataTable
               :data="data?.items || []"
               :columns="columns"
               :row-key="(row: DdosXdpStatsItem) => row.node.id"
               :loading="loading"
-              bordered
               size="small"
               :max-height="560"
             />
           </div>
         </div>
         <div class="admin-mobile-only">
-          <div v-if="loading" style="text-align:center;padding:32px 0"><t-loading /></div>
+          <div v-if="loading" style="text-align:center;padding:32px 0"><div v-loading="true" style="min-height:48px" /></div>
           <template v-else>
             <div v-if="(data?.items || []).length" class="admin-mobile-cards">
               <div v-for="item in (data?.items || [])" :key="item.node.id" class="admin-mobile-card">
@@ -177,11 +180,11 @@
                     <div class="admin-mobile-card-subtitle">{{ item.node.public_ip || '-' }}</div>
                   </div>
                   <div class="admin-mobile-card-tags">
-                    <t-tag v-if="item.node.status" variant="light" size="small">{{ item.node.status }}</t-tag>
-                    <t-tag v-if="item.xdp" :theme="item.xdp.enabled ? 'success' : 'default'" variant="light" size="small">
+                    <el-tag v-if="item.node.status" effect="light" size="small">{{ item.node.status }}</el-tag>
+                    <el-tag v-if="item.xdp" :type="item.xdp.enabled ? 'success' : 'info'" effect="light" size="small">
                       {{ item.xdp.enabled ? 'XDP 启用' : 'XDP 未启用' }}
-                    </t-tag>
-                    <t-tag v-else variant="light" size="small">未上报</t-tag>
+                    </el-tag>
+                    <el-tag v-else effect="light" size="small">未上报</el-tag>
                   </div>
                 </div>
                 <div class="admin-mobile-card-rows">
@@ -224,15 +227,18 @@
           </template>
         </div>
       </div>
-    </t-card>
+    </el-card>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpDataTable from "@/components/ep/EpDataTable.vue"
 import { computed, h, onMounted, onUnmounted, ref, watch } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
 import WorldMap from "@/components/charts/WorldMap.vue"
 import { api, type DdosXdpStatsItem, type DdosXdpStatsResponse } from "@/lib/api"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const statLabels: Record<string, string> = {
   packets_total: "总包",
@@ -425,6 +431,7 @@ const getDroppedFromItem = (item: DdosXdpStatsItem) => {
 }
 
 const loading = ref(false)
+const error = ref("")
 const autoRefresh = ref(true)
 const data = ref<DdosXdpStatsResponse | null>(null)
 const selectedRegionKey = ref("")
@@ -434,8 +441,9 @@ const load = async () => {
     loading.value = true
     const res = await api.getDdosXdpStats()
     data.value = res
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载 XDP 数据失败")
+    error.value = ""
+  } catch (err: unknown) {
+    error.value = err instanceof Error ? err.message : "加载 XDP 数据失败"
   } finally {
     loading.value = false
   }
@@ -701,214 +709,5 @@ onUnmounted(() => {
 })
 </script>
 
-<style scoped>
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-@media (max-width: 1200px) {
-  .stat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 640px) {
-  .stat-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.stat-label {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.stat-value {
-  font-size: 20px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.section-title {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 12px;
-}
-
-.panel-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-}
-
-.panel-item {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 12px 14px;
-  background: #f8fafc;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.panel-label {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.panel-value {
-  font-size: 18px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.panel-sub {
-  font-size: 12px;
-  color: #475569;
-}
-
-.map-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.map-col {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.map-footer {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: #94a3b8;
-  flex-wrap: wrap;
-}
-
-.detail-col {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.detail-title {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.region-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 12px;
-  background: #f8fafc;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.region-name {
-  font-size: 16px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.region-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  font-size: 12px;
-  color: #475569;
-}
-
-.top-nodes {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.top-node {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: #475569;
-}
-
-.node-name {
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.top-region {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.top-region-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.region-item {
-  border: 1px solid #e2e8f0;
-  background: #fff;
-  border-radius: 8px;
-  padding: 8px 10px;
-  text-align: left;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.region-item.active {
-  border-color: #7aa2ff;
-  background: #eef3ff;
-}
-
-.region-item-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.region-item-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: #475569;
-}
-
-.table-scroll {
-  width: 100%;
-  overflow-x: auto;
-}
-
-.table-scroll :deep(.t-table) {
-  min-width: 1600px;
-}
-
-@media (max-width: 640px) {
-  .region-grid {
-    grid-template-columns: 1fr;
-  }
-}
-</style>
 
 

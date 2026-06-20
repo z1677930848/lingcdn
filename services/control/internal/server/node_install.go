@@ -38,6 +38,7 @@ var (
 type nodeInstallCommandRequest struct {
 	PortalBase    string
 	ScriptURL     string
+	ControlBase   string
 	MasterHost    string
 	MasterVersion string
 	MasterChannel string
@@ -53,6 +54,7 @@ type nodeInstallCommandSpec struct {
 	MasterChannel string    `json:"master_channel"`
 	ExpiresAt     time.Time `json:"expires_at"`
 	PortalBase    string    `json:"portal_base"`
+	ControlBase   string    `json:"control_base,omitempty"`
 	ScriptURL     string    `json:"script_url"`
 	Style         string    `json:"style"`
 }
@@ -390,37 +392,30 @@ func (s *Servers) resolveNodeInstallMasterHost(masterHost, requestHost string) (
 	if err != nil || grpcPort == "" {
 		grpcPort = "9443"
 	}
-	resolveIPHostPort := func(hostPort string) (string, bool) {
-		host := strings.TrimSpace(hostPort)
-		port := grpcPort
-		if h, p, e := net.SplitHostPort(hostPort); e == nil {
-			host = strings.TrimSpace(h)
-			port = strings.TrimSpace(p)
-		} else if strings.Contains(hostPort, ":") {
-			host = strings.TrimSpace(hostPort)
-		}
-		if net.ParseIP(host) == nil {
+	resolveHostPort := func(hostPort string) (string, bool) {
+		host, port, ok := parseControlHostPort(hostPort, grpcPort)
+		if !ok {
 			return "", false
-		}
-		if port == "" {
-			port = grpcPort
 		}
 		return net.JoinHostPort(host, port), true
 	}
 	if strings.TrimSpace(masterHost) != "" {
-		if v, ok := resolveIPHostPort(masterHost); ok {
+		if v, ok := resolveHostPort(masterHost); ok {
 			return v, nil
 		}
-		return "", fmt.Errorf("master_host %q must be a public IP or IP:port", masterHost)
+		return "", fmt.Errorf("master_host %q must be a public IP, hostname or host:port", masterHost)
+	}
+	if ep := s.resolveControlGRPCEndpoint(); ep != "" {
+		return ep, nil
 	}
 	if strings.TrimSpace(s.cfg.PublicGRPCEndpoint) != "" {
-		if v, ok := resolveIPHostPort(s.cfg.PublicGRPCEndpoint); ok {
+		if v, ok := resolveHostPort(s.cfg.PublicGRPCEndpoint); ok {
 			return v, nil
 		}
-		return "", fmt.Errorf("PUBLIC_GRPC_ENDPOINT %q must be a public IP or IP:port", s.cfg.PublicGRPCEndpoint)
+		return "", fmt.Errorf("PUBLIC_GRPC_ENDPOINT %q must be a public IP, hostname or host:port", s.cfg.PublicGRPCEndpoint)
 	}
 	if strings.TrimSpace(s.cfg.PublicIP) != "" {
-		if v, ok := resolveIPHostPort(s.cfg.PublicIP); ok {
+		if v, ok := resolveHostPort(s.cfg.PublicIP); ok {
 			return v, nil
 		}
 		return "", fmt.Errorf("PUBLIC_IP %q must be a public IP", s.cfg.PublicIP)
@@ -429,10 +424,10 @@ func (s *Servers) resolveNodeInstallMasterHost(masterHost, requestHost string) (
 	if h, _, e := net.SplitHostPort(hostOnly); e == nil {
 		hostOnly = h
 	}
-	if v, ok := resolveIPHostPort(hostOnly); ok {
+	if v, ok := resolveHostPort(hostOnly); ok {
 		return v, nil
 	}
-	return "", fmt.Errorf("configure PUBLIC_IP or PUBLIC_GRPC_ENDPOINT with a public IP (request host %q is not usable)", requestHost)
+	return "", fmt.Errorf("configure CONTROL_DOMAIN, PUBLIC_IP or PUBLIC_GRPC_ENDPOINT (request host %q is not usable)", requestHost)
 }
 
 // preInstallNodeLicenseCheck verifies the current license still allows
@@ -462,11 +457,6 @@ func (s *Servers) preInstallNodeLicenseCheck(ctx context.Context) error {
 }
 
 func (s *Servers) buildNodeInstallCommand(ctx context.Context, req nodeInstallCommandRequest) (*nodeInstallCommandSpec, error) {
-	portal := s.portalBase()
-	if portal == "" {
-		return nil, errors.New("portal base is required")
-	}
-	scriptURL := portal + "/node_install.sh"
 	masterHost, err := s.resolveNodeInstallMasterHost(req.MasterHost, req.RequestHost)
 	if err != nil {
 		return nil, err
@@ -486,6 +476,57 @@ func (s *Servers) buildNodeInstallCommand(ctx context.Context, req nodeInstallCo
 	token, exp, err := s.store.CreateBootstrapToken(ctx, "install generated", time.Duration(ttlMinutes)*time.Minute)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.offlineLocalBundleEnabled() {
+		controlBase := strings.TrimSpace(req.ControlBase)
+		if controlBase == "" {
+			controlBase = s.resolveControlHTTPBase(req.RequestHost)
+		}
+		scriptURL := strings.TrimSpace(req.ScriptURL)
+		if scriptURL == "" {
+			scriptURL = strings.TrimRight(controlBase, "/") + "/local/node_install.sh"
+		}
+		scriptURL = appendNodeInstallTimestamp(scriptURL)
+		cmd := fmt.Sprintf(
+			"curl -fsSL -o node_install_local.sh %s && bash node_install_local.sh --master_host %s --master_token %s --master_version %s --upgrade_channel %s --control_base %s%s%s",
+			shellQuote(scriptURL),
+			shellQuote(masterHost),
+			shellQuote(token),
+			shellQuote(version),
+			shellQuote(channel),
+			shellQuote(controlBase),
+			func() string {
+				if strings.TrimSpace(s.cfg.UpgradePubKey) == "" {
+					return ""
+				}
+				return " --upgrade_pubkey " + shellQuote(s.cfg.UpgradePubKey)
+			}(),
+			s.buildNodeInstallFilebeatTail(ctx),
+		)
+		return &nodeInstallCommandSpec{
+			Command:       cmd,
+			MasterHost:    masterHost,
+			MasterToken:   token,
+			MasterVersion: version,
+			MasterChannel: channel,
+			ExpiresAt:     exp,
+			ControlBase:   controlBase,
+			ScriptURL:     scriptURL,
+			Style:         "local",
+		}, nil
+	}
+
+	portal := normalizePortalBase(req.PortalBase)
+	if portal == "" {
+		portal = s.portalBase()
+	}
+	if portal == "" {
+		return nil, errors.New("portal base is required")
+	}
+	scriptURL := strings.TrimSpace(req.ScriptURL)
+	if scriptURL == "" {
+		scriptURL = portal + "/node_install.sh"
 	}
 	scriptURL = appendNodeInstallTimestamp(scriptURL)
 	cmd := fmt.Sprintf(
@@ -559,6 +600,7 @@ func (s *Servers) handleNodeInstallCommand(w http.ResponseWriter, r *http.Reques
 		"master_channel": spec.MasterChannel,
 		"expires_at":     spec.ExpiresAt,
 		"portal_base":    spec.PortalBase,
+		"control_base":   spec.ControlBase,
 		"script_url":     spec.ScriptURL,
 		"style":          spec.Style,
 	})

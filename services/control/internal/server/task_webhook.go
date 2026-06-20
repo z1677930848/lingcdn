@@ -49,16 +49,18 @@ func (s *Servers) HandleTaskWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if event.Timestamp != "" {
-		ts, err := time.Parse(time.RFC3339, event.Timestamp)
-		if err != nil {
-			http.Error(w, "invalid timestamp", http.StatusUnauthorized)
-			return
-		}
-		if time.Since(ts).Abs() > 5*time.Minute {
-			http.Error(w, "stale request", http.StatusUnauthorized)
-			return
-		}
+	if event.Timestamp == "" {
+		http.Error(w, "timestamp required", http.StatusUnauthorized)
+		return
+	}
+	ts, err := time.Parse(time.RFC3339, event.Timestamp)
+	if err != nil {
+		http.Error(w, "invalid timestamp", http.StatusUnauthorized)
+		return
+	}
+	if time.Since(ts).Abs() > 5*time.Minute {
+		http.Error(w, "stale request", http.StatusUnauthorized)
+		return
 	}
 
 	createdAt := time.Now()

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lingcdn/control/internal/publisher"
 	"github.com/lingcdn/control/internal/store"
 )
 
@@ -108,9 +109,10 @@ func (s *Servers) startPublishTask(ctx context.Context, trigger, subject, reason
 		}
 
 		var err error
+		var res any
 	retryLoop:
 		for attempt := 0; attempt < 6; attempt++ {
-			err = s.publisher.Publish(taskCtx, task.Version, task.NodeIDs)
+			res, err = s.publisher.PublishWithResult(taskCtx, task.Version, task.NodeIDs)
 			if err == nil {
 				break
 			}
@@ -126,14 +128,15 @@ func (s *Servers) startPublishTask(ctx context.Context, trigger, subject, reason
 			}
 		}
 
-		res := s.publisher.GetLastPublishResult()
 		publishTaskMu.Lock()
-		if res != nil && strings.TrimSpace(res.Version) != "" {
-			task.Version = res.Version
-			task.CompletedAt = res.CompletedAt
-			task.SuccessNodes = res.SuccessNodes
-			task.FailedNodes = res.FailedNodes
-			for k, v := range res.Errors {
+		if pr, ok := res.(*publisher.PublishResult); ok && pr != nil {
+			if strings.TrimSpace(pr.Version) != "" {
+				task.Version = pr.Version
+			}
+			task.CompletedAt = pr.CompletedAt
+			task.SuccessNodes = pr.SuccessNodes
+			task.FailedNodes = pr.FailedNodes
+			for k, v := range pr.Errors {
 				task.Errors[k] = v
 			}
 		} else {

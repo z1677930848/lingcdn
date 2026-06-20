@@ -1,5 +1,5 @@
 <template>
-  <div v-if="loading" class="loading">加载中...</div>
+  <LoadingState v-if="loading" />
   <div v-else class="page">
     <div class="header">
       <div>
@@ -8,91 +8,99 @@
       </div>
     </div>
 
-    <div v-if="error" class="error-box">
-      <span>{{ error }}</span>
-      <t-button size="small" theme="primary" @click="loadData">重试</t-button>
-    </div>
+    <ErrorState v-if="error" :message="error" @retry="loadData" />
 
-    <t-card class="section-card" bordered>
+    <PermissionNotice
+      v-if="hasRestrictions && !canBalanceWithdraw"
+      show
+      message="当前分组无提现权限，仍可充值与查看流水。"
+    />
+
+    <el-card class="section-card">
       <div class="section-body balance-card">
         <div>
           <div class="label">当前余额</div>
           <div class="amount">{{ formatMoney(balanceAmount) }}</div>
         </div>
-        <t-button theme="primary" @click="loadData">刷新</t-button>
+        <el-button type="primary" @click="loadData">刷新</el-button>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
-        <t-tabs v-model="activeTab">
-          <t-tab-panel value="recharge" label="余额充值">
-            <div class="form-grid">
+        <el-tabs v-model="activeTab">
+          <el-tab-pane name="recharge" label="余额充值">
+            <div class="form-grid-narrow">
               <div>
                 <div class="form-label">充值方式</div>
-                <t-radio-group v-model="rechargeMethod">
-                  <t-radio v-for="item in rechargeMethods" :key="item.value" :value="item.value">
+                <el-radio-group v-model="rechargeMethod">
+                  <el-radio v-for="item in rechargeMethods" :key="item.value" :value="item.value">
                     {{ item.label }}
-                  </t-radio>
-                </t-radio-group>
+                  </el-radio>
+                </el-radio-group>
               </div>
               <div class="form-field">
                 <div class="form-label">充值金额（元）</div>
-                <t-input v-model="rechargeAmount" type="number" placeholder="请输入充值金额" />
+                <el-input v-model="rechargeAmount" type="number" placeholder="请输入充值金额" />
               </div>
-              <t-button theme="primary" :loading="rechargeLoading" @click="handleRecharge">确认充值</t-button>
+              <el-button type="primary" :loading="rechargeLoading" @click="handleRecharge">确认充值</el-button>
 
               <div v-if="rechargePayUrl" class="pay-box">
                 <div class="form-label">支付链接</div>
                 <a :href="rechargePayUrl" target="_blank" class="pay-link">{{ rechargePayUrl }}</a>
                 <p class="feature-tip">若未自动跳转，请点击上方链接完成支付。支付成功后余额将自动到账。</p>
               </div>
-              <div v-if="rechargeError" class="error-box">{{ rechargeError }}</div>
+              <div v-if="rechargeError" class="form-alert">
+                <el-alert theme="error" :message="rechargeError" />
+              </div>
             </div>
-          </t-tab-panel>
+          </el-tab-pane>
 
-          <t-tab-panel value="withdraw" label="余额提现">
-            <div class="form-grid">
-              <div class="feature-tip">{{ withdrawNotice }}</div>
+          <el-tab-pane v-if="canBalanceWithdraw" name="withdraw" label="余额提现">
+            <div class="form-grid-narrow">
               <div>
                 <div class="form-label">提现方式</div>
-                <t-radio-group v-model="withdrawMethod" disabled>
-                  <t-radio v-for="item in withdrawMethods" :key="item.value" :value="item.value">
+                <el-radio-group v-model="withdrawMethod">
+                  <el-radio v-for="item in withdrawMethods" :key="item.value" :value="item.value">
                     {{ item.label }}
-                  </t-radio>
-                </t-radio-group>
+                  </el-radio>
+                </el-radio-group>
               </div>
               <div class="inline-grid">
                 <div>
                   <div class="form-label">账户名称</div>
-                  <t-input v-model="withdrawAccountName" disabled />
+                  <el-input v-model="withdrawAccountName" placeholder="收款人姓名" />
                 </div>
                 <div>
                   <div class="form-label">账户号码</div>
-                  <t-input v-model="withdrawAccountNo" disabled />
+                  <el-input v-model="withdrawAccountNo" placeholder="账号 / 卡号" />
                 </div>
                 <div>
-                  <div class="form-label">提现金额</div>
-                  <t-input v-model="withdrawAmount" disabled />
+                  <div class="form-label">提现金额（元）</div>
+                  <el-input v-model="withdrawAmount" type="number" placeholder="请输入提现金额" />
                 </div>
               </div>
               <div class="form-field">
                 <div class="form-label">备注</div>
-                <t-input v-model="withdrawNote" disabled />
+                <el-input v-model="withdrawNote" placeholder="可选" />
               </div>
-              <t-button theme="primary" :loading="false" :disabled="true" @click="handleWithdraw">提交提现申请</t-button>
+              <p class="feature-tip">提交后需管理员审核，审核通过后余额将扣减并打款。</p>
+              <el-button type="primary" :loading="withdrawLoading" @click="handleWithdraw">提交提现申请</el-button>
+              <div v-if="withdrawError" class="form-alert">
+                <el-alert theme="error" :message="withdrawError" />
+              </div>
             </div>
-          </t-tab-panel>
-        </t-tabs>
+          </el-tab-pane>
+        </el-tabs>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
-        <t-tabs v-model="recordTab">
-          <t-tab-panel value="transactions" label="余额流水">
+        <el-tabs v-model="recordTab">
+          <el-tab-pane name="transactions" label="余额流水">
             <div class="admin-desktop-only">
-              <t-table :data="transactions" :columns="transactionColumns" row-key="id" />
+              <EpDataTable :data="transactions" :columns="transactionColumns" row-key="id" />
             </div>
             <div class="admin-mobile-only">
               <div v-if="transactions.length === 0" class="admin-mobile-card-empty">暂无流水</div>
@@ -100,7 +108,7 @@
                 <div v-for="(tx, i) in transactions" :key="i" class="admin-mobile-card">
                   <div class="admin-mobile-card-header">
                     <span class="admin-mobile-card-title">{{ tx.type || '-' }}</span>
-                    <span :style="{ fontWeight: 600, color: tx.amount_cents >= 0 ? '#00a870' : '#ef4444' }">{{ tx.amount_cents >= 0 ? '+' : '' }}{{ formatMoney(tx.amount_cents) }}</span>
+                    <span :style="{ fontWeight: 600, color: tx.amount_cents >= 0 ? 'var(--app-success)' : 'var(--app-danger)' }">{{ tx.amount_cents >= 0 ? '+' : '' }}{{ formatMoney(tx.amount_cents) }}</span>
                   </div>
                   <div class="admin-mobile-card-rows">
                     <div class="admin-mobile-card-row">
@@ -119,10 +127,10 @@
                 </div>
               </div>
             </div>
-          </t-tab-panel>
-          <t-tab-panel value="recharges" label="充值记录">
+          </el-tab-pane>
+          <el-tab-pane name="recharges" label="充值记录">
             <div class="admin-desktop-only">
-              <t-table :data="recharges" :columns="rechargeColumns" row-key="id" />
+              <EpDataTable :data="recharges" :columns="rechargeColumns" row-key="id" />
             </div>
             <div class="admin-mobile-only">
               <div v-if="recharges.length === 0" class="admin-mobile-card-empty">暂无记录</div>
@@ -130,7 +138,7 @@
                 <div v-for="item in recharges" :key="item.id || item.out_trade_no" class="admin-mobile-card">
                   <div class="admin-mobile-card-header">
                     <span class="admin-mobile-card-title">{{ formatMoney(item.amount_cents) }}</span>
-                    <t-tag :theme="item.status === 'paid' ? 'success' : item.status === 'pending' ? 'warning' : 'default'" variant="light" size="small">{{ item.status === 'paid' ? '已到账' : item.status === 'pending' ? '处理中' : (item.status || '-') }}</t-tag>
+                    <el-tag :type="item.status === 'paid' ? 'success' : item.status === 'pending' ? 'warning' : 'info'" effect="light" size="small">{{ item.status === 'paid' ? '已到账' : item.status === 'pending' ? '处理中' : (item.status || '-') }}</el-tag>
                   </div>
                   <div class="admin-mobile-card-rows">
                     <div class="admin-mobile-card-row">
@@ -149,10 +157,10 @@
                 </div>
               </div>
             </div>
-          </t-tab-panel>
-          <t-tab-panel value="withdrawals" label="提现记录">
+          </el-tab-pane>
+          <el-tab-pane name="withdrawals" label="提现记录">
             <div class="admin-desktop-only">
-              <t-table :data="withdrawals" :columns="withdrawalColumns" row-key="id" />
+              <EpDataTable :data="withdrawals" :columns="withdrawalColumns" row-key="id" />
             </div>
             <div class="admin-mobile-only">
               <div v-if="withdrawals.length === 0" class="admin-mobile-card-empty">暂无记录</div>
@@ -160,7 +168,7 @@
                 <div v-for="item in withdrawals" :key="item.id" class="admin-mobile-card">
                   <div class="admin-mobile-card-header">
                     <span class="admin-mobile-card-title">{{ formatMoney(item.amount_cents) }}</span>
-                    <t-tag :theme="item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'danger' : 'warning'" variant="light" size="small">{{ item.status === 'approved' ? '已通过' : item.status === 'rejected' ? '已拒绝' : '待审核' }}</t-tag>
+                    <el-tag :type="item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'danger' : 'warning'" effect="light" size="small">{{ item.status === 'approved' ? '已通过' : item.status === 'rejected' ? '已拒绝' : '待审核' }}</el-tag>
                   </div>
                   <div class="admin-mobile-card-rows">
                     <div class="admin-mobile-card-row">
@@ -175,16 +183,22 @@
                 </div>
               </div>
             </div>
-          </t-tab-panel>
-        </t-tabs>
+          </el-tab-pane>
+        </el-tabs>
       </div>
-    </t-card>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpDataTable from "@/components/ep/EpDataTable.vue"
 import { computed, h, onMounted, ref } from "vue"
-import { MessagePlugin, Tag } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
+import { ElTag } from "element-plus"
+import LoadingState from "@/components/common/LoadingState.vue"
+import ErrorState from "@/components/common/ErrorState.vue"
+import PermissionNotice from "@/components/common/PermissionNotice.vue"
+import { useUserPermissions } from "@/composables/useUserPermissions"
 import {
   api,
   type BalanceAccount,
@@ -192,6 +206,8 @@ import {
   type BalanceTransaction,
   type BalanceWithdrawal,
 } from "@/lib/api"
+
+const { canBalanceWithdraw, hasRestrictions } = useUserPermissions()
 
 const rechargeMethods = [
   { label: "微信支付", value: "wxpay" },
@@ -211,7 +227,6 @@ const recharges = ref<BalanceRecharge[]>([])
 const withdrawals = ref<BalanceWithdrawal[]>([])
 const loading = ref(true)
 const error = ref("")
-const withdrawNotice = "在线提现暂未开放，请联系管理员处理。"
 
 const rechargeMethod = ref("alipay")
 const rechargeAmount = ref("")
@@ -224,6 +239,8 @@ const withdrawAmount = ref("")
 const withdrawAccountName = ref("")
 const withdrawAccountNo = ref("")
 const withdrawNote = ref("")
+const withdrawLoading = ref(false)
+const withdrawError = ref("")
 
 const activeTab = ref("recharge")
 const recordTab = ref("transactions")
@@ -296,12 +313,38 @@ const handleRecharge = async () => {
 }
 
 const handleWithdraw = async () => {
-  void withdrawAmount
-  void withdrawMethod
-  void withdrawAccountName
-  void withdrawAccountNo
-  void withdrawNote
-  MessagePlugin.warning(withdrawNotice)
+  withdrawError.value = ""
+  const yuan = Number.parseFloat(withdrawAmount.value || "0")
+  if (!Number.isFinite(yuan) || yuan <= 0) {
+    withdrawError.value = "请输入有效的提现金额"
+    return
+  }
+  if (!withdrawAccountName.value.trim() || !withdrawAccountNo.value.trim()) {
+    withdrawError.value = "请填写完整的收款账户信息"
+    return
+  }
+  const cents = Math.round(yuan * 100)
+  withdrawLoading.value = true
+  try {
+    await api.createBalanceWithdrawal({
+      amount_cents: cents,
+      method: withdrawMethod.value,
+      account_name: withdrawAccountName.value.trim(),
+      account_no: withdrawAccountNo.value.trim(),
+      note: withdrawNote.value.trim(),
+    })
+    MessagePlugin.success("提现申请已提交，请等待审核")
+    withdrawAmount.value = ""
+    withdrawAccountName.value = ""
+    withdrawAccountNo.value = ""
+    withdrawNote.value = ""
+    recordTab.value = "withdrawals"
+    await loadData()
+  } catch (err: any) {
+    withdrawError.value = err.message || "提交提现申请失败"
+  } finally {
+    withdrawLoading.value = false
+  }
 }
 
 const transactionColumns = computed(() => [
@@ -312,7 +355,7 @@ const transactionColumns = computed(() => [
     title: "变动金额",
     width: 140,
     cell: (_h: any, { row }: { row: BalanceTransaction }) =>
-      h("span", { style: `color:${row.amount_cents >= 0 ? '#00a870' : '#ef4444'}` }, `${row.amount_cents >= 0 ? "+" : ""}${formatMoney(row.amount_cents)}`),
+      h("span", { style: `color:${row.amount_cents >= 0 ? 'var(--app-success)' : 'var(--app-danger)'}` }, `${row.amount_cents >= 0 ? "+" : ""}${formatMoney(row.amount_cents)}`),
   },
   { colKey: "balance_cents", title: "余额", width: 140, cell: (_h: any, { row }: { row: BalanceTransaction }) => formatMoney(row.balance_cents) },
   { colKey: "note", title: "备注", minWidth: 180 },
@@ -328,9 +371,9 @@ const rechargeColumns = computed(() => [
     width: 120,
     cell: (_h: any, { row }: { row: BalanceRecharge }) => {
       const status = row.status || "pending"
-      const theme = status === "paid" ? "success" : status === "pending" ? "warning" : "default"
+      const theme = status === "paid" ? "success" : status === "pending" ? "warning" : "info"
       const text = status === "paid" ? "已到账" : status === "pending" ? "处理中" : status
-      return h(Tag, { theme, variant: "light" }, () => text)
+      return h(ElTag, { theme, effect: "light" }, () => text)
     },
   },
   { colKey: "created_at", title: "创建时间", width: 170, cell: (_h: any, { row }: { row: BalanceRecharge }) => formatTime(row.created_at) },
@@ -347,7 +390,7 @@ const withdrawalColumns = computed(() => [
       const status = row.status || "pending"
       const theme = status === "approved" ? "success" : status === "rejected" ? "danger" : "warning"
       const text = status === "approved" ? "已通过" : status === "rejected" ? "已拒绝" : "待审核"
-      return h(Tag, { theme, variant: "light" }, () => text)
+      return h(ElTag, { theme, effect: "light" }, () => text)
     },
   },
   { colKey: "created_at", title: "申请时间", width: 170, cell: (_h: any, { row }: { row: BalanceWithdrawal }) => formatTime(row.created_at) },
@@ -358,94 +401,3 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
-.loading {
-  min-height: 60vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.balance-card {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-}
-
-.label {
-  font-size: 13px;
-  color: #94a3b8;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.amount {
-  font-size: 28px;
-  font-weight: 800;
-  color: #0f172a;
-  margin-top: 6px;
-  letter-spacing: -0.02em;
-}
-
-.form-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  max-width: 640px;
-}
-
-.form-field {
-  max-width: 320px;
-}
-
-.form-label {
-  font-size: 14px;
-  color: #475569;
-  font-weight: 500;
-  margin-bottom: 8px;
-}
-
-.feature-tip {
-  font-size: 13px;
-  color: #94a3b8;
-}
-
-.pay-box {
-  border: 1px solid #dbeafe;
-  border-radius: 12px;
-  padding: 14px;
-  background: #eff6ff;
-}
-
-.pay-link {
-  color: #2563eb;
-  word-break: break-all;
-  font-weight: 600;
-}
-
-.error-box {
-  border: 1px solid #fecaca;
-  border-radius: 12px;
-  padding: 12px;
-  color: #b91c1c;
-  background: #fef2f2;
-}
-
-.inline-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
-}
-
-@media (max-width: 768px) {
-  .balance-card {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .form-field {
-    max-width: 100%;
-  }
-}
-</style>

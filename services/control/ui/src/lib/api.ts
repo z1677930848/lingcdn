@@ -33,10 +33,27 @@ export interface User {
   email: string
   role: string
   status?: string
+  group_id?: string
+  group_name?: string
+  permissions?: string[]
   created_at?: string
   last_login_at?: string
   last_login_ip?: string
   last_login_location?: string
+}
+
+export interface UserGroup {
+  id: string
+  name: string
+  description?: string
+  permissions?: string[]
+  created_at?: string
+  updated_at?: string
+}
+
+export interface UserGroupPermission {
+  key: string
+  label: string
 }
 
 export interface AuthResponse {
@@ -64,15 +81,28 @@ export interface CaptchaChallenge {
   expires_in: number
 }
 
+// cookieAttrs returns the common attribute suffix for the lingcdn_token
+// cookie. `Secure` is opt-in based on the current page scheme because
+// browsers drop Secure cookies silently on plain HTTP, which breaks
+// local development (`http://localhost:5173`). Production control plane
+// traffic is expected on HTTPS, so the flag gets set automatically there.
+function cookieAttrs(): string {
+  const secure =
+    typeof window !== "undefined" && window.location?.protocol === "https:"
+      ? "; Secure"
+      : ""
+  return `; path=/; SameSite=Strict${secure}`
+}
+
 export function setAuthToken(token: string) {
   try {
     localStorage.setItem(AUTH_TOKEN_KEY, token)
   } catch {
     /* ignore */
   }
-  // Also set as cookie so EventSource (SSE) can authenticate
+  // Also set as cookie so EventSource (SSE) can authenticate.
   try {
-    document.cookie = `lingcdn_token=${encodeURIComponent(token)}; path=/; SameSite=Strict`
+    document.cookie = `lingcdn_token=${encodeURIComponent(token)}${cookieAttrs()}`
   } catch {
     /* ignore */
   }
@@ -82,8 +112,8 @@ export function getAuthToken(): string | null {
   try {
     const token = localStorage.getItem(AUTH_TOKEN_KEY)
     // Sync cookie for SSE if localStorage has token but cookie is missing
-    if (token && typeof document !== 'undefined' && !getCookieValue('lingcdn_token')) {
-      document.cookie = `lingcdn_token=${encodeURIComponent(token)}; path=/; SameSite=Strict`
+    if (token && typeof document !== "undefined" && !getCookieValue("lingcdn_token")) {
+      document.cookie = `lingcdn_token=${encodeURIComponent(token)}${cookieAttrs()}`
     }
     return token
   } catch {
@@ -97,9 +127,10 @@ export function clearAuthToken() {
   } catch {
     /* ignore */
   }
-  // Also clear the cookie
+  // Also clear the cookie. Must use the same SameSite/Secure shape so
+  // the browser actually overwrites rather than appending a new entry.
   try {
-    document.cookie = 'lingcdn_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Strict'
+    document.cookie = `lingcdn_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT${cookieAttrs()}`
   } catch {
     /* ignore */
   }
@@ -115,20 +146,13 @@ function getCookieValue(name: string): string {
   return ""
 }
 
-function resolveCSRFToken(): string {
-  return getCookieValue("admin_csrf") || getCookieValue("portal_csrf")
-}
-
-function isSameOrigin(baseURL: string): boolean {
-  if (typeof window === "undefined") return true
-  if (!baseURL) return true
-  if (baseURL.startsWith("/")) return true
-  try {
-    return new URL(baseURL, window.location.origin).origin === window.location.origin
-  } catch {
-    return false
-  }
-}
+// NOTE: the control plane never issues `admin_csrf` / `portal_csrf`
+// cookies — CSRF for cookie-based auth is enforced server-side via an
+// Origin/Referer same-origin check in `authenticateRequest`
+// (`auth.go`). The previous `resolveCSRFToken()` + header attachment
+// was dead code that read empty strings on every request; dropping it
+// removes the misleading "CSRF is handled here" suggestion. The
+// companion `isSameOrigin()` helper was removed with it.
 
 export interface Product {
   id: string
@@ -191,8 +215,22 @@ export interface Order {
   ends_at?: string
   paid_at?: string
   note?: string
+  line_group_id?: string
+  domain_limit?: number
+  domain_count?: number
   created_at: string
   updated_at: string
+}
+
+/** User-facing order list enriched with product quota fields from GET /api/user/orders */
+export interface UserOrder extends Order {
+  primary_domain_limit?: number
+  primary_domain_count?: number
+  websocket?: boolean
+  custom_cc_rules?: boolean
+  monthly_traffic_bytes?: number | null
+  bandwidth_bps?: number | null
+  conn_limit?: number | null
 }
 
 export interface UpgradeNode {
@@ -255,8 +293,27 @@ export interface NodeInstallCommandResponse {
   master_version: string
   expires_at: string
   portal_base: string
+  control_base?: string
   script_url: string
   style: string
+}
+
+export interface LocalBundleRecord {
+  product: string
+  version: string
+  platform: string
+  arch: string
+  channel: string
+  filename: string
+  checksum: string
+  size_bytes: number
+  updated_at?: string
+}
+
+export interface LocalBundlesResponse {
+  enabled: boolean
+  dir: string
+  bundles: LocalBundleRecord[]
 }
 
 export interface NodeInstallSSHResult {
@@ -374,6 +431,7 @@ export interface SystemLicenseStatusResponse {
   active_nodes: number
   now: string
   mode?: string
+  portal_base?: string
   control_id?: string
   license_ip?: string
 }
@@ -472,6 +530,8 @@ export interface OverviewResponse {
   network: OverviewNetwork
   trends: OverviewTrendSeries[]
   top_domains: OverviewTopDomain[]
+  /** true when traffic trends / top domains are estimated (ES unavailable) */
+  demo_data?: boolean
   license: OverviewLicense
   usage: OverviewUsage
   traffic_map: OverviewTrafficRegion[]
@@ -529,6 +589,21 @@ export interface BalanceWithdrawal {
   reviewed_at?: string
   created_at: string
   updated_at: string
+}
+
+export interface StreamForward {
+  id: string
+  user_id: string
+  domain_id?: string
+  name: string
+  protocol: string
+  listen_port: number
+  origin_host: string
+  origin_port: number
+  enabled: boolean
+  health_check_enabled: boolean
+  created_at?: string
+  updated_at?: string
 }
 
 export interface BalanceStatsDay {
@@ -608,6 +683,7 @@ export interface DNSConfig {
 export interface DNSProviderOption {
   value: string
   label: string
+  sync_ready?: boolean
 }
 
 export interface DNSTask {
@@ -739,6 +815,13 @@ export interface DomainSecurity {
   blocked_regions?: string[]
   // Block requests from transparent proxies (x-forwarded-for present)
   block_transparent_proxy?: boolean
+  signed_url_secret?: string
+  bot_score_enabled?: boolean
+  response_compress_enabled?: boolean
+  edge_script_enabled?: boolean
+  edge_script_rules?: string
+  image_transform_enabled?: boolean
+  video_segment_cache_enabled?: boolean
 }
 
 export interface Certificate {
@@ -755,25 +838,30 @@ export interface Certificate {
   updated_at?: string
 }
 
-export interface UserOrder {
+export interface TicketReply {
+  id: string
+  ticket_id: string
+  author_id: string
+  author_role: string
+  author_name: string
+  body: string
+  created_at: string
+}
+
+export interface Ticket {
   id: string
   user_id: string
-  product_id: string
-  product_name: string
-  amount_cents: number
-  currency: string
+  subject: string
+  category: string
   status: string
-  period?: string
-  quantity?: number
-  starts_at?: string
-  ends_at?: string
-  paid_at?: string
-  note?: string
-  line_group_id?: string
-  domain_limit?: number
-  domain_count?: number
+  priority: string
+  last_reply_by?: string
+  reply_count: number
   created_at: string
   updated_at: string
+  closed_at?: string
+  username?: string
+  email?: string
 }
 
 export interface DomainHealthPoint {
@@ -797,6 +885,19 @@ export interface DomainHealthMetricsResponse {
   domains: string[]
   port?: number
   series: DomainHealthSeries[]
+  demo_data?: boolean
+}
+
+export interface LogSearchEntry {
+  id?: string
+  domain?: string
+  path?: string
+  method?: string
+  status?: number
+  client_ip?: string
+  bytes?: number
+  timestamp?: string
+  ua?: string
 }
 
 export interface DomainHealthRankEntry {
@@ -880,10 +981,12 @@ export interface CacheRule {
 // - rate_limit: 频率限制
 // - challenge_captcha: 人机验证（滑块/点选/旋转/JS挑战）
 // - shield_5s: 5秒盾（浏览器 JS 检测）
+// - geo_block / block_transparent_proxy: 地域与透明代理拦截
+// - sql_injection / xss / path_traversal / ua_block / method_block: OWASP 规则集
 export interface WAFRule {
   id: string
   policy_id: string
-  type: string            // ip_cidr | rate_limit | challenge_captcha | shield_5s
+  type: string
   action: string          // allow | deny
   value?: string          // CIDR for ip_cidr; optional key
   threshold?: number      // rate_limit: max requests; challenge: fail limit
@@ -927,6 +1030,16 @@ export interface WAFWhitelistEntry {
   ip: string
   note?: string
   created_by?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface WAFBan {
+  ip: string
+  reason?: string
+  strikes?: number
+  node_id?: string
+  expires_at?: string
   created_at?: string
   updated_at?: string
 }
@@ -1039,8 +1152,6 @@ class APIClient {
     options: RequestInit = {}
   ): Promise<T> {
     const url = `${this.baseURL}${endpoint}`
-    const method = String(options.method || "GET").toUpperCase()
-    const sameOrigin = isSameOrigin(this.baseURL)
     const doFetch = async (token: string | null) => {
       const normalizedHeaders = normalizeHeaders(options.headers)
       const headers: Record<string, string> = {
@@ -1048,12 +1159,10 @@ class APIClient {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...normalizedHeaders,
       }
-      if (sameOrigin && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
-        const csrf = resolveCSRFToken()
-        if (csrf && !headers["X-CSRF-Token"]) {
-          headers["X-CSRF-Token"] = csrf
-        }
-      }
+      // No client-side CSRF header attachment: the server enforces
+      // same-origin for cookie-auth requests, and bearer tokens in the
+      // Authorization header are immune to CSRF by construction. See
+      // the comment block above `resolveCSRFToken` for the history.
       return fetch(url, {
         ...options,
         headers,
@@ -1150,7 +1259,11 @@ class APIClient {
   }
 
   async logout(): Promise<void> {
-    return Promise.resolve()
+    try {
+      await this.request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' })
+    } catch {
+      // still clear local session below
+    }
   }
 
   async getCaptcha(): Promise<CaptchaChallenge> {
@@ -1271,6 +1384,33 @@ class APIClient {
     if (params?.ttlMinutes) qs.set("ttl_minutes", String(params.ttlMinutes))
     const suffix = qs.toString() ? `?${qs.toString()}` : ""
     return this.request<NodeInstallCommandResponse>(`/api/nodes/install-command${suffix}`)
+  }
+
+  async getLocalBundles(): Promise<LocalBundlesResponse> {
+    return this.request<LocalBundlesResponse>('/api/admin/local-bundles')
+  }
+
+  async uploadLocalBundle(file: File): Promise<{ bundle: LocalBundleRecord }> {
+    const token = getAuthToken()
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch('/api/admin/local-bundles', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+      credentials: 'same-origin',
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      throw new Error((data as { error?: string }).error || `upload failed (${res.status})`)
+    }
+    return data as { bundle: LocalBundleRecord }
+  }
+
+  async deleteLocalBundle(filename: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/api/admin/local-bundles/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    })
   }
 
   async installNodeViaSSH(data: {
@@ -1532,8 +1672,10 @@ class APIClient {
     account_no?: string
     note?: string
   }): Promise<{ withdrawal: BalanceWithdrawal }> {
-    void data
-    return this.featureUnavailable("balance.withdrawals.create")
+    return this.request<{ withdrawal: BalanceWithdrawal }>('/api/balance/withdrawals', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
   }
 
   async listBalanceWithdrawals(params?: {
@@ -1549,6 +1691,33 @@ class APIClient {
     return this.request<{ withdrawals: BalanceWithdrawal[]; total?: number; page?: number; page_size?: number }>(
       `/api/balance/withdrawals${suffix}`
     )
+  }
+
+  // L4 stream forwarding
+  async listStreamForwards(): Promise<{ stream_forwards: StreamForward[] }> {
+    return this.request<{ stream_forwards: StreamForward[] }>('/api/stream-forwards')
+  }
+
+  async createStreamForward(data: Partial<StreamForward>): Promise<StreamForward> {
+    return this.request<StreamForward>('/api/stream-forwards', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateStreamForward(id: string, data: Partial<StreamForward>): Promise<StreamForward> {
+    return this.request<StreamForward>(`/api/stream-forwards/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteStreamForward(id: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/api/stream-forwards/${id}`, { method: 'DELETE' })
+  }
+
+  async adminListStreamForwards(): Promise<{ stream_forwards: StreamForward[] }> {
+    return this.request<{ stream_forwards: StreamForward[] }>('/api/admin/stream-forwards')
   }
 
   async adminListBalanceAccounts(params?: {
@@ -1676,15 +1845,40 @@ class APIClient {
     return this.request<{ users: User[] }>('/api/users')
   }
 
+  async getUserGroups(): Promise<{ groups: UserGroup[]; available_permissions?: UserGroupPermission[] }> {
+    return this.request<{ groups: UserGroup[]; available_permissions?: UserGroupPermission[] }>('/api/admin/user-groups')
+  }
+
+  async createUserGroup(data: { name: string; description?: string; permissions?: string[] }): Promise<{ group: UserGroup }> {
+    return this.request<{ group: UserGroup }>('/api/admin/user-groups', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateUserGroup(id: string, data: { name?: string; description?: string; permissions?: string[] }): Promise<{ group: UserGroup }> {
+    return this.request<{ group: UserGroup }>(`/api/admin/user-groups/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteUserGroup(id: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/api/admin/user-groups/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
+  }
+
   async createUser(
     username: string,
     email: string,
     password: string,
-    role?: string
+    role?: string,
+    groupId?: string
   ): Promise<User> {
     return this.request<User>('/api/users', {
       method: 'POST',
-      body: JSON.stringify({ username, email, password, role }),
+      body: JSON.stringify({ username, email, password, role, group_id: groupId || '' }),
     })
   }
 
@@ -1694,7 +1888,7 @@ class APIClient {
     })
   }
 
-  async updateUser(id: string, data: { status?: string; role?: string; password?: string }): Promise<{ ok: boolean }> {
+  async updateUser(id: string, data: { status?: string; role?: string; password?: string; group_id?: string }): Promise<{ ok: boolean }> {
     return this.request<{ ok: boolean }>(`/api/users/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -1738,8 +1932,36 @@ class APIClient {
     })
   }
 
+  async getControlDomainInfo(): Promise<{
+    control_domain?: string
+    control_public_url?: string
+    control_grpc_endpoint?: string
+    control_public_https?: boolean
+    control_redirect_ip?: boolean
+    public_ip?: string
+    configured_grpc?: string
+  }> {
+    return this.request('/api/admin/control-domain')
+  }
+
+  async verifyControlDomain(domain?: string): Promise<{
+    ok: boolean
+    domain?: string
+    records?: string[]
+    expected?: string
+    error?: string
+    public_url?: string
+  }> {
+    const qs = domain ? `?domain=${encodeURIComponent(domain)}` : ''
+    return this.request(`/api/admin/control-domain/verify${qs}`)
+  }
+
   async checkESHealth(): Promise<{ status: number; body: any }> {
     return this.request<{ status: number; body: any }>('/api/logs/es/health')
+  }
+
+  async getLogsStatus(): Promise<{ configured: boolean; healthy: boolean }> {
+    return this.request<{ configured: boolean; healthy: boolean }>('/api/logs/status')
   }
 
   async getSystemLogs(params?: {
@@ -1980,9 +2202,11 @@ class APIClient {
   async replaceDomainOrigins(
     domainId: string,
     origins: DomainOrigin[],
+    options?: { publish?: boolean },
   ): Promise<{ origins: DomainOrigin[] }> {
+    const query = options?.publish === false ? '?publish=0' : ''
     return this.request<{ origins: DomainOrigin[] }>(
-      `/api/domains/${encodeURIComponent(domainId)}/origins`,
+      `/api/domains/${encodeURIComponent(domainId)}/origins${query}`,
       {
         method: 'PUT',
         body: JSON.stringify({ origins }),
@@ -2169,16 +2393,23 @@ class APIClient {
     from?: string
     to?: string
     size?: number
-  }): Promise<{ hits: any[]; total: number }> {
-    return this.request<{ hits: any[]; total: number }>('/api/logs/search', {
+  }): Promise<{ entries: LogSearchEntry[]; total: number }> {
+    const res = await this.request<{ entries?: LogSearchEntry[]; total?: number }>('/api/logs/search', {
       method: 'POST',
       body: JSON.stringify(params),
     })
+    return { entries: res.entries || [], total: res.total || 0 }
   }
 
   // WAF Bans
-  async listWAFBans(): Promise<{ bans: any[] }> {
-    return this.request<{ bans: any[] }>('/api/waf/bans')
+  async listWAFBans(): Promise<{ bans: WAFBan[] }> {
+    return this.request<{ bans: WAFBan[] }>('/api/waf/bans')
+  }
+
+  async deleteWAFBan(ip: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(`/api/waf/bans?ip=${encodeURIComponent(ip)}`, {
+      method: 'DELETE',
+    })
   }
 
   // Cache rules. The backend endpoint is global (no domain_id filter);
@@ -2252,6 +2483,20 @@ class APIClient {
     )
   }
 
+  /** Apply a built-in WAF ruleset (e.g. owasp_common) as a new or existing policy. */
+  async applyWAFRuleset(
+    name: string,
+    body?: { policy_id?: string; scope?: string; scope_id?: string },
+  ): Promise<{ ok: boolean; ruleset: string; policy: WAFPolicy }> {
+    return this.request<{ ok: boolean; ruleset: string; policy: WAFPolicy }>(
+      `/api/waf/rulesets/${encodeURIComponent(name)}`,
+      {
+        method: "POST",
+        body: JSON.stringify(body || {}),
+      },
+    )
+  }
+
   // WAF whitelist is a flat global list — there is no per-domain scope
   // server-side. The detail view consumes it read-only for context.
   async listWAFWhitelist(): Promise<{ whitelist: WAFWhitelistEntry[] }> {
@@ -2273,11 +2518,11 @@ class APIClient {
 
   // Global CC policy convenience endpoint. Used by the detail-page
   // "Quick CC" panel and the standalone WAF management page.
-  async getCCPolicy(): Promise<{ level: string; action: string; ban_seconds: number; fail_limit: number; ban_mode?: string }> {
-    return this.request<{ level: string; action: string; ban_seconds: number; fail_limit: number; ban_mode?: string }>("/api/waf/cc")
+  async getCCPolicy(): Promise<{ level: string; action: string; captcha_type?: string; ban_seconds: number; fail_limit: number; ban_mode?: string }> {
+    return this.request<{ level: string; action: string; captcha_type?: string; ban_seconds: number; fail_limit: number; ban_mode?: string }>("/api/waf/cc")
   }
 
-  async setCCPolicy(payload: { level: string; action: string; ban_seconds: number; fail_limit: number; ban_mode?: string }): Promise<{ ok: boolean }> {
+  async setCCPolicy(payload: { level: string; action: string; captcha_type?: string; ban_seconds: number; fail_limit: number; ban_mode?: string }): Promise<{ ok: boolean }> {
     return this.request<{ ok: boolean }>("/api/waf/cc", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -2291,6 +2536,62 @@ class APIClient {
   }): Promise<{ order: any }> {
     return this.request<{ order: any }>('/api/user/orders', {
       method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async listTickets(params?: { status?: string; page?: number; page_size?: number }): Promise<{ tickets: Ticket[]; total: number; page: number; page_size: number }> {
+    const q = new URLSearchParams()
+    if (params?.status) q.set('status', params.status)
+    if (params?.page) q.set('page', String(params.page))
+    if (params?.page_size) q.set('page_size', String(params.page_size))
+    const suffix = q.toString() ? `?${q.toString()}` : ''
+    return this.request<{ tickets: Ticket[]; total: number; page: number; page_size: number }>(`/api/tickets${suffix}`)
+  }
+
+  async createTicket(data: { subject: string; category?: string; body: string }): Promise<{ ticket: Ticket }> {
+    return this.request<{ ticket: Ticket }>('/api/tickets', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  async getTicket(id: string): Promise<{ ticket: Ticket; replies: TicketReply[] }> {
+    return this.request<{ ticket: Ticket; replies: TicketReply[] }>(`/api/tickets/${encodeURIComponent(id)}`)
+  }
+
+  async replyTicket(id: string, body: string): Promise<{ ok: boolean; ticket: Ticket; reply: TicketReply }> {
+    return this.request<{ ok: boolean; ticket: Ticket; reply: TicketReply }>(`/api/tickets/${encodeURIComponent(id)}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    })
+  }
+
+  async closeTicket(id: string): Promise<{ ok: boolean; ticket: Ticket }> {
+    return this.request<{ ok: boolean; ticket: Ticket }>(`/api/tickets/${encodeURIComponent(id)}/close`, { method: 'POST' })
+  }
+
+  async listAdminTickets(params?: { status?: string; user_id?: string; page?: number; page_size?: number }): Promise<{ tickets: Ticket[]; total: number; page: number; page_size: number }> {
+    const q = new URLSearchParams()
+    if (params?.status) q.set('status', params.status)
+    if (params?.user_id) q.set('user_id', params.user_id)
+    if (params?.page) q.set('page', String(params.page))
+    if (params?.page_size) q.set('page_size', String(params.page_size))
+    const suffix = q.toString() ? `?${q.toString()}` : ''
+    return this.request<{ tickets: Ticket[]; total: number; page: number; page_size: number }>(`/api/admin/tickets${suffix}`)
+  }
+
+  async getAdminTicket(id: string): Promise<{ ticket: Ticket; replies: TicketReply[] }> {
+    return this.request<{ ticket: Ticket; replies: TicketReply[] }>(`/api/admin/tickets/${encodeURIComponent(id)}`)
+  }
+
+  async replyAdminTicket(id: string, body: string): Promise<{ ok: boolean; ticket: Ticket; reply: TicketReply }> {
+    return this.request<{ ok: boolean; ticket: Ticket; reply: TicketReply }>(`/api/admin/tickets/${encodeURIComponent(id)}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    })
+  }
+
+  async updateAdminTicket(id: string, data: { status?: string; priority?: string }): Promise<{ ticket: Ticket }> {
+    return this.request<{ ticket: Ticket }>(`/api/admin/tickets/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
       body: JSON.stringify(data),
     })
   }

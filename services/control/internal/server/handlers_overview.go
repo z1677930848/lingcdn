@@ -184,7 +184,7 @@ func (s *Servers) handleOverview(w http.ResponseWriter, r *http.Request) {
 			degradedNodes++
 			continue
 		}
-		if !n.LastHeartbeat.IsZero() && now.Sub(n.LastHeartbeat) < 5*time.Minute {
+		if nodeCommOK(n, now) {
 			onlineNodes++
 			continue
 		}
@@ -245,9 +245,9 @@ func (s *Servers) handleOverview(w http.ResponseWriter, r *http.Request) {
 			OfflineNodes:   offlineNodes,
 			Regions:        buildNetworkRegionsFromNodes(nodes),
 		},
-		Trends:     buildOverviewTrendsFromNodes(nodes, window),
+		Trends:     buildOverviewTrends(s.nodeMonitor, nodes, window, esData == nil),
 		TopDomains: buildTopDomainsFromNodes(domains, nodes),
-		DemoData:   false,
+		DemoData:   esData == nil,
 		License: overviewLicense{
 			AuthorizedNodes: authorizedNodes,
 			ActiveNodes:     onlineNodes,
@@ -427,6 +427,7 @@ func buildTrafficMapFromNodes(nodes []*store.Node) []overviewTrafficRegion {
 			countryAgg[geoName] = a
 		}
 		a.bytesSent += n.BytesSent
+		a.requests += n.RequestsTotal
 	}
 	out := make([]overviewTrafficRegion, 0, len(countryAgg))
 	for name, a := range countryAgg {
@@ -444,6 +445,27 @@ func buildTrafficMapFromNodes(nodes []*store.Node) []overviewTrafficRegion {
 		return out[i].BytesSent > out[j].BytesSent
 	})
 	return out
+}
+
+// buildOverviewTrends prefers nodeMonitorRecorder history when ES is unavailable.
+func buildOverviewTrends(recorder *nodeMonitorRecorder, nodes []*store.Node, window string, useRecorder bool) []overviewTrendSeries {
+	if useRecorder && recorder != nil {
+		if trends := recorder.clusterTrends(window); len(trends) > 0 && trendsHaveData(trends) {
+			return trends
+		}
+	}
+	return buildOverviewTrendsFromNodes(nodes, window)
+}
+
+func trendsHaveData(series []overviewTrendSeries) bool {
+	for _, s := range series {
+		for _, p := range s.Points {
+			if p.Value > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildOverviewTrendsFromNodes creates trend series using real-time node telemetry.
@@ -470,7 +492,7 @@ func buildOverviewTrendsFromNodes(nodes []*store.Node, window string) []overview
 	now := time.Now()
 	for _, n := range nodes {
 		// Only include nodes that reported telemetry recently (within 5 minutes).
-		if n.LastMetricsAt.IsZero() || now.Sub(n.LastMetricsAt) > 5*time.Minute {
+		if n.LastMetricsAt.IsZero() || now.Sub(n.LastMetricsAt) > NodeMetricsOKWindow {
 			continue
 		}
 		totalBandwidthBps += n.BandwidthUpBps
@@ -487,8 +509,18 @@ func buildOverviewTrendsFromNodes(nodes []*store.Node, window string) []overview
 	}
 	trafficGB := float64(totalMonthBytes) / 1e9
 
-	// Requests: use TCP established connections as an approximation.
-	requestsCount := float64(totalConnections)
+	// Requests: prefer cumulative requests_total from node telemetry.
+	var totalRequests int64
+	for _, n := range nodes {
+		if n.LastMetricsAt.IsZero() || now.Sub(n.LastMetricsAt) > 5*time.Minute {
+			continue
+		}
+		totalRequests += n.RequestsTotal
+	}
+	requestsCount := float64(totalRequests)
+	if requestsCount == 0 {
+		requestsCount = float64(totalConnections)
+	}
 
 	// Build time-series points: we project the current value across the window.
 	start := now.Add(-time.Duration(points-1) * step)
@@ -565,7 +597,7 @@ func buildTopDomainsFromNodes(domains []*store.Domain, nodes []*store.Node) []ov
 	var totalBwBps float64
 	var totalConns int64
 	for _, n := range nodes {
-		if n.LastMetricsAt.IsZero() || now.Sub(n.LastMetricsAt) > 5*time.Minute {
+		if n.LastMetricsAt.IsZero() || now.Sub(n.LastMetricsAt) > NodeMetricsOKWindow {
 			continue
 		}
 		totalBwBps += n.BandwidthUpBps

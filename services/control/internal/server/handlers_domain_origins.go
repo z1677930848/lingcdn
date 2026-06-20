@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // Per-domain origin-address management.
 //
@@ -92,7 +92,9 @@ func (s *Servers) handleDomainOrigins(w http.ResponseWriter, r *http.Request, do
 			writeInternalError(w, "replace domain origins", err)
 			return
 		}
-		_ = s.startPublishTask(ctx, "auto", "domain:origins:"+domainID, "", "", nil)
+		if r.URL.Query().Get("publish") != "0" {
+			_ = s.startPublishTask(ctx, "auto", "domain:"+domainID, "domain:origins:update:"+domainID, "", nil)
+		}
 
 		// Return the canonical list so the UI can refresh form state.
 		list, err := s.store.ListDomainOrigins(ctx, domainID)

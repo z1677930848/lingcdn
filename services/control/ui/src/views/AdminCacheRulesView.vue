@@ -6,28 +6,29 @@
         <p class="subtitle">按 Host + 路径模式控制缓存 TTL、查询参数与优先级。</p>
       </div>
       <div class="header-actions">
-        <t-button theme="primary" @click="openDialog()">
-          <template #icon><t-icon name="add" /></template>
+        <el-button type="primary" @click="openDialog()">
+          <template #icon><EpIcon name="add" /></template>
           新建规则
-        </t-button>
-        <t-input v-model="search" clearable placeholder="按名称 / Host / 路径搜索" style="width:280px" />
-        <t-button variant="text" :loading="loading" @click="load">
-          <template #icon><t-icon name="refresh" /></template>
+        </el-button>
+        <el-input v-model="search" clearable placeholder="按名称 / Host / 路径搜索" style="width:280px" />
+        <el-button link :loading="loading" @click="load">
+          <template #icon><EpIcon name="refresh" /></template>
           刷新
-        </t-button>
+        </el-button>
       </div>
     </div>
 
-    <t-card class="section-card" bordered>
+    <ErrorState v-if="error" :message="error" @retry="load" />
+
+    <el-card class="section-card">
       <div class="admin-desktop-only">
-        <t-table
+        <EpDataTable
           :data="filtered"
           :columns="columns"
           row-key="id"
           size="small"
-          bordered
           :loading="loading"
-          empty="暂无缓存规则"
+          empty-text="暂无缓存规则"
           :pagination="{
             defaultCurrent: 1,
             defaultPageSize: 10,
@@ -38,16 +39,16 @@
         />
       </div>
       <div class="admin-mobile-only">
-        <div v-if="loading" class="loading-row"><t-loading /></div>
+        <div v-if="loading" class="loading-row"><div v-loading="true" style="min-height:48px" /></div>
         <div v-else-if="filtered.length === 0" class="admin-mobile-card-empty">暂无缓存规则</div>
         <div v-else class="admin-mobile-cards">
           <div v-for="rule in filtered" :key="rule.id" class="admin-mobile-card">
             <div class="admin-mobile-card-header">
               <span class="admin-mobile-card-title">{{ rule.name || rule.id }}</span>
               <div class="admin-mobile-card-tags">
-                <t-tag size="small" :theme="rule.enabled ? 'success' : 'default'" variant="light">
+                <el-tag size="small" :type="rule.enabled ? 'success' : 'info'" effect="light">
                   {{ rule.enabled ? '启用' : '停用' }}
-                </t-tag>
+                </el-tag>
               </div>
             </div>
             <div class="admin-mobile-card-rows">
@@ -77,66 +78,73 @@
               </div>
             </div>
             <div class="admin-mobile-card-actions">
-              <t-switch :model-value="rule.enabled" size="small" @change="(v: boolean) => toggle(rule, v)" />
+              <el-switch :model-value="rule.enabled" size="small" @change="(v: boolean) => toggle(rule, v)" />
               <span class="switch-text">{{ rule.enabled ? '已启用' : '已停用' }}</span>
               <div class="action-spacer" />
-              <t-button size="small" theme="primary" variant="text" @click="openDialog(rule)">编辑</t-button>
-              <t-button size="small" theme="danger" variant="text" @click="confirmDelete(rule)">删除</t-button>
+              <el-button size="small" type="primary" link @click="openDialog(rule)">编辑</el-button>
+              <el-button size="small" type="danger" link @click="confirmDelete(rule)">删除</el-button>
             </div>
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-dialog
-      v-model:visible="dialogOpen"
-      :header="editing ? '编辑缓存规则' : '新建缓存规则'"
+    <EpDialog append-to-body
+      v-model="dialogOpen"
+      :title="editing ? '编辑缓存规则' : '新建缓存规则'"
       :confirm-btn="{ content: '保存' }"
       cancel-btn="取消"
       @confirm="submit"
     >
-      <div class="form-grid">
+      <div class="form-grid-vertical">
         <div class="form-row-v">
           <label class="form-label-v">名称</label>
-          <t-input v-model="form.name" class="form-input-v" />
+          <el-input v-model="form.name" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">Host 模式</label>
-          <t-input v-model="form.host_pattern" placeholder="example.com 或 *.example.com 或 *" class="form-input-v" />
+          <el-input v-model="form.host_pattern" placeholder="example.com 或 *.example.com 或 *" class="form-input-v" />
           <div class="form-hint-v">支持精确、单级通配（*.name）与全局（*）。</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">路径模式</label>
-          <t-input v-model="form.path_pattern" placeholder="/* 或 /api/*" class="form-input-v" />
+          <el-input v-model="form.path_pattern" placeholder="/* 或 /api/*" class="form-input-v" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">TTL (秒)</label>
-          <t-input v-model="ttlSecondsText" type="number" class="form-input-v" style="max-width:240px" placeholder="0-31536000" />
+          <el-input v-model="ttlSecondsText" type="number" class="form-input-v" style="max-width:240px" placeholder="0-31536000" />
           <div class="form-hint-v">0 表示不缓存；最大 31536000（365 天）</div>
         </div>
         <div class="form-row-v">
           <label class="form-label-v">优先级</label>
-          <t-input v-model="priorityText" type="number" class="form-input-v" style="max-width:240px" placeholder="1-10000" />
+          <el-input v-model="priorityText" type="number" class="form-input-v" style="max-width:240px" placeholder="1-10000" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">缓存 Query</label>
-          <t-switch v-model="form.cache_query_params" />
+          <el-switch v-model="form.cache_query_params" />
         </div>
         <div class="form-row-v">
           <label class="form-label-v">启用</label>
-          <t-switch v-model="form.enabled" />
+          <el-switch v-model="form.enabled" />
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import { MessagePlugin } from "@/lib/ep-message"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
+import EpIcon from "@/components/ep/EpIcon.vue"
 import { computed, h, onMounted, reactive, ref } from "vue"
-import { DialogPlugin, MessagePlugin, Switch, Button } from "tdesign-vue-next"
+import { DialogPlugin } from "@/lib/ep-dialog"
+import { ElButton, ElSwitch } from "element-plus"
 import { api, type CacheRule } from "@/lib/api"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const loading = ref(false)
+const error = ref("")
 const rules = ref<CacheRule[]>([])
 const search = ref("")
 const dialogOpen = ref(false)
@@ -180,11 +188,13 @@ const priorityText = computed<string>({
 
 const load = async () => {
   loading.value = true
+  error.value = ""
   try {
     const res = await api.listCacheRules()
     rules.value = res.cache_rules || []
-  } catch (err: any) {
-    MessagePlugin.error(err?.message || "加载失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -296,7 +306,7 @@ const columns = computed(() => [
     title: "启用",
     width: 90,
     cell: (_h: any, { row }: { row: CacheRule }) =>
-      h(Switch, { size: "small", modelValue: row.enabled, "onUpdate:modelValue": (v: boolean) => toggle(row, v) }),
+      h(ElSwitch, { size: "small", modelValue: row.enabled, "onUpdate:modelValue": (v: boolean) => toggle(row, v) }),
   },
   {
     colKey: "updated_at",
@@ -311,8 +321,8 @@ const columns = computed(() => [
     fixed: "right",
     cell: (_h: any, { row }: { row: CacheRule }) =>
       h("div", { style: "display:flex;gap:4px" }, [
-        h(Button, { size: "small", theme: "primary", variant: "text", onClick: () => openDialog(row) }, () => "编辑"),
-        h(Button, { size: "small", theme: "danger", variant: "text", onClick: () => confirmDelete(row) }, () => "删除"),
+        h(ElButton, { size: "small", type: "primary", link: true, onClick: () => openDialog(row) }, () => "编辑"),
+        h(ElButton, { size: "small", type: "danger", link: true, onClick: () => confirmDelete(row) }, () => "删除"),
       ]),
   },
 ])
@@ -320,118 +330,3 @@ const columns = computed(() => [
 onMounted(load)
 </script>
 
-<style scoped>
-.page {
-  padding: 24px;
-}
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-.header-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-.title {
-  font-size: 20px;
-  font-weight: 600;
-  margin: 0 0 4px;
-  color: var(--app-text-strong);
-}
-.subtitle {
-  color: var(--app-text-faint);
-  margin: 0;
-  font-size: 13px;
-}
-.section-card {
-  min-width: 0;
-}
-.form-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.form-row-v {
-  display: grid;
-  grid-template-columns: 100px minmax(280px, 1fr);
-  gap: 6px 16px;
-  align-items: center;
-}
-.form-label-v {
-  color: var(--app-text-faint);
-  text-align: right;
-}
-.form-input-v {
-  width: 100%;
-}
-.form-hint-v {
-  grid-column: 2;
-  color: var(--app-text-faint);
-  font-size: 12px;
-  margin-top: 2px;
-}
-.section-card :deep(.t-table) {
-  min-width: 100%;
-}
-
-.loading-row {
-  text-align: center;
-  padding: 32px 0;
-}
-
-.admin-mobile-card-actions {
-  align-items: center;
-}
-
-.action-spacer {
-  flex: 1;
-}
-
-.switch-text {
-  font-size: 12px;
-  color: var(--app-text-muted);
-}
-
-@media (max-width: 768px) {
-  .page {
-    padding: 12px;
-  }
-
-  .header {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .header-actions {
-    flex-wrap: wrap;
-  }
-
-  .header-actions > * {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .title {
-    font-size: 16px;
-  }
-
-  .form-row-v {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-
-  .form-label-v {
-    text-align: left;
-  }
-
-  .form-hint-v {
-    grid-column: 1;
-  }
-}
-</style>

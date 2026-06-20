@@ -5,25 +5,22 @@
         <h1 class="title">系统授权</h1>
         <p class="subtitle">管理与查看系统授权信息</p>
       </div>
-      <t-button theme="warning" variant="outline" @click="openPortal">前往官方授权中心</t-button>
+      <el-button type="warning" plain @click="openPortal">前往官方授权中心</el-button>
     </div>
 
-    <div v-if="error" class="error-box">
-      <span>{{ error }}</span>
-      <t-button size="small" theme="primary" @click="loadData">重试</t-button>
-    </div>
+    <ErrorState v-if="error" :message="error" @retry="loadData" />
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
         <div class="lc-section-title">授权码</div>
         <form class="license-form" @submit.prevent="handleUpdate">
-          <t-input v-model="licenseKeyInput" placeholder="请输入授权码" :disabled="saving" />
-          <t-button type="submit" theme="primary" :loading="saving">{{ saving ? "更新中..." : "激活 / 更新" }}</t-button>
+          <el-input v-model="licenseKeyInput" placeholder="请输入授权码" :disabled="saving" />
+          <el-button type="primary" native-type="submit" :loading="saving">{{ saving ? "更新中..." : "激活 / 更新" }}</el-button>
         </form>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-card class="section-card" bordered>
+    <el-card class="section-card">
       <div class="section-body">
         <div class="lc-section-title">授权信息</div>
         <div class="lc-info-grid">
@@ -34,7 +31,7 @@
           <div class="lc-info-item">
             <div class="lc-info-label">授权状态</div>
             <div class="lc-info-value">
-              <t-tag :theme="statusConfig.theme" variant="light">{{ statusConfig.text }}</t-tag>
+              <el-tag :type="statusConfig.theme" effect="light">{{ statusConfig.text }}</el-tag>
             </div>
           </div>
         </div>
@@ -42,22 +39,22 @@
           当前在线节点：{{ status?.active_nodes ?? 0 }}，最近校验时间：{{ formatDate(status?.license?.last_checked) }}
         </div>
       </div>
-    </t-card>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue"
-import { MessagePlugin } from "tdesign-vue-next"
+import { MessagePlugin } from "@/lib/ep-message"
 import { api, type SystemLicenseStatusResponse } from "@/lib/api"
-
-const AUTH_PORTAL = "https://auth.lingcdn.cloud"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const loading = ref(true)
 const error = ref("")
 const saving = ref(false)
 const licenseKeyInput = ref("")
 const status = ref<SystemLicenseStatusResponse | null>(null)
+const portalBase = computed(() => status.value?.portal_base || "https://auth.lingcdn.cloud")
 
 const loadData = async () => {
   try {
@@ -100,13 +97,13 @@ const licenseType = computed(() => {
 
 const statusConfig = computed(() => {
   const st = String(status.value?.license?.status || "").toLowerCase()
-  if (!st || st === "unlicensed") return { theme: "default" as const, text: "未授权" }
+  if (!st || st === "unlicensed") return { theme: "info" as const, text: "未授权" }
   if (st === "active") return { theme: "success" as const, text: "已激活" }
   if (st === "expired") return { theme: "danger" as const, text: "已过期" }
   if (st === "revoked") return { theme: "danger" as const, text: "已吊销" }
   if (st === "limited") return { theme: "warning" as const, text: "受限" }
   if (st === "paused" || st === "suspended") return { theme: "danger" as const, text: "已暂停（失效）" }
-  return { theme: "default" as const, text: st }
+  return { theme: "info" as const, text: st }
 })
 
 const isZeroTime = (value?: string) => {
@@ -136,7 +133,7 @@ const infoRows = computed(() => [
 ])
 
 const openPortal = () => {
-  window.open(AUTH_PORTAL, "_blank", "noopener,noreferrer")
+  window.open(portalBase.value, "_blank", "noopener,noreferrer")
 }
 
 onMounted(() => {
@@ -144,65 +141,3 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
-.license-form {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.lc-section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #475569;
-  margin-bottom: 16px;
-}
-
-.lc-info-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px 32px;
-}
-
-.lc-info-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.lc-info-label {
-  font-size: 13px;
-  color: #475569;
-}
-
-.lc-info-value {
-  font-size: 14px;
-  color: #0f172a;
-  word-break: break-all;
-}
-
-.lc-meta {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #f0f0f0;
-  font-size: 12px;
-  color: #475569;
-}
-
-@media (max-width: 768px) {
-  .license-form {
-    flex-direction: column;
-  }
-
-  .license-form > * {
-    width: 100%;
-  }
-}
-
-@media (max-width: 640px) {
-  .lc-info-grid {
-    grid-template-columns: 1fr;
-    gap: 16px;
-  }
-}
-</style>

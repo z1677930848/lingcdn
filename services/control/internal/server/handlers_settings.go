@@ -42,6 +42,7 @@ func (s *Servers) handleSettings(w http.ResponseWriter, r *http.Request) {
 			FooterCopyright           *string `json:"footer_copyright"`
 			Favicon                   *string `json:"favicon"`
 			Logo                      *string `json:"logo"`
+			SidebarBrandMode          *string `json:"sidebar_brand_mode"`
 			SMTPHost                  *string `json:"smtp_host"`
 			SMTPPort                  *int    `json:"smtp_port"`
 			SMTPUsername              *string `json:"smtp_username"`
@@ -61,6 +62,7 @@ func (s *Servers) handleSettings(w http.ResponseWriter, r *http.Request) {
 			UpgradeChannel            *string `json:"upgrade_channel"`
 			NotifyNewBuild            *bool   `json:"notify_new_build"`
 			RegisterEmailVerification *bool   `json:"register_email_verification"`
+			RenewalBeforeExpiryDays   *int    `json:"renewal_before_expiry_days"`
 			EmailEnabled              *bool   `json:"email_enabled"`
 			DingtalkEnabled           *bool   `json:"dingtalk_enabled"`
 			DingtalkWebhook           *string `json:"dingtalk_webhook"`
@@ -81,6 +83,9 @@ func (s *Servers) handleSettings(w http.ResponseWriter, r *http.Request) {
 			RetentionESLogs           *int    `json:"retention_es_logs"`
 			RetentionWafBans          *int    `json:"retention_waf_bans"`
 			RetentionUpgradeLogs      *int    `json:"retention_upgrade_logs"`
+			ControlDomain             *string `json:"control_domain"`
+			ControlPublicHTTPS        *bool   `json:"control_public_https"`
+			ControlRedirectIP         *bool   `json:"control_redirect_ip"`
 		}
 		var req settingsPatch
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -112,6 +117,9 @@ func (s *Servers) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Logo != nil {
 			next.Logo = strings.TrimSpace(*req.Logo)
+		}
+		if req.SidebarBrandMode != nil {
+			next.SidebarBrandMode = normalizeSidebarBrandMode(*req.SidebarBrandMode)
 		}
 		if req.SMTPHost != nil {
 			next.SMTPHost = strings.TrimSpace(*req.SMTPHost)
@@ -195,6 +203,13 @@ func (s *Servers) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.RegisterEmailVerification != nil {
 			next.RegisterEmailVerification = *req.RegisterEmailVerification
 		}
+		if req.RenewalBeforeExpiryDays != nil {
+			if *req.RenewalBeforeExpiryDays < 0 || *req.RenewalBeforeExpiryDays > 3650 {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "续费窗口需在 0-3650 天之间"})
+				return
+			}
+			next.RenewalBeforeExpiryDays = *req.RenewalBeforeExpiryDays
+		}
 		if req.EmailEnabled != nil {
 			next.EmailEnabled = *req.EmailEnabled
 		}
@@ -254,6 +269,15 @@ func (s *Servers) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.RetentionUpgradeLogs != nil {
 			next.RetentionUpgradeLogs = *req.RetentionUpgradeLogs
+		}
+		if req.ControlDomain != nil {
+			next.ControlDomain = normalizeControlDomain(*req.ControlDomain)
+		}
+		if req.ControlPublicHTTPS != nil {
+			next.ControlPublicHTTPS = *req.ControlPublicHTTPS
+		}
+		if req.ControlRedirectIP != nil {
+			next.ControlRedirectIP = *req.ControlRedirectIP
 		}
 
 		if req.UpgradeChannel != nil {
@@ -345,6 +369,9 @@ func (s *Servers) applySettingsDefaults(settings *store.Settings) *store.Setting
 	if strings.TrimSpace(s.cfg.ElasticsearchBytesField) != "" {
 		defaults.ElasticsearchBytesField = s.cfg.ElasticsearchBytesField
 	}
+	if strings.TrimSpace(s.cfg.ControlDomain) != "" {
+		defaults.ControlDomain = normalizeControlDomain(s.cfg.ControlDomain)
+	}
 	if settings == nil {
 		return defaults
 	}
@@ -361,6 +388,10 @@ func (s *Servers) applySettingsDefaults(settings *store.Settings) *store.Setting
 	}
 	out.Favicon = settings.Favicon
 	out.Logo = settings.Logo
+	out.SidebarBrandMode = normalizeSidebarBrandMode(settings.SidebarBrandMode)
+	if out.SidebarBrandMode == "" {
+		out.SidebarBrandMode = defaults.SidebarBrandMode
+	}
 	if strings.TrimSpace(settings.SMTPHost) != "" {
 		out.SMTPHost = settings.SMTPHost
 	}
@@ -414,10 +445,55 @@ func (s *Servers) applySettingsDefaults(settings *store.Settings) *store.Setting
 	}
 	out.NotifyNewBuild = settings.NotifyNewBuild
 	out.RegisterEmailVerification = settings.RegisterEmailVerification
+	out.RenewalBeforeExpiryDays = settings.RenewalBeforeExpiryDays
+	out.EmailEnabled = settings.EmailEnabled
+	out.DingtalkEnabled = settings.DingtalkEnabled
+	out.DingtalkWebhook = settings.DingtalkWebhook
+	out.WechatEnabled = settings.WechatEnabled
+	out.WechatWebhook = settings.WechatWebhook
+	out.FeishuEnabled = settings.FeishuEnabled
+	out.FeishuWebhook = settings.FeishuWebhook
+	out.NotifyNodeResource = settings.NotifyNodeResource
+	out.NotifyNodeMonitor = settings.NotifyNodeMonitor
+	out.NotifyTicketReply = settings.NotifyTicketReply
+	if settings.NotifyInterval > 0 {
+		out.NotifyInterval = settings.NotifyInterval
+	}
+	out.ThresholdCPU = settings.ThresholdCPU
+	out.ThresholdMemory = settings.ThresholdMemory
+	out.ThresholdDisk = settings.ThresholdDisk
+	out.ThresholdBandwidthUp = settings.ThresholdBandwidthUp
+	out.ThresholdBandwidthDown = settings.ThresholdBandwidthDown
+	if settings.RetentionSystemLogs > 0 {
+		out.RetentionSystemLogs = settings.RetentionSystemLogs
+	}
+	if settings.RetentionESLogs > 0 {
+		out.RetentionESLogs = settings.RetentionESLogs
+	}
+	if settings.RetentionWafBans > 0 {
+		out.RetentionWafBans = settings.RetentionWafBans
+	}
+	if settings.RetentionUpgradeLogs > 0 {
+		out.RetentionUpgradeLogs = settings.RetentionUpgradeLogs
+	}
+	if d := normalizeControlDomain(settings.ControlDomain); d != "" {
+		out.ControlDomain = d
+	}
+	out.ControlPublicHTTPS = settings.ControlPublicHTTPS
+	out.ControlRedirectIP = settings.ControlRedirectIP
 	if !settings.UpdatedAt.IsZero() {
 		out.UpdatedAt = settings.UpdatedAt
 	}
 	return &out
+}
+
+func normalizeSidebarBrandMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "logo":
+		return "logo"
+	default:
+		return "name"
+	}
 }
 
 // resolveSettings returns the effective settings (defaults + cfg + DB)

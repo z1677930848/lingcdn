@@ -10,14 +10,34 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/lingcdn/control/internal/store"
 )
+
+// orderCreateLocks serialises concurrent /api/user/orders POSTs for the
+// same (userID, productID). Without this lock two overlapping clicks
+// race through the "latestUserProductOrderEnd" read → balance deduction →
+// CreateOrder path and produce two orders with identical startsAt=now,
+// endsAt=now+1period — i.e. the user is billed twice for a single period
+// instead of having their subscription extended. Single-process mutex only.
+var orderCreateLocks sync.Map // key: "userID|productID", value: *sync.Mutex
+
+func orderCreateLock(userID, productID string) *sync.Mutex {
+	key := strings.TrimSpace(userID) + "|" + strings.TrimSpace(productID)
+	if mu, ok := orderCreateLocks.Load(key); ok {
+		return mu.(*sync.Mutex)
+	}
+	mu := &sync.Mutex{}
+	existing, _ := orderCreateLocks.LoadOrStore(key, mu)
+	return existing.(*sync.Mutex)
+}
 
 // normalizeAnnouncementStatus returns the canonical value for a status query
 // parameter plus an ok bit. "" (no filter) and "all" both normalize to "",
@@ -308,6 +328,10 @@ func (s *Servers) handleAdminOrders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		orderMu := orderCreateLock(req.UserID, req.ProductID)
+		orderMu.Lock()
+		defer orderMu.Unlock()
+
 		p, err := s.store.GetProduct(ctx, req.ProductID)
 		if err != nil {
 			writeInternalError(w, "get product", err)
@@ -382,7 +406,56 @@ func (s *Servers) handleAdminOrders(w http.ResponseWriter, r *http.Request) {
 			now := time.Now().UTC()
 			paidAt = &now
 		}
-		now := time.Now()
+		now := time.Now().UTC()
+
+		// When admin omits explicit dates for a paid order, derive the same
+		// renewal window + endsAt stacking rules as user self-service checkout.
+		if req.Status == "paid" && startsAt == nil && endsAt == nil {
+			var renewalBase time.Time
+			latestEnd, err := s.latestUserProductOrderEnd(ctx, req.UserID, p.ID)
+			if err != nil {
+				writeInternalError(w, "list user orders", err)
+				return
+			}
+			if latestEnd != nil {
+				settings := s.resolveSettings(ctx)
+				windowDays := normalizeRenewalBeforeExpiryDays(settings.RenewalBeforeExpiryDays)
+				latestEndUTC := latestEnd.UTC()
+				if latestEndUTC.After(now.AddDate(0, 0, windowDays)) {
+					writeJSON(w, http.StatusBadRequest, map[string]any{
+						"error": fmt.Sprintf("当前套餐尚未进入续费期，仅允许到期前 %d 天内续费（到期时间：%s）", windowDays, latestEndUTC.Format("2006-01-02 15:04")),
+					})
+					return
+				}
+				if latestEndUTC.After(now) {
+					renewalBase = latestEndUTC
+				}
+			}
+			startsAtVal := now
+			startsAt = &startsAtVal
+			if renewalBase.IsZero() {
+				renewalBase = startsAtVal
+			}
+			var endsAtVal time.Time
+			switch req.Period {
+			case "month":
+				endsAtVal = renewalBase.AddDate(0, 1*int(req.Quantity), 0)
+			case "quarter":
+				endsAtVal = renewalBase.AddDate(0, 3*int(req.Quantity), 0)
+			case "year":
+				endsAtVal = renewalBase.AddDate(1*int(req.Quantity), 0, 0)
+			default:
+				endsAtVal = renewalBase.AddDate(0, 1, 0)
+			}
+			endsAt = &endsAtVal
+		}
+
+		// Admin-created orders share the same UTC-only convention as
+		// self-service orders (see handleUserOrderCreate). Without
+		// `.UTC()` here CreatedAt/UpdatedAt ended up in local time
+		// while PaidAt was UTC — which produced audit logs that looked
+		// like the order was "paid before it existed" on hosts with
+		// non-UTC zones.
 		o := &store.Order{
 			ID:          uuid.NewString(),
 			UserID:      req.UserID,
@@ -571,7 +644,10 @@ func (s *Servers) handleAdminOrderByID(w http.ResponseWriter, r *http.Request) {
 		} else if present {
 			existing.PaidAt = v
 		}
-		existing.UpdatedAt = time.Now()
+		// Keep UpdatedAt aligned with the UTC convention used by every
+		// other write path on this table; mixing zones would show up as
+		// bogus clock skew in the order audit trail.
+		existing.UpdatedAt = time.Now().UTC()
 		if err := s.store.UpdateOrder(ctx, existing); err != nil {
 			writeInternalError(w, "update order", err)
 			return
@@ -679,6 +755,9 @@ func (s *Servers) handleUserOrders(w http.ResponseWriter, r *http.Request) {
 // calculate price for the chosen period, deduct balance (0-cost orders skip
 // the deduction), create a "paid" order with auto-calculated dates.
 func (s *Servers) handleUserOrderCreate(w http.ResponseWriter, r *http.Request, ctx context.Context, userID string) {
+	if !s.requireUserPermission(w, ctx, PermOrdersPurchase) {
+		return
+	}
 	var req struct {
 		ProductID string `json:"product_id"`
 		Period    string `json:"period"`
@@ -697,18 +776,26 @@ func (s *Servers) handleUserOrderCreate(w http.ResponseWriter, r *http.Request, 
 		req.Period = "month"
 	}
 
-	p, err := s.store.GetProduct(ctx, req.ProductID)
+	// Take the per (user, product) lock BEFORE reading existing orders and balance.
+	orderMu := orderCreateLock(userID, req.ProductID)
+	orderMu.Lock()
+	defer orderMu.Unlock()
+	_ = s.finishUserOrderCreate(w, ctx, userID, req.ProductID, req.Period)
+}
+
+func (s *Servers) finishUserOrderCreate(w http.ResponseWriter, ctx context.Context, userID, productID, period string) error {
+	p, err := s.store.GetProduct(ctx, productID)
 	if err != nil {
 		writeInternalError(w, "get product", err)
-		return
+		return err
 	}
 	if p == nil || !p.Enabled {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "产品不存在或已下架"})
-		return
+		return nil
 	}
 
 	var amount int64
-	switch req.Period {
+	switch period {
 	case "month":
 		amount = p.PriceMonthCents
 		if amount == 0 {
@@ -720,36 +807,61 @@ func (s *Servers) handleUserOrderCreate(w http.ResponseWriter, r *http.Request, 
 		amount = p.PriceYearCents
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的周期，必须为 month/quarter/year"})
-		return
+		return nil
 	}
 	if amount < 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "产品价格无效"})
-		return
+		return nil
 	}
 
-	// Deduct balance for non-zero orders.
-	if amount > 0 {
-		if err := s.store.AdminAdjustBalance(ctx, userID, -amount, "购买产品: "+p.Name+" ("+req.Period+")"); err != nil {
-			if strings.Contains(err.Error(), "insufficient") {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "余额不足，请先充值"})
-				return
-			}
-			writeInternalError(w, "deduct balance", err)
-			return
+	now := time.Now().UTC()
+	var renewalBase time.Time
+	latestEnd, err := s.latestUserProductOrderEnd(ctx, userID, p.ID)
+	if err != nil {
+		writeInternalError(w, "list user orders", err)
+		return err
+	}
+	if latestEnd != nil {
+		settings := s.resolveSettings(ctx)
+		windowDays := normalizeRenewalBeforeExpiryDays(settings.RenewalBeforeExpiryDays)
+		latestEndUTC := latestEnd.UTC()
+		if latestEndUTC.After(now.AddDate(0, 0, windowDays)) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": fmt.Sprintf("当前套餐尚未进入续费期，仅允许到期前 %d 天内续费（到期时间：%s）", windowDays, latestEndUTC.Format("2006-01-02 15:04")),
+			})
+			return nil
+		}
+		if latestEndUTC.After(now) {
+			renewalBase = latestEndUTC
 		}
 	}
 
-	now := time.Now()
-	paidAt := now.UTC()
+	balanceDeducted := int64(0)
+	if amount > 0 {
+		if err := s.store.AdminAdjustBalance(ctx, userID, -amount, "购买产品: "+p.Name+" ("+period+")"); err != nil {
+			if strings.Contains(err.Error(), "insufficient") {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "余额不足，请先充值"})
+				return nil
+			}
+			writeInternalError(w, "deduct balance", err)
+			return err
+		}
+		balanceDeducted = amount
+	}
+
+	paidAt := now
 	startsAt := now
+	if renewalBase.IsZero() {
+		renewalBase = startsAt
+	}
 	var endsAt time.Time
-	switch req.Period {
+	switch period {
 	case "month":
-		endsAt = startsAt.AddDate(0, 1, 0)
+		endsAt = renewalBase.AddDate(0, 1, 0)
 	case "quarter":
-		endsAt = startsAt.AddDate(0, 3, 0)
+		endsAt = renewalBase.AddDate(0, 3, 0)
 	case "year":
-		endsAt = startsAt.AddDate(1, 0, 0)
+		endsAt = renewalBase.AddDate(1, 0, 0)
 	}
 
 	currency := p.Currency
@@ -765,7 +877,7 @@ func (s *Servers) handleUserOrderCreate(w http.ResponseWriter, r *http.Request, 
 		AmountCents: amount,
 		Currency:    currency,
 		Status:      "paid",
-		Period:      req.Period,
+		Period:      period,
 		Quantity:    1,
 		StartsAt:    &startsAt,
 		EndsAt:      &endsAt,
@@ -775,8 +887,40 @@ func (s *Servers) handleUserOrderCreate(w http.ResponseWriter, r *http.Request, 
 		UpdatedAt:   now,
 	}
 	if err := s.store.CreateOrder(ctx, o); err != nil {
+		if balanceDeducted > 0 {
+			_ = s.store.AdminAdjustBalance(ctx, userID, balanceDeducted, "购买失败退款: "+p.Name+" ("+period+")")
+		}
 		writeInternalError(w, "create order", err)
-		return
+		return err
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"order": o})
+	return nil
+}
+
+func normalizeRenewalBeforeExpiryDays(days int) int {
+	if days < 0 {
+		return 0
+	}
+	if days > 3650 {
+		return 3650
+	}
+	return days
+}
+
+func (s *Servers) latestUserProductOrderEnd(ctx context.Context, userID, productID string) (*time.Time, error) {
+	orders, err := s.store.ListOrders(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	var latest *time.Time
+	for _, o := range orders {
+		if o == nil || o.Status != "paid" || o.ProductID != productID || o.EndsAt == nil {
+			continue
+		}
+		if latest == nil || o.EndsAt.After(*latest) {
+			cp := *o.EndsAt
+			latest = &cp
+		}
+	}
+	return latest, nil
 }

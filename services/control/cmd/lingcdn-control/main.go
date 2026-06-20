@@ -21,6 +21,7 @@ import (
 	"github.com/lingcdn/control/internal/config"
 	"github.com/lingcdn/control/internal/metrics"
 	"github.com/lingcdn/control/internal/nodehub"
+	"github.com/lingcdn/control/internal/preload"
 	"github.com/lingcdn/control/internal/publisher"
 	"github.com/lingcdn/control/internal/purge"
 	"github.com/lingcdn/control/internal/server"
@@ -70,6 +71,10 @@ func serveCmd() *cobra.Command {
 				Str("http", cfg.HTTPAddr).
 				Str("metrics", cfg.MetricsAddr).
 				Msg("starting control plane")
+
+			if strings.EqualFold(cfg.PaymentProvider, "mock") && cfg.PaymentEnabled {
+				log.Warn().Msg("PAYMENT_PROVIDER=mock is active — do NOT use in production; configure epay instead")
+			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
@@ -121,10 +126,11 @@ func serveCmd() *cobra.Command {
 			comp := compiler.New(db)
 			pub := publisher.New(hub, comp, db)
 			purger := purge.New(hub, rdb)
+			preloader := preload.New(hub, rdb)
 			certMgr := cert.New()
 			m := metrics.New()
 
-			srv := server.New(cfg, hub, comp, pub, purger, certMgr, db, m)
+			srv := server.New(cfg, hub, comp, pub, purger, preloader, certMgr, db, m)
 
 			if err := srv.Serve(ctx); err != nil {
 				return err
@@ -142,7 +148,7 @@ func migrateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Run database migrations (stub)",
+		Short: "Run database migrations",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			loadResult, err := config.LoadDetailed(config.LoadOptions{File: configFile, AutoCreate: true})
 			if err != nil {
@@ -183,7 +189,7 @@ func seedCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "seed",
-		Short: "Seed admin/service tokens (stub)",
+		Short: "Seed admin/service tokens",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			loadResult, err := config.LoadDetailed(config.LoadOptions{File: configFile, AutoCreate: true})
 			if err != nil {

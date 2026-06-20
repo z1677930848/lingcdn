@@ -1,6 +1,7 @@
 ﻿package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -74,36 +75,17 @@ func (s *Servers) handleSyncActive(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	subjectFilter := strings.TrimSpace(r.URL.Query().Get("subject"))
 
-	role := getUserRole(ctx)
-	userID, _ := ctx.Value(ctxKeyUserID).(string)
-
-	ownedDomains := map[string]bool{}
-	if role != "admin" {
-		if userID == "" {
-			writeJSON(w, http.StatusOK, map[string]any{"tasks": []any{}})
-			return
-		}
-		domains, err := s.store.ListDomainsByUser(ctx, userID)
-		if err == nil {
-			for _, d := range domains {
-				if d != nil {
-					ownedDomains[d.ID] = true
-				}
-			}
-		}
+	ownedDomains, adminAll := s.syncOwnedDomainIDs(ctx)
+	if !adminAll && len(ownedDomains) == 0 && getUserID(ctx) == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"tasks": []any{}})
+		return
 	}
 
 	allowSubject := func(sub string) bool {
 		if subjectFilter != "" && !strings.HasPrefix(sub, subjectFilter) {
 			return false
 		}
-		if role == "admin" {
-			return true
-		}
-		if strings.HasPrefix(sub, "domain:") {
-			return ownedDomains[strings.TrimPrefix(sub, "domain:")]
-		}
-		return false
+		return s.allowSyncSubject(adminAll, ownedDomains, sub)
 	}
 
 	cutoff := time.Now().Add(-5 * time.Minute)
@@ -160,4 +142,35 @@ func (s *Servers) handleSyncActive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": out})
+}
+
+func (s *Servers) syncOwnedDomainIDs(ctx context.Context) (owned map[string]bool, adminAll bool) {
+	if isAdmin(ctx) {
+		return nil, true
+	}
+	owned = map[string]bool{}
+	userID := getUserID(ctx)
+	if userID == "" {
+		return owned, false
+	}
+	domains, err := s.store.ListDomainsByUser(ctx, userID)
+	if err != nil {
+		return owned, false
+	}
+	for _, d := range domains {
+		if d != nil {
+			owned[d.ID] = true
+		}
+	}
+	return owned, false
+}
+
+func (s *Servers) allowSyncSubject(adminAll bool, owned map[string]bool, sub string) bool {
+	if adminAll {
+		return true
+	}
+	if strings.HasPrefix(sub, "domain:") {
+		return owned[strings.TrimPrefix(sub, "domain:")]
+	}
+	return false
 }

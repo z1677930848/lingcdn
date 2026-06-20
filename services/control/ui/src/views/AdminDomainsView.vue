@@ -6,44 +6,63 @@
         <p class="subtitle">管理员视角下的所有用户网站，可批量执行启用 / 禁用 / 删除等操作</p>
       </div>
       <div class="header-actions">
-        <t-button theme="primary" @click="openCreate">
-          <template #icon><t-icon name="add" /></template>
+        <el-button type="primary" @click="openCreate">
+          <template #icon><EpIcon name="add" /></template>
           添加网站
-        </t-button>
-        <t-dropdown
-          :options="bulkActionOptions"
+        </el-button>
+        <el-input v-model="search" clearable placeholder="搜索域名 / CNAME / 源站" class="search-input" />
+        <EpSelect v-model="enabledFilter" :options="enabledOptions" class="filter-select" />
+        <EpSelect v-model="syncFilter" :options="syncOptions" class="filter-select filter-select-wide" />
+        <div class="header-actions-extra">
+          <EpDropdown
+            :options="bulkActionOptions"
+            trigger="click"
+            @click="onBulkAction"
+          >
+            <el-button plain :disabled="selectedIds.length === 0">
+              批量操作（{{ selectedIds.length }}）
+              <template #suffix><EpIcon name="chevron-down" /></template>
+            </el-button>
+          </EpDropdown>
+          <el-button plain @click="exportCSV">
+            <template #icon><EpIcon name="download" /></template>
+            导出
+          </el-button>
+          <el-button link :loading="loading" @click="load">
+            <template #icon><EpIcon name="refresh" /></template>
+            刷新
+          </el-button>
+        </div>
+        <EpDropdown
+          class="header-actions-more"
+          :options="mobileMoreOptions"
           trigger="click"
-          @click="onBulkAction"
+          @click="onMobileMore"
         >
-          <t-button variant="outline" :disabled="selectedIds.length === 0">
-            批量操作（{{ selectedIds.length }}）
-            <template #suffix><t-icon name="chevron-down" /></template>
-          </t-button>
-        </t-dropdown>
-        <t-button variant="outline" @click="exportCSV">
-          <template #icon><t-icon name="download" /></template>
-          导出
-        </t-button>
-        <t-input v-model="search" clearable placeholder="搜索域名 / CNAME / 源站" style="width:240px" />
-        <t-select v-model="enabledFilter" :options="enabledOptions" style="width:120px" />
-        <t-select v-model="syncFilter" :options="syncOptions" style="width:140px" />
-        <t-button variant="text" :loading="loading" @click="load">
-          <template #icon><t-icon name="refresh" /></template>
-          刷新
-        </t-button>
+          <el-button plain block>
+            更多操作
+            <template #suffix><EpIcon name="chevron-down" /></template>
+          </el-button>
+        </EpDropdown>
       </div>
     </div>
 
-    <t-card class="section-card" bordered>
+    <ErrorState v-if="error" inline :message="error" @retry="load" />
+
+    <div v-if="metaError" class="inline-notice inline-notice--warning">
+      <span class="inline-notice__message">{{ metaError }}</span>
+      <el-button link size="small" type="primary" @click="loadMeta">重试</el-button>
+    </div>
+
+    <el-card class="section-card">
       <div class="admin-desktop-only">
-        <t-table
+        <EpDataTable
           :data="filtered"
           :columns="columns"
           row-key="id"
           size="small"
-          bordered
           :loading="loading"
-          empty="暂无网站"
+          empty-text="暂无网站"
           :selected-row-keys="selectedIds"
           @select-change="onSelectChange"
           :pagination="{
@@ -56,14 +75,14 @@
         />
       </div>
       <div class="admin-mobile-only">
-        <div v-if="loading" style="text-align:center;padding:32px 0"><t-loading /></div>
+        <div v-if="loading" style="text-align:center;padding:32px 0"><div v-loading="true" style="min-height:48px" /></div>
         <div v-else-if="filtered.length === 0" class="admin-mobile-card-empty">暂无网站</div>
         <div v-else class="admin-mobile-cards">
           <div v-for="item in filtered" :key="item.id" class="admin-mobile-card">
             <div class="admin-mobile-card-header">
               <div class="admin-mobile-card-title">{{ item.name }}</div>
               <div class="admin-mobile-card-tags">
-                <t-tag v-if="item.https_enabled" size="small" theme="primary">HTTPS</t-tag>
+                <el-tag v-if="item.https_enabled" size="small" type="primary">HTTPS</el-tag>
               </div>
             </div>
             <div class="admin-mobile-card-subtitle">
@@ -73,7 +92,7 @@
               <template v-else-if="syncTasks.isFailed(`domain:${item.id}`)">
                 <span class="sync-dot sync-dot-failed"></span>
                 <span :title="syncTasks.bySubject(`domain:${item.id}`)?.message || ''">同步失败</span>
-                <t-link theme="primary" hover="color" style="margin-left:4px;cursor:pointer" @click="retrySync(item)">重试</t-link>
+                <el-link type="primary" hover="color" style="margin-left:4px;cursor:pointer" @click="retrySync(item)">重试</el-link>
               </template>
               <template v-else>{{ item.cname || '-' }}</template>
             </div>
@@ -88,7 +107,7 @@
               </div>
               <div class="admin-mobile-card-row">
                 <span class="admin-mobile-card-label">HTTPS</span>
-                <span class="admin-mobile-card-value" :style="{ color: item.https_enabled ? '#00a870' : '#ef4444' }">
+                <span class="admin-mobile-card-value" :style="{ color: item.https_enabled ? 'var(--app-success)' : 'var(--app-danger)' }">
                   {{ item.https_enabled ? '已启用' : '未启用' }}
                 </span>
               </div>
@@ -98,71 +117,85 @@
               </div>
             </div>
             <div class="admin-mobile-card-actions">
-              <t-button size="small" theme="primary" variant="text" @click="router.push(`/admin/dashboard/domains/${item.id}`)">管理</t-button>
-              <t-button size="small" theme="danger" variant="text" :disabled="Boolean(saving[`${item.id}-delete`])" @click="handleDelete(item)">删除</t-button>
+              <el-button size="small" type="primary" link @click="router.push(`/admin/dashboard/domains/${item.id}`)">管理</el-button>
+              <el-button size="small" type="danger" link :disabled="Boolean(saving[`${item.id}-delete`])" @click="handleDelete(item)">删除</el-button>
             </div>
           </div>
         </div>
       </div>
-    </t-card>
+    </el-card>
 
-    <t-dialog
-      v-model:visible="createOpen"
+    <EpDialog append-to-body
+      v-model="createOpen"
       header="添加网站"
+      width="640px"
       :confirm-btn="{ content: '提交', loading: createLoading }"
       cancel-btn="取消"
       @confirm="submitCreate"
     >
-      <t-tabs v-model="createTab">
-        <t-tab-panel value="single" label="单个添加">
-          <div class="form-stack">
-            <div class="form-row">
+      <div v-if="metaError" class="inline-notice inline-notice--warning" style="margin-bottom: 16px">
+        <span class="inline-notice__message">{{ metaError }}</span>
+        <el-button link size="small" type="primary" @click="loadMeta">重试</el-button>
+      </div>
+      <el-tabs v-model="createTab">
+        <el-tab-pane name="single" label="单个添加">
+          <div class="form-stack-compact">
+            <div class="form-row-compact">
               <div class="form-label">产品套餐</div>
-              <t-select v-model="singleForm.productID" :options="productOptions" />
+              <EpSelect v-model="singleForm.productID" :options="productOptions" />
             </div>
             <div class="form-row">
               <div class="form-label">网站域名</div>
-              <t-input v-model="singleForm.name" />
+              <el-input v-model="singleForm.name" />
             </div>
-            <div class="form-row align-top">
+            <div class="form-row-compact align-top">
               <div class="form-label">源站地址</div>
-              <t-textarea v-model="singleForm.originAddresses" :autosize="true" placeholder="IP 或域名，多个用空格 / 逗号 / 换行分隔" />
+              <el-input v-model="singleForm.originAddresses" :autosize="true" placeholder="IP 或域名，多个用空格 / 逗号 / 换行分隔" />
             </div>
           </div>
-        </t-tab-panel>
-        <t-tab-panel value="batch" label="批量添加">
-          <div class="form-stack">
-            <div class="form-row">
+        </el-tab-pane>
+        <el-tab-pane name="batch" label="批量添加">
+          <div class="form-stack-compact">
+            <div class="form-row-compact">
               <div class="form-label">产品套餐</div>
-              <t-select v-model="batchForm.productID" :options="productOptions" />
+              <EpSelect v-model="batchForm.productID" :options="productOptions" />
             </div>
-            <div class="form-row align-top">
+            <div class="form-row-compact align-top">
               <div class="form-label">网站域名</div>
-              <t-textarea v-model="batchForm.names" :autosize="true" />
+              <el-input v-model="batchForm.names" :autosize="true" />
             </div>
-            <div class="form-row align-top">
+            <div class="form-row-compact align-top">
               <div class="form-label">源站地址</div>
-              <t-textarea v-model="batchForm.originAddresses" :autosize="true" />
+              <el-input v-model="batchForm.originAddresses" :autosize="true" />
             </div>
           </div>
-        </t-tab-panel>
-      </t-tabs>
-    </t-dialog>
+        </el-tab-pane>
+      </el-tabs>
+    </EpDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import { MessagePlugin } from "@/lib/ep-message"
+import EpDropdown from "@/components/ep/EpDropdown.vue"
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
+import EpIcon from "@/components/ep/EpIcon.vue"
 import { computed, h, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
-import { DialogPlugin, MessagePlugin, Button, Link } from "tdesign-vue-next"
+import { DialogPlugin } from "@/lib/ep-dialog"
+import { ElButton, ElLink } from "element-plus"
 import { api, type Domain, type Cluster, type Product } from "@/lib/api"
 import { useSyncTasks } from "@/composables/useSyncTasks"
+import ErrorState from "@/components/common/ErrorState.vue"
 
 const router = useRouter()
 
 const syncTasks = useSyncTasks("domain:")
 
 const loading = ref(false)
+const error = ref("")
 const domains = ref<Domain[]>([])
 const search = ref("")
 const enabledFilter = ref("all")
@@ -184,6 +217,30 @@ const bulkActionOptions = [
   { content: "重置 CNAME", value: "regen_cname" },
   { content: "删除", value: "delete", theme: "danger" },
 ]
+
+const mobileMoreOptions = computed(() => [
+  ...bulkActionOptions.map((item) => ({
+    ...item,
+    value: `bulk:${item.value}`,
+    disabled: selectedIds.value.length === 0,
+  })),
+  { content: "导出 CSV", value: "export" },
+  { content: "刷新列表", value: "refresh" },
+])
+
+const onMobileMore = (ctx: { value: string }) => {
+  if (ctx.value === "export") {
+    exportCSV()
+    return
+  }
+  if (ctx.value === "refresh") {
+    void load()
+    return
+  }
+  if (ctx.value.startsWith("bulk:")) {
+    void onBulkAction({ value: ctx.value.slice(5) })
+  }
+}
 
 const onBulkAction = async (ctx: { value: string }) => {
   if (selectedIds.value.length === 0) return
@@ -267,6 +324,7 @@ const exportCSV = () => {
 const createOpen = ref(false)
 const createTab = ref<"single" | "batch">("single")
 const createLoading = ref(false)
+const metaError = ref("")
 const lineGroups = ref<Cluster[]>([])
 const products = ref<Product[]>([])
 
@@ -315,10 +373,12 @@ const parseList = (raw: string) => {
 const load = async () => {
   try {
     loading.value = true
+    error.value = ""
     const res = await api.listDomains()
     domains.value = res.domains || []
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载网站列表失败")
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载网站列表失败"
+    error.value = msg
   } finally {
     loading.value = false
   }
@@ -326,6 +386,7 @@ const load = async () => {
 
 const loadMeta = async () => {
   try {
+    metaError.value = ""
     const [lgRes, prodRes] = await Promise.all([api.listClusters(), api.getProducts()])
     lineGroups.value = lgRes.clusters || []
     products.value = (prodRes.products || []).filter(p => p.enabled)
@@ -333,8 +394,8 @@ const loadMeta = async () => {
       if (!singleForm.value.productID) singleForm.value.productID = products.value[0].id
       if (!batchForm.value.productID) batchForm.value.productID = products.value[0].id
     }
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载产品列表失败")
+  } catch (err: unknown) {
+    metaError.value = err instanceof Error ? err.message : "加载产品列表失败"
   }
 }
 
@@ -570,8 +631,7 @@ const renderCNAME = (row: Domain) => {
     return h("span", { class: "mono sync-failed", title: sync.message || "同步失败" }, [
       h("span", { class: "sync-dot sync-dot-failed" }),
       " 同步失败 ",
-      h(
-        Link,
+      h(ElLink,
         {
           theme: "primary",
           hover: "color",
@@ -597,7 +657,7 @@ const columns = computed(() => [
     title: "ID",
     width: 60,
     cell: (_h: any, { rowIndex }: { rowIndex: number }) =>
-      h("span", { class: "mono", style: "color:#888" }, String((rowIndex ?? 0) + 1)),
+      h("span", { class: "mono muted" }, String((rowIndex ?? 0) + 1)),
   },
   {
     colKey: "name",
@@ -606,8 +666,7 @@ const columns = computed(() => [
     cell: (_h: any, { row }: { row: Domain }) =>
       h("div", { class: "stack" }, [
         h("div", { class: "title-row" }, [
-          h(
-            Link,
+          h(ElLink,
             {
               theme: "primary",
               hover: "color",
@@ -652,7 +711,7 @@ const columns = computed(() => [
     cell: (_h: any, { row }: { row: Domain }) =>
       h(
         "span",
-        { style: row.https_enabled ? "color:#00a870" : "color:#ef4444" },
+        { style: row.https_enabled ? "color:var(--app-success)" : "color:var(--app-danger)" },
         row.https_enabled ? "已启用" : "未启用",
       ),
   },
@@ -665,22 +724,16 @@ const columns = computed(() => [
     cell: (_h: any, { row }: { row: Domain }) => {
       const delKey = `${row.id}-delete`
       return h("div", { class: "row-actions" }, [
-        h(
-          Button,
-          {
-            size: "small",
-            theme: "primary",
-            variant: "text",
+        h(ElButton, { size: "small",
+            type: "primary",
+            link: true,
             onClick: () => router.push(`/admin/dashboard/domains/${row.id}`),
           },
           () => "管理",
         ),
-        h(
-          Button,
-          {
-            size: "small",
-            theme: "danger",
-            variant: "text",
+        h(ElButton, { size: "small",
+            type: "danger",
+            link: true,
             disabled: Boolean(saving.value[delKey]),
             onClick: () => handleDelete(row),
           },
@@ -697,178 +750,3 @@ onMounted(() => {
   syncTasks.connect()
 })
 </script>
-
-<style scoped>
-.header-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.page {
-  min-width: 0;
-}
-
-.sync-pending {
-  color: #94a3b8;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sync-failed {
-  color: #ef4444;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sync-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  vertical-align: middle;
-}
-
-.sync-dot-running {
-  background: #635BFF;
-  animation: sync-pulse 1.2s ease-in-out infinite;
-}
-
-.sync-dot-failed {
-  background: #ef4444;
-}
-
-@keyframes sync-pulse {
-  0%, 100% {
-    opacity: 0.35;
-    transform: scale(0.9);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.1);
-  }
-}
-
-.section-card {
-  min-width: 0;
-}
-
-.section-card :deep(.t-table) {
-  min-width: 100%;
-}
-
-.row-actions {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.form-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.form-row {
-  display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 10px;
-  align-items: center;
-}
-
-.form-row.align-top {
-  align-items: start;
-}
-
-.form-label {
-  color: #475569;
-}
-
-.form-inline {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.form-switches {
-  display: flex;
-  gap: 18px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.switch-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.form-tip {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 8px;
-  font-size: 12px;
-  background: rgba(99, 91, 255, 0.12);
-  color: #635BFF;
-}
-
-@media (max-width: 768px) {
-  .header-actions {
-    width: 100%;
-  }
-
-  .header-actions > * {
-    width: 100% !important;
-    min-width: 0 !important;
-  }
-
-  .header-actions :deep(.t-button) {
-    min-height: 44px;
-  }
-
-  .form-row {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .form-inline {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .form-inline > * {
-    width: 100% !important;
-    min-width: 0 !important;
-  }
-}
-</style>

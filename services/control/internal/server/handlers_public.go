@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 // Public (unauthenticated) settings, announcements, and license snapshot.
 // Used by the login/landing UI before a JWT exists — only safe-to-expose
@@ -32,8 +32,10 @@ func (s *Servers) handlePublicSettings(w http.ResponseWriter, r *http.Request) {
 			"footer_copyright":            normalized.FooterCopyright,
 			"favicon":                     normalized.Favicon,
 			"logo":                        normalized.Logo,
+			"sidebar_brand_mode":          normalized.SidebarBrandMode,
 			"register_enabled":            normalized.RegisterEnabled,
 			"register_email_verification": normalized.RegisterEmailVerification,
+			"renewal_before_expiry_days":  normalized.RenewalBeforeExpiryDays,
 		},
 	})
 }

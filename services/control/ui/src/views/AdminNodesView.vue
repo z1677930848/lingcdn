@@ -7,43 +7,44 @@
       </div>
     </div>
 
-    <t-card class="section-card" bordered>
-      <t-tabs v-model="tab">
-        <t-tab-panel value="list" label="节点列表">
+    <ErrorState v-if="listError" :message="listError" @retry="() => loadList({ page: 1 })" />
+
+    <el-card class="section-card">
+      <el-tabs v-model="tab">
+        <el-tab-pane name="list" label="节点列表">
           <div class="toolbar">
-            <t-input v-model="search" clearable placeholder="搜索主机名 / IP" class="w-260" />
-            <t-select v-model="statusFilter" class="w-140" :options="statusOptions" />
-            <t-button variant="outline" @click="handleOpenInstallDialog">添加节点</t-button>
-            <t-button :loading="loading" @click="() => loadList({ page: 1 })">刷新</t-button>
+            <el-input v-model="search" clearable placeholder="搜索主机名 / IP" class="w-260" />
+            <EpSelect v-model="statusFilter" class="w-140" :options="statusOptions" />
+            <el-button plain @click="handleOpenInstallDialog">添加节点</el-button>
+            <el-button :loading="loading" @click="() => loadList({ page: 1 })">刷新</el-button>
           </div>
           <div v-if="selectedRowKeys.length > 0" class="batch-bar">
             <span class="batch-bar-label">已选择 {{ selectedRowKeys.length }} 个节点</span>
-            <t-button size="small" theme="warning" @click="openUpgradeDialog(selectedRowKeys)">批量升级</t-button>
-            <t-button size="small" theme="danger" variant="outline" @click="handleBatchDisable">批量禁用</t-button>
-            <t-button size="small" theme="danger" @click="handleBatchDelete">批量删除</t-button>
-            <t-button size="small" variant="outline" @click="selectedRowKeys = []">取消选择</t-button>
+            <el-button size="small" type="warning" @click="openUpgradeDialog(selectedRowKeys)">批量升级</el-button>
+            <el-button size="small" type="primary" plain @click="handleBatchEnable">批量启用</el-button>
+            <el-button size="small" type="danger" plain @click="handleBatchDisable">批量禁用</el-button>
+            <el-button size="small" type="danger" @click="handleBatchDelete">批量删除</el-button>
+            <el-button size="small" plain @click="selectedRowKeys = []">取消选择</el-button>
           </div>
 
           <div class="admin-desktop-only">
-            <t-table
+            <EpDataTable
               :data="nodes"
               :columns="listColumns"
               row-key="id"
               size="small"
               :loading="loading"
               :pagination="listPagination"
-              bordered
               hover
               stripe
-              empty="暂无节点"
+              empty-text="暂无节点"
               :selected-row-keys="selectedRowKeys"
               @select-change="handleSelectionChange"
-              @page-change="handleListPageChange"
             />
           </div>
 
           <div class="admin-mobile-only">
-            <div v-if="loading" style="text-align:center;padding:32px 0"><t-loading /></div>
+            <LoadingState v-if="loading && nodes.length === 0" />
             <template v-else>
               <div v-if="nodes.length" class="admin-mobile-cards">
                 <div v-for="node in nodes" :key="node.id" class="admin-mobile-card">
@@ -53,7 +54,7 @@
                       <div class="admin-mobile-card-subtitle">{{ node.public_ip || '-' }}</div>
                     </div>
                     <div class="admin-mobile-card-tags">
-                      <t-tag :theme="(statusTagInfo(node).theme as any)" variant="light" size="small">{{ statusTagInfo(node).label }}</t-tag>
+                      <el-tag :type="(statusTagInfo(node).theme as any)" effect="light" size="small">{{ statusTagInfo(node).label }}</el-tag>
                     </div>
                   </div>
                   <div class="admin-mobile-card-rows">
@@ -77,12 +78,12 @@
                       <span class="admin-mobile-card-label">版本</span>
                       <span class="admin-mobile-card-value">
                         {{ node.version || '-' }}
-                        <t-tag
+                        <el-tag
                           v-if="upgradeNodeMap[node.id] && upgradeNodeMap[node.id].status === 'upgrade_needed'"
-                          theme="warning" variant="light" size="small" style="margin-left:6px"
+                          type="warning" effect="light" size="small" style="margin-left:6px"
                         >
                           可升级到 {{ upgradeNodeMap[node.id].target_version }}
-                        </t-tag>
+                        </el-tag>
                       </span>
                     </div>
                     <div class="admin-mobile-card-row">
@@ -91,31 +92,31 @@
                     </div>
                   </div>
                   <div class="admin-mobile-card-actions">
-                    <t-button size="small" variant="text" theme="primary" @click="openDetail(node)">详情</t-button>
-                    <t-button
+                    <el-button size="small" link type="primary" @click="openDetail(node)">详情</el-button>
+                    <el-button
                       v-if="upgradeNodeMap[node.id] && upgradeNodeMap[node.id].status === 'upgrade_needed'"
-                      size="small" variant="outline" @click="openUpgradeDialog([node.id])"
-                    >升级</t-button>
-                    <t-dropdown trigger="click" @click="handleMobileDropdown($event, node)">
-                      <t-button size="small" variant="text">更多 ▾</t-button>
-                      <t-dropdown-menu>
-                        <t-dropdown-item :value="'toggle'">
+                      size="small" plain @click="openUpgradeDialog([node.id])"
+                    >升级</el-button>
+                    <el-dropdown trigger="click" @click="handleMobileDropdown($event, node)">
+                      <el-button size="small" link>更多 ▾</el-button>
+                      <el-dropdown-menu>
+                        <el-dropdown-item :value="'toggle'">
                           {{ (node.status || '').trim().toLowerCase() !== 'disabled' ? '禁用节点' : '启用节点' }}
-                        </t-dropdown-item>
-                        <t-dropdown-item :value="'monitor'">监控配置</t-dropdown-item>
-                        <t-dropdown-item :value="'reset-token'">重置令牌</t-dropdown-item>
-                        <t-dropdown-item divider />
-                        <t-dropdown-item :value="'delete'" class="dropdown-danger">删除节点</t-dropdown-item>
-                      </t-dropdown-menu>
-                    </t-dropdown>
+                        </el-dropdown-item>
+                        <el-dropdown-item :value="'monitor'">监控配置</el-dropdown-item>
+                        <el-dropdown-item :value="'reset-token'">重置令牌</el-dropdown-item>
+                        <el-dropdown-item divider />
+                        <el-dropdown-item :value="'delete'" class="dropdown-danger">删除节点</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </el-dropdown>
                   </div>
                 </div>
-                <t-pagination
+                <el-pagination
                   class="admin-mobile-pagination"
-                  :current="listPagination.current"
+                  :current-page="listPagination.current"
                   :page-size="listPagination.pageSize"
                   :total="listPagination.total"
-                  :show-jumper="false"
+                  layout="prev, pager, next"
                   size="small"
                   @current-change="(v: number) => handleListPageChange({ current: v, pageSize: listPagination.pageSize })"
                 />
@@ -123,13 +124,13 @@
               <div v-else class="admin-mobile-card-empty">暂无节点</div>
             </template>
           </div>
-        </t-tab-panel>
+        </el-tab-pane>
 
-      </t-tabs>
-    </t-card>
+      </el-tabs>
+    </el-card>
 
-    <t-dialog
-      v-model:visible="monitorDialogOpen"
+    <EpDialog append-to-body
+      v-model="monitorDialogOpen"
       header="节点监控配置"
       :confirm-btn="{ content: monitorSaving ? '保存中...' : '保存', loading: monitorSaving, theme: 'primary' }"
       cancel-btn="取消"
@@ -140,70 +141,94 @@
         <div class="dialog-tip">节点：{{ monitorTarget?.hostname || monitorTarget?.id || '-' }}</div>
         <div class="row">
           <span class="row-label">启用监控</span>
-          <t-switch v-model="monitorForm.enabled" />
+          <el-switch v-model="monitorForm.enabled" />
         </div>
         <div>
           <div class="dialog-label">探测协议</div>
-          <t-radio-group v-model="monitorForm.protocol">
-            <t-radio value="http">HTTP</t-radio>
-            <t-radio value="ping">Ping</t-radio>
-            <t-radio value="tcp">TCP</t-radio>
-          </t-radio-group>
+          <el-radio-group v-model="monitorForm.protocol">
+            <el-radio value="http">HTTP</el-radio>
+            <el-radio value="ping">Ping</el-radio>
+            <el-radio value="tcp">TCP</el-radio>
+          </el-radio-group>
         </div>
         <div class="grid-2">
           <div>
             <div class="dialog-label">超时（秒）</div>
-            <t-input-number v-model="monitorForm.timeoutSeconds" :min="1" :max="60" />
+            <el-input-number v-model="monitorForm.timeoutSeconds" :min="1" :max="60" />
           </div>
           <div>
             <div class="dialog-label">端口</div>
             <!-- Plain numeric input; the stepper encouraged +1 clicks to
                  walk 80→443, which is the wrong affordance for port
                  fields. Browser validates min/max via attributes. -->
-            <t-input v-model="monitorPortText" type="number" :disabled="monitorForm.protocol === 'ping'" placeholder="1-65535" />
+            <el-input v-model="monitorPortText" type="number" :disabled="monitorForm.protocol === 'ping'" placeholder="1-65535" />
           </div>
         </div>
         <div>
           <div class="dialog-label">连续失败阈值</div>
-          <t-input-number v-model="monitorForm.failThreshold" :min="1" :max="10" />
+          <el-input-number v-model="monitorForm.failThreshold" :min="1" :max="10" />
         </div>
         <div class="dialog-tip">HTTP/TCP 协议会探测端口；Ping 协议忽略端口，仅做 ICMP 探测。</div>
       </div>
-    </t-dialog>
+    </EpDialog>
 
-    <t-dialog v-model:visible="installDialogOpen" header="添加节点" width="760px">
+    <EpDialog append-to-body v-model="installDialogOpen" header="添加节点" width="760px">
       <template #footer>
-        <t-button variant="outline" @click="installDialogOpen = false">关闭</t-button>
-        <t-button v-if="installMode === 'manual'" :loading="installLoading" @click="handleFetchInstallCommand()">
+        <el-button plain @click="installDialogOpen = false">关闭</el-button>
+        <el-button v-if="installMode === 'manual'" :loading="installLoading" @click="handleFetchInstallCommand()">
           重新生成命令
-        </t-button>
-        <t-button v-else :loading="installLoading" @click="handleInstallViaSSH()">
+        </el-button>
+        <el-button v-else :loading="installLoading" @click="handleInstallViaSSH()">
           通过 SSH 安装
-        </t-button>
+        </el-button>
       </template>
       <div class="dialog-grid">
+        <div v-if="offlineLocalBundles" class="dialog-grid offline-bundle-panel">
+          <div class="dialog-title">离线节点包</div>
+          <div class="dialog-tip">
+            当前为离线授权模式，节点安装包由主控本地分发（无需授权站）。请先上传
+            <code>lingcdn-node-x.y.z-linux-amd64.tar.gz</code>，再生成安装命令。
+          </div>
+          <div class="bundle-upload-row">
+            <input ref="bundleFileInput" type="file" accept=".tar.gz" class="bundle-file-input" @change="handleBundleFileChange" />
+            <el-button plain :loading="bundleUploading" @click="triggerBundleUpload">上传节点包</el-button>
+            <el-button plain :loading="bundleLoading" @click="loadLocalBundles">刷新列表</el-button>
+          </div>
+          <div v-if="localBundles.length" class="bundle-list">
+            <div v-for="item in localBundles" :key="item.filename" class="bundle-item">
+              <span>{{ item.filename }}</span>
+              <span class="bundle-meta">{{ formatBytes(item.size_bytes) }} · {{ item.checksum.slice(0, 12) }}…</span>
+              <el-button size="small" link type="danger" @click="handleDeleteBundle(item.filename)">删除</el-button>
+            </div>
+          </div>
+          <div v-else class="dialog-tip">尚未上传节点包。</div>
+          <el-divider />
+        </div>
         <div>
           <div class="dialog-label">安装方式</div>
-          <t-radio-group v-model="installMode">
-            <t-radio value="manual">手动复制命令</t-radio>
-            <t-radio value="ssh">通过 SSH 自动安装</t-radio>
-          </t-radio-group>
+          <el-radio-group v-model="installMode">
+            <el-radio value="manual">手动复制命令</el-radio>
+            <el-radio value="ssh">通过 SSH 自动安装</el-radio>
+          </el-radio-group>
         </div>
         <div v-if="installMode === 'manual'" class="dialog-grid">
           <div class="dialog-title">1. 复制安装命令</div>
-          <div class="dialog-tip">在目标节点以 root 身份执行下列命令完成安装。</div>
+          <div class="dialog-tip">
+            <template v-if="installCommandStyle === 'local'">在目标节点以 root 身份执行下列命令；安装包将从主控本地下载。</template>
+            <template v-else>在目标节点以 root 身份执行下列命令完成安装。</template>
+          </div>
           <div>
             <div class="dialog-label">安装命令</div>
-            <t-textarea v-model="installCommand" :autosize="{ minRows: 5, maxRows: 10 }" />
+            <el-input v-model="installCommand" :autosize="{ minRows: 5, maxRows: 10 }" />
             <div class="copy-row">
 
-              <t-button variant="outline" :disabled="!installCommand" @click="copyCommand">复制命令</t-button>
+              <el-button plain :disabled="!installCommand" @click="copyCommand">复制命令</el-button>
             </div>
           </div>
-          <t-divider />
+          <el-divider />
           <div class="dialog-title">2. 等待节点上线</div>
           <div class="dialog-tip">节点首次上报通常 1-2 分钟，gRPC 通道建立后会出现在列表。</div>
-          <t-button variant="outline" :loading="loading" @click="() => loadList({ page: 1 })">刷新列表</t-button>
+          <el-button plain :loading="loading" @click="() => loadList({ page: 1 })">刷新列表</el-button>
         </div>
 
         <div v-else class="dialog-grid">
@@ -212,32 +237,32 @@
           <div class="grid-2">
             <div>
               <div class="dialog-label">主机 IP / 域名</div>
-              <t-input v-model="installParams.sshHost" />
+              <el-input v-model="installParams.sshHost" />
             </div>
             <div>
               <div class="dialog-label">SSH 端口</div>
-              <t-input v-model="sshPortText" type="number" placeholder="1-65535" />
+              <el-input v-model="sshPortText" type="number" placeholder="1-65535" />
             </div>
           </div>
           <div class="grid-2">
             <div>
               <div class="dialog-label">SSH 用户</div>
-              <t-input v-model="installParams.sshUser" />
+              <el-input v-model="installParams.sshUser" />
             </div>
             <div>
               <div class="dialog-label">SSH 密码</div>
-              <t-input v-model="installParams.sshPassword" type="password" autocomplete="new-password" />
+              <el-input v-model="installParams.sshPassword" type="password" autocomplete="new-password" />
             </div>
           </div>
           <div class="dialog-tip">SSH 凭据仅用于本次安装，不会保存在数据库。</div>
-          <t-divider />
+          <el-divider />
           <div class="dialog-title">2. 安装结果</div>
           <div v-if="sshInstallResult" class="ssh-result-card">
             <div class="ssh-result-head">
               <span class="ssh-result-title">{{ sshInstallResult.message }}</span>
-              <t-tag
-                :theme="sshInstallResult.status === 'installed' ? 'success' : sshInstallResult.status === 'installed_waiting_register' ? 'warning' : 'danger'"
-                variant="light"
+              <el-tag
+                :type="sshInstallResult.status === 'installed' ? 'success' : sshInstallResult.status === 'installed_waiting_register' ? 'warning' : 'danger'"
+                effect="light"
               >
                 {{
                   sshInstallResult.status === "installed"
@@ -246,7 +271,7 @@
                       ? "等待注册"
                       : "失败"
                 }}
-              </t-tag>
+              </el-tag>
             </div>
             <div class="ssh-result-meta">
               <span>Master Host：{{ sshInstallResult.master_host }}</span>
@@ -265,172 +290,263 @@
             <div class="dialog-label">执行日志</div>
             <pre class="ssh-log-box">{{ sshInstallResult?.logs?.length ? sshInstallResult.logs.join('\n') : '暂无日志' }}</pre>
           </div>
-          <t-button variant="outline" :loading="loading" @click="() => loadList({ page: 1 })">刷新列表</t-button>
+          <el-button plain :loading="loading" @click="() => loadList({ page: 1 })">刷新列表</el-button>
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
 
-    <t-dialog v-model:visible="tokenDialogOpen" header="节点令牌">
+    <EpDialog append-to-body v-model="tokenDialogOpen" header="节点令牌">
       <template #footer>
-        <t-button variant="outline" :disabled="!tokenValue" @click="copyToken">复制令牌</t-button>
-        <t-button @click="tokenDialogOpen = false">关闭</t-button>
+        <el-button plain :disabled="!tokenValue" @click="copyToken">复制令牌</el-button>
+        <el-button @click="tokenDialogOpen = false">关闭</el-button>
       </template>
       <div class="dialog-grid">
         <div class="dialog-tip">令牌仅在此处显示一次，请妥善保存。</div>
         <div class="token-box">{{ tokenValue || '-' }}</div>
       </div>
-    </t-dialog>
+    </EpDialog>
 
-    <t-dialog v-model:visible="upgradeDialogOpen" :header="upgradeNodeIDs.length ? '升级所选节点' : '升级所有节点'">
+    <EpDialog append-to-body v-model="upgradeDialogOpen" :title="upgradeNodeIDs.length ? '升级所选节点' : '升级所有节点'">
       <template #footer>
-        <t-button variant="outline" @click="upgradeDialogOpen = false">取消</t-button>
-        <t-button :loading="upgradeLoading" @click="submitUpgrade">提交升级</t-button>
+        <el-button plain @click="upgradeDialogOpen = false">取消</el-button>
+        <el-button :loading="upgradeLoading" @click="submitUpgrade">提交升级</el-button>
       </template>
       <div class="dialog-grid">
-        <div class="dialog-tip">升级过程中节点可能会短暂离线，请谨慎操作。</div>
+        <div class="dialog-tip">升级过程中节点可能会短暂离线；已禁用或通信异常的节点会被跳过，不会下发升级命令。</div>
         <div class="grid-2">
           <div>
             <div class="dialog-label">目标版本</div>
-            <t-input v-model="upgradeTargetVersion" />
+            <el-input v-model="upgradeTargetVersion" />
           </div>
           <div>
             <div class="dialog-label">强制升级</div>
-            <t-select v-model="upgradeForceValue" :options="[{ label: '否', value: 'no' }, { label: '是', value: 'yes' }]" />
+            <EpSelect v-model="upgradeForceValue" :options="[{ label: '否', value: 'no' }, { label: '是', value: 'yes' }]" />
           </div>
         </div>
       </div>
-    </t-dialog>
+    </EpDialog>
 
     <!-- ========== 节点详情抽屉 ========== -->
-    <t-drawer
-      v-model:visible="detailDrawerVisible"
-      size="640px"
-      :footer="false"
+    <el-drawer
+      v-model="detailDrawerVisible"
+      append-to-body
+      destroy-on-close
+      size="720px"
+      class="node-detail-drawer"
     >
       <template #header>
-        <div class="drawer-header-with-back">
-          <t-button class="drawer-back-btn" variant="text" shape="square" @click="detailDrawerVisible = false">
-            <template #icon><t-icon name="chevron-left" /></template>
-          </t-button>
-          <span>节点详情 · {{ detailNode?.hostname || '' }}</span>
+        <div class="node-detail-header">
+          <div class="node-detail-header-main">
+            <div class="node-detail-title">{{ detailNode?.hostname || detailNode?.id || "节点详情" }}</div>
+            <div v-if="detailNode" class="node-detail-subtitle mono">{{ detailNode.public_ip || "暂无公网 IP" }}</div>
+          </div>
+          <div v-if="detailNode" class="node-detail-header-tags">
+            <el-tag :type="epTagType(statusTagInfo(detailNode).theme)" effect="light" size="small">
+              {{ statusTagInfo(detailNode).label }}
+            </el-tag>
+            <el-tag v-if="detailNeedsUpgrade" type="warning" effect="light" size="small">
+              可升级到 {{ detailUpgradeTarget }}
+            </el-tag>
+          </div>
         </div>
       </template>
-      <div v-if="detailNode" class="detail-body">
-        <!-- CPU / 内存 / 磁盘 -->
-        <div class="detail-section">
-          <div class="detail-section-title">资源使用</div>
-          <div class="ring-row">
-            <div class="ring-card">
-              <svg class="ring-svg" viewBox="0 0 120 120">
-                <circle cx="60" cy="60" r="52" fill="none" stroke="#e2e8f0" stroke-width="10" />
-                <circle cx="60" cy="60" r="52" fill="none"
-                  :stroke="ringColor(detailNode.cpu_usage)" stroke-width="10"
-                  stroke-linecap="round"
-                  :stroke-dasharray="ringDash(detailNode.cpu_usage)"
-                  transform="rotate(-90 60 60)" />
-              </svg>
-              <div class="ring-label">
-                <span class="ring-value">{{ Math.round(detailNode.cpu_usage ?? 0) }}%</span>
-                <span class="ring-title">CPU</span>
-              </div>
+
+      <div v-if="detailNode" class="node-detail-body">
+        <el-card shadow="never" class="node-detail-card">
+          <template #header>
+            <span class="node-detail-card-title">资源使用</span>
+          </template>
+          <div class="node-detail-metrics">
+            <div class="node-detail-metric">
+              <el-progress
+                type="dashboard"
+                :percentage="metricPercent(detailNode.cpu_usage)"
+                :color="progressColor(detailNode.cpu_usage)"
+                :width="118"
+              />
+              <div class="node-detail-metric-label">CPU</div>
+              <div class="node-detail-metric-meta">{{ detailNode.cpu_count ?? "-" }} 核</div>
             </div>
-            <div class="ring-card">
-              <svg class="ring-svg" viewBox="0 0 120 120">
-                <circle cx="60" cy="60" r="52" fill="none" stroke="#e2e8f0" stroke-width="10" />
-                <circle cx="60" cy="60" r="52" fill="none"
-                  :stroke="ringColor(detailNode.mem_usage)" stroke-width="10"
-                  stroke-linecap="round"
-                  :stroke-dasharray="ringDash(detailNode.mem_usage)"
-                  transform="rotate(-90 60 60)" />
-              </svg>
-              <div class="ring-label">
-                <span class="ring-value">{{ Math.round(detailNode.mem_usage ?? 0) }}%</span>
-                <span class="ring-title">内存</span>
-              </div>
+            <div class="node-detail-metric">
+              <el-progress
+                type="dashboard"
+                :percentage="metricPercent(detailNode.mem_usage)"
+                :color="progressColor(detailNode.mem_usage)"
+                :width="118"
+              />
+              <div class="node-detail-metric-label">内存</div>
+              <div class="node-detail-metric-meta">{{ formatBytes(detailNode.mem_total) }}</div>
             </div>
-            <div class="ring-card">
-              <svg class="ring-svg" viewBox="0 0 120 120">
-                <circle cx="60" cy="60" r="52" fill="none" stroke="#e2e8f0" stroke-width="10" />
-                <circle cx="60" cy="60" r="52" fill="none"
-                  :stroke="ringColor(detailNode.disk_usage)" stroke-width="10"
-                  stroke-linecap="round"
-                  :stroke-dasharray="ringDash(detailNode.disk_usage)"
-                  transform="rotate(-90 60 60)" />
-              </svg>
-              <div class="ring-label">
-                <span class="ring-value">{{ Math.round(detailNode.disk_usage ?? 0) }}%</span>
-                <span class="ring-title">磁盘</span>
-              </div>
+            <div class="node-detail-metric">
+              <el-progress
+                type="dashboard"
+                :percentage="metricPercent(detailNode.disk_usage)"
+                :color="progressColor(detailNode.disk_usage)"
+                :width="118"
+              />
+              <div class="node-detail-metric-label">磁盘</div>
+              <div class="node-detail-metric-meta">{{ formatBytes(detailNode.disk_total) }}</div>
             </div>
           </div>
-          <div class="ring-meta">
-            <span>CPU {{ detailNode.cpu_count ?? '-' }} 核</span>
-            <span>内存 {{ formatBytes(detailNode.mem_total) }}</span>
-            <span>磁盘 {{ formatBytes(detailNode.disk_total) }}</span>
-          </div>
-        </div>
+        </el-card>
 
-        <div class="detail-section">
-          <div class="detail-section-title">基础信息</div>
-          <div class="detail-grid">
-            <div class="detail-item"><span class="detail-label">节点 ID</span><span class="detail-value mono">{{ detailNode.id }}</span></div>
-            <div class="detail-item"><span class="detail-label">主机名</span><span class="detail-value">{{ detailNode.hostname || '-' }}</span></div>
-            <div class="detail-item"><span class="detail-label">公网 IP</span><span class="detail-value mono">{{ detailNode.public_ip || '-' }}</span></div>
-            <div class="detail-item"><span class="detail-label">状态</span><span class="detail-value"><t-tag :theme="statusTagInfo(detailNode).theme as any" variant="light" size="small">{{ statusTagInfo(detailNode).label }}</t-tag></span></div>
-            <div class="detail-item"><span class="detail-label">节点版本</span><span class="detail-value mono">{{ detailNode.version || '-' }}</span></div>
-            <div class="detail-item"><span class="detail-label">配置版本</span><span class="detail-value mono">{{ detailNode.config_version || '-' }}</span></div>
-            <div class="detail-item"><span class="detail-label">Capabilities</span><span class="detail-value mono">{{ (detailNode.capabilities || []).join(', ') || '-' }}</span></div>
-            <div class="detail-item"><span class="detail-label">最近心跳</span><span class="detail-value">{{ formatTime(detailNode.last_heartbeat) }}</span></div>
-            <div class="detail-item"><span class="detail-label">通信状态</span><span class="detail-value"><t-tag :theme="detailNode.comm_ok ? 'success' : 'danger'" variant="light" size="small">{{ detailNode.comm_ok ? '正常' : '异常' }}</t-tag></span></div>
-            <div class="detail-item"><span class="detail-label">上报状态</span><span class="detail-value"><t-tag :theme="detailNode.report_ok ? 'success' : 'danger'" variant="light" size="small">{{ detailNode.report_ok ? '正常' : '异常' }}</t-tag></span></div>
-            <div class="detail-item"><span class="detail-label">创建时间</span><span class="detail-value">{{ formatTime(detailNode.created_at) }}</span></div>
-            <div class="detail-item"><span class="detail-label">更新时间</span><span class="detail-value">{{ formatTime(detailNode.updated_at) }}</span></div>
-          </div>
-        </div>
+        <el-card shadow="never" class="node-detail-card">
+          <template #header>
+            <span class="node-detail-card-title">基础信息</span>
+          </template>
+          <el-descriptions :column="2" border size="small" class="node-detail-desc">
+            <el-descriptions-item label="节点 ID">
+              <span class="mono">{{ detailNode.id }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="主机名">{{ detailNode.hostname || "-" }}</el-descriptions-item>
+            <el-descriptions-item label="公网 IP">
+              <span class="mono">{{ detailNode.public_ip || "-" }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="状态">
+              <el-tag :type="epTagType(statusTagInfo(detailNode).theme)" effect="light" size="small">
+                {{ statusTagInfo(detailNode).label }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="节点版本">
+              <span class="mono">{{ detailNode.version || "-" }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="配置版本">
+              <span class="mono">{{ detailNode.config_version || "-" }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="Capabilities" :span="2">
+              <span class="mono">{{ (detailNode.capabilities || []).join(", ") || "-" }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="最近心跳">{{ formatTime(detailNode.last_heartbeat) }}</el-descriptions-item>
+            <el-descriptions-item label="通信状态">
+              <el-tag :type="detailNode.comm_ok ? 'success' : 'danger'" effect="light" size="small">
+                {{ detailNode.comm_ok ? "正常" : "异常" }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="上报状态">
+              <el-tag :type="detailNode.report_ok ? 'success' : 'danger'" effect="light" size="small">
+                {{ detailNode.report_ok ? "正常" : "异常" }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="创建时间">{{ formatTime(detailNode.created_at) }}</el-descriptions-item>
+            <el-descriptions-item label="更新时间">{{ formatTime(detailNode.updated_at) }}</el-descriptions-item>
+          </el-descriptions>
+        </el-card>
 
-        <div class="detail-section">
-          <div class="detail-section-title">流量与连接</div>
-          <div class="detail-grid">
-            <div class="detail-item"><span class="detail-label">上行带宽</span><span class="detail-value mono">{{ formatBitsPerSec(detailNode.bandwidth_up_bps) }}</span></div>
-            <div class="detail-item"><span class="detail-label">下行带宽</span><span class="detail-value mono">{{ formatBitsPerSec(detailNode.bandwidth_down_bps) }}</span></div>
-            <div class="detail-item"><span class="detail-label">累计发送</span><span class="detail-value mono">{{ formatBytes(detailNode.bytes_sent) }}</span></div>
-            <div class="detail-item"><span class="detail-label">累计接收</span><span class="detail-value mono">{{ formatBytes(detailNode.bytes_received) }}</span></div>
-            <div class="detail-item"><span class="detail-label">本月发送</span><span class="detail-value mono">{{ formatBytes(detailNode.month_bytes_sent) }}</span></div>
-            <div class="detail-item"><span class="detail-label">TCP ESTABLISHED</span><span class="detail-value mono">{{ detailNode.tcp_established ?? '-' }}</span></div>
-            <div class="detail-item"><span class="detail-label">TCP SYN_RECV</span><span class="detail-value mono">{{ detailNode.tcp_syn_recv ?? '-' }}</span></div>
-            <div class="detail-item"><span class="detail-label">TCP TIME_WAIT</span><span class="detail-value mono">{{ detailNode.tcp_time_wait ?? '-' }}</span></div>
-          </div>
-        </div>
+        <el-card shadow="never" class="node-detail-card">
+          <template #header>
+            <span class="node-detail-card-title">流量与连接</span>
+          </template>
+          <el-descriptions :column="2" border size="small" class="node-detail-desc">
+            <el-descriptions-item label="上行带宽">
+              <span class="mono">↑ {{ formatBitsPerSec(detailNode.bandwidth_up_bps) }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="下行带宽">
+              <span class="mono">↓ {{ formatBitsPerSec(detailNode.bandwidth_down_bps) }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="累计发送">
+              <span class="mono">{{ formatBytes(detailNode.bytes_sent) }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="累计接收">
+              <span class="mono">{{ formatBytes(detailNode.bytes_received) }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="本月发送">
+              <span class="mono">{{ formatBytes(detailNode.month_bytes_sent) }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="TCP ESTABLISHED">
+              <span class="mono">{{ detailNode.tcp_established ?? "-" }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="TCP SYN_RECV">
+              <span class="mono">{{ detailNode.tcp_syn_recv ?? "-" }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="TCP TIME_WAIT">
+              <span class="mono">{{ detailNode.tcp_time_wait ?? "-" }}</span>
+            </el-descriptions-item>
+          </el-descriptions>
+        </el-card>
 
-        <div class="detail-section">
-          <div class="detail-section-title">监控状态</div>
-          <div class="detail-grid">
-            <div class="detail-item"><span class="detail-label">监控开关</span><span class="detail-value"><t-tag :theme="detailNode.monitor_enabled ? 'success' : 'default'" variant="light" size="small">{{ detailNode.monitor_enabled ? '已开启' : '未开启' }}</t-tag></span></div>
-            <div class="detail-item"><span class="detail-label">协议</span><span class="detail-value">{{ (detailNode.monitor_protocol || 'http').toUpperCase() }}</span></div>
-            <div class="detail-item"><span class="detail-label">超时</span><span class="detail-value">{{ detailNode.monitor_timeout_seconds ?? 5 }}s</span></div>
-            <div class="detail-item"><span class="detail-label">端口</span><span class="detail-value">{{ detailNode.monitor_port ?? 80 }}</span></div>
-            <div class="detail-item"><span class="detail-label">失败阈值</span><span class="detail-value">{{ detailNode.monitor_fail_threshold ?? 3 }}</span></div>
-            <div class="detail-item"><span class="detail-label">连续失败</span><span class="detail-value mono">{{ detailNode.monitor_fail_count ?? 0 }}</span></div>
-            <div class="detail-item"><span class="detail-label">最近探测</span><span class="detail-value">{{ formatTime(detailNode.monitor_last_at) }}</span></div>
-            <div class="detail-item"><span class="detail-label">最近结果</span><span class="detail-value"><t-tag v-if="detailNode.monitor_enabled" :theme="detailNode.monitor_last_ok ? 'success' : 'danger'" variant="light" size="small">{{ detailNode.monitor_last_ok ? '正常' : '异常' }}</t-tag><span v-else>-</span></span></div>
-            <div class="detail-item"><span class="detail-label">延迟</span><span class="detail-value mono">{{ detailNode.monitor_last_latency_ms != null ? detailNode.monitor_last_latency_ms + 'ms' : '-' }}</span></div>
-            <div v-if="detailNode.monitor_last_error" class="detail-item detail-item-full"><span class="detail-label">错误信息</span><span class="detail-value detail-error">{{ detailNode.monitor_last_error }}</span></div>
-          </div>
-        </div>
+        <el-card shadow="never" class="node-detail-card">
+          <template #header>
+            <div class="node-detail-card-head">
+              <span class="node-detail-card-title">监控状态</span>
+              <el-button size="small" link type="primary" @click="openMonitorDialog(detailNode)">编辑配置</el-button>
+            </div>
+          </template>
+          <el-descriptions :column="2" border size="small" class="node-detail-desc">
+            <el-descriptions-item label="监控开关">
+              <el-tag :type="detailNode.monitor_enabled ? 'success' : 'info'" effect="light" size="small">
+                {{ detailNode.monitor_enabled ? "已开启" : "未开启" }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="协议">{{ (detailNode.monitor_protocol || "http").toUpperCase() }}</el-descriptions-item>
+            <el-descriptions-item label="超时">{{ detailNode.monitor_timeout_seconds ?? 5 }}s</el-descriptions-item>
+            <el-descriptions-item label="端口">{{ detailNode.monitor_port ?? 80 }}</el-descriptions-item>
+            <el-descriptions-item label="失败阈值">{{ detailNode.monitor_fail_threshold ?? 3 }}</el-descriptions-item>
+            <el-descriptions-item label="连续失败">
+              <span class="mono">{{ detailNode.monitor_fail_count ?? 0 }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="最近探测">{{ formatTime(detailNode.monitor_last_at) }}</el-descriptions-item>
+            <el-descriptions-item label="最近结果">
+              <el-tag
+                v-if="detailNode.monitor_enabled"
+                :type="detailNode.monitor_last_ok ? 'success' : 'danger'"
+                effect="light"
+                size="small"
+              >
+                {{ detailNode.monitor_last_ok ? "正常" : "异常" }}
+              </el-tag>
+              <span v-else>-</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="延迟">
+              <span class="mono">
+                {{ detailNode.monitor_last_latency_ms != null ? `${detailNode.monitor_last_latency_ms}ms` : "-" }}
+              </span>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="detailNode.monitor_last_error" label="错误信息" :span="2">
+              <span class="detail-error">{{ detailNode.monitor_last_error }}</span>
+            </el-descriptions-item>
+          </el-descriptions>
+        </el-card>
       </div>
-    </t-drawer>
+
+      <template v-if="detailNode" #footer>
+        <div class="node-detail-footer">
+          <el-button @click="detailDrawerVisible = false">关闭</el-button>
+          <div class="node-detail-footer-actions">
+            <el-button plain @click="openMonitorDialog(detailNode)">监控配置</el-button>
+            <el-button v-if="detailNeedsUpgrade" type="warning" plain @click="openUpgradeDialog([detailNode.id])">
+              升级节点
+            </el-button>
+            <el-button plain @click="handleToggleDisableConfirm(detailNode)">
+              {{ detailIsDisabled ? "启用节点" : "禁用节点" }}
+            </el-button>
+            <el-button plain @click="handleResetTokenConfirm(detailNode)">重置令牌</el-button>
+            <el-button type="danger" plain @click="handleDeleteNodeConfirm(detailNode)">删除节点</el-button>
+          </div>
+        </div>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
+import EpSelect from "@/components/ep/EpSelect.vue"
+import EpDataTable from "@/components/ep/EpDataTable.vue"
+import EpDialog from "@/components/ep/EpDialog.vue"
+import EpIcon from "@/components/ep/EpIcon.vue"
 import { computed, h, onMounted, onBeforeUnmount, ref, watch } from "vue"
-import { MessagePlugin, Tag, Button, Dropdown, DropdownMenu, DropdownItem, DialogPlugin } from "tdesign-vue-next"
-import { api, type Node, type NodeInstallSSHResult, type UpgradeNode } from "@/lib/api"
+import { epTagType } from "@/lib/ep-tag"
+import { MessagePlugin } from "@/lib/ep-message"
+import { DialogPlugin } from "@/lib/ep-dialog"
+import { ElTag, ElButton, ElDropdown, ElDropdownMenu, ElDropdownItem } from "element-plus"
+import { api, type LocalBundleRecord, type Node, type NodeInstallSSHResult, type UpgradeNode } from "@/lib/api"
 import { copyText } from "@/lib/clipboard"
 import { useNodeListSSE } from "@/composables/useNodeListSSE"
+import ErrorState from "@/components/common/ErrorState.vue"
+import LoadingState from "@/components/common/LoadingState.vue"
 
 const tab = ref<"list">("list")
 const loading = ref(false)
+const listError = ref("")
 const nodes = ref<Node[]>([])
 const page = ref(1)
 const pageSize = ref(20)
@@ -443,6 +559,20 @@ const statusFilter = ref<"all" | "disabled" | "online" | "offline" | "stopped" |
 
 const detailDrawerVisible = ref(false)
 const detailNode = ref<Node | null>(null)
+
+const detailUpgradeInfo = computed(() => {
+  if (!detailNode.value) return null
+  return upgradeNodeMap.value[detailNode.value.id] || null
+})
+
+const detailNeedsUpgrade = computed(() => detailUpgradeInfo.value?.status === "upgrade_needed")
+
+const detailUpgradeTarget = computed(() => detailUpgradeInfo.value?.target_version || "")
+
+const detailIsDisabled = computed(() => {
+  if (!detailNode.value) return false
+  return (detailNode.value.status || "").trim().toLowerCase() === "disabled"
+})
 
 const openDetail = (node: Node) => {
   detailNode.value = node
@@ -465,7 +595,6 @@ const monitorForm = ref({
 const installDialogOpen = ref(false)
 const installLoading = ref(false)
 const installMode = ref<"manual" | "ssh">("manual")
-const FIXED_PORTAL_BASE = "https://auh.lingcdn.cloud"
 const installParams = ref({
   masterHost: "",
   ttlMinutes: 60,
@@ -475,7 +604,13 @@ const installParams = ref({
   sshPassword: "",
 })
 const installCommand = ref("")
+const installCommandStyle = ref("")
 const sshInstallResult = ref<NodeInstallSSHResult | null>(null)
+const offlineLocalBundles = ref(false)
+const localBundles = ref<LocalBundleRecord[]>([])
+const bundleLoading = ref(false)
+const bundleUploading = ref(false)
+const bundleFileInput = ref<HTMLInputElement | null>(null)
 
 const monitorPortText = computed<string>({
   get: () => (monitorForm.value.port == null ? "" : String(monitorForm.value.port)),
@@ -511,9 +646,15 @@ const upgradeTargetVersion = ref("latest")
 const upgradeForceValue = ref("no")
 
 const selectedRowKeys = ref<string[]>([])
-const handleSelectionChange = (value: string[], _context: any) => {
-  selectedRowKeys.value = value
+const handleSelectionChange = (value: Array<string | number>) => {
+  selectedRowKeys.value = value.map(String)
 }
+const selectedDisabledNodeIDs = computed(() => {
+  const selected = new Set(selectedRowKeys.value)
+  return nodes.value
+    .filter((node) => selected.has(node.id) && (node.status || "").trim().toLowerCase() === "disabled")
+    .map((node) => node.id)
+})
 
 const statusOptions = [
   { label: "全部状态", value: "all" },
@@ -538,14 +679,14 @@ const statusOptions = [
 const statusTagInfo = (node?: Pick<Node, "status" | "comm_ok" | "report_ok"> | null) => {
   const s = (node?.status || "").trim().toLowerCase()
   if (s === "disabled") return { theme: "danger", label: "已禁用" }
-  if (s === "pending") return { theme: "default", label: "待激活" }
+  if (s === "pending") return { theme: "info", label: "待激活" }
   if (node?.comm_ok === false) return { theme: "danger", label: "通信异常" }
   if (node?.report_ok === false) return { theme: "warning", label: "上报异常" }
-  if (!s) return { theme: "default", label: "未知" }
+  if (!s) return { theme: "info", label: "未知" }
   if (s === "online" || s === "running") return { theme: "success", label: "在线" }
   if (s === "offline") return { theme: "warning", label: "离线" }
   if (s === "stopped") return { theme: "warning", label: "已停止" }
-  return { theme: "default", label: node?.status || "未知" }
+  return { theme: "info", label: node?.status || "未知" }
 }
 
 const formatPercent = (v?: number) => {
@@ -586,20 +727,29 @@ const formatBitsPerSec = (bytesPerSec?: number) => {
   return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`
 }
 
-const RING_CIRCUMFERENCE = 2 * Math.PI * 52 // ~326.73
+const metricPercent = (value?: number) => Math.max(0, Math.min(100, Math.round(value ?? 0)))
 
-const ringColor = (value?: number) => {
+const progressColor = (value?: number) => {
   const v = value ?? 0
-  if (v >= 90) return "#ef4444"
-  if (v >= 70) return "#ff7d00"
-  return "#00b42a"
+  if (v >= 90) return "var(--el-color-danger)"
+  if (v >= 70) return "#E6A23C"
+  return "var(--el-color-success)"
 }
 
-const ringDash = (value?: number) => {
-  const v = Math.max(0, Math.min(100, value ?? 0))
-  const filled = (v / 100) * RING_CIRCUMFERENCE
-  const gap = RING_CIRCUMFERENCE - filled
-  return `${filled} ${gap}`
+const skippedReasonLabel = (reason?: string) => {
+  const text = String(reason || "").trim()
+  if (!text) return "未知原因"
+  if (text === "node disabled") return "节点已禁用"
+  if (text === "communication timeout") return "通信超时"
+  if (text === "never connected") return "从未连接"
+  if (text === "node not found") return "节点不存在"
+  return text
+}
+
+const formatSkippedNodes = (skipped?: { id: string; hostname?: string; reason?: string }[]) => {
+  return (skipped || [])
+    .map((s) => `${s.hostname || s.id}（${skippedReasonLabel(s.reason)}）`)
+    .join("、")
 }
 
 const formatTime = (v?: string) => {
@@ -614,35 +764,43 @@ const openUpgradeDialog = (nodeIDs?: string[]) => {
   upgradeTargetVersion.value = "latest"
   upgradeForceValue.value = "no"
   upgradeDialogOpen.value = true
+  loadUpgradeInfo()
 }
 
-const loadList = async (opts?: { page?: number; pageSize?: number }) => {
+const loadUpgradeInfo = async () => {
   try {
-    loading.value = true
-    const nextPage = opts?.page ?? page.value
-    const nextPageSize = opts?.pageSize ?? pageSize.value
-    const q = search.value.trim()
-    const status = statusFilter.value === "all" || statusFilter.value === "unknown" ? "" : statusFilter.value
-    const [res, upgrade] = await Promise.all([
-      api.listNodesOverview({
-        page: nextPage,
-        pageSize: nextPageSize,
-        q: q || undefined,
-        status: status || undefined,
-      }),
-      api.getUpgradeInfo(),
-    ])
-    nodes.value = res.nodes || []
-    page.value = res.page || nextPage
-    pageSize.value = res.page_size || nextPageSize
-    total.value = res.total || 0
+    const upgrade = await api.getUpgradeInfo()
     const m: Record<string, UpgradeNode> = {}
     for (const n of upgrade?.nodes || []) {
       if (n?.id) m[n.id] = n
     }
     upgradeNodeMap.value = m
-  } catch (err: any) {
-    MessagePlugin.error(err.message || "加载节点列表失败")
+  } catch {
+    // 升级徽章非关键路径，静默忽略
+  }
+}
+
+const loadList = async (opts?: { page?: number; pageSize?: number }) => {
+  try {
+    loading.value = true
+    listError.value = ""
+    const nextPage = opts?.page ?? page.value
+    const nextPageSize = opts?.pageSize ?? pageSize.value
+    const q = search.value.trim()
+    const status = statusFilter.value === "all" || statusFilter.value === "unknown" ? "" : statusFilter.value
+    const res = await api.listNodesOverview({
+      page: nextPage,
+      pageSize: nextPageSize,
+      q: q || undefined,
+      status: status || undefined,
+    })
+    nodes.value = res.nodes || []
+    page.value = res.page || nextPage
+    pageSize.value = res.page_size || nextPageSize
+    total.value = res.total || 0
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "加载节点列表失败"
+    listError.value = msg
   } finally {
     loading.value = false
   }
@@ -661,7 +819,7 @@ const submitUpgrade = async () => {
       // Backend rejected — e.g. all nodes have communication issues
       const skipped = (res as any).skipped as { id: string; hostname?: string; reason: string }[] | undefined
       if (skipped && skipped.length > 0) {
-        const names = skipped.map((s: any) => s.hostname || s.id).join(", ")
+        const names = formatSkippedNodes(skipped)
         MessagePlugin.warning(`以下节点跳过升级：${names}`)
       } else {
         MessagePlugin.warning(res.message || "升级请求被拒绝")
@@ -670,7 +828,7 @@ const submitUpgrade = async () => {
       const id = String(res.task_id || "").trim()
       const skipped = (res as any).skipped as { id: string; hostname?: string; reason: string }[] | undefined
       if (skipped && skipped.length > 0) {
-        const names = skipped.map((s: any) => s.hostname || s.id).join(", ")
+        const names = formatSkippedNodes(skipped)
         MessagePlugin.warning(`以下节点跳过升级：${names}`)
       }
       MessagePlugin.success(id ? `已提交升级任务：${id.slice(0, 8)}` : res.message || "已提交升级任务")
@@ -796,6 +954,36 @@ const handleDeleteNodeConfirm = (node: Node) => {
 }
 
 // ========== 批量操作 ==========
+const handleBatchEnable = () => {
+  const ids = selectedDisabledNodeIDs.value
+  if (!selectedRowKeys.value.length) return
+  if (!ids.length) {
+    MessagePlugin.warning("所选节点中没有已禁用节点")
+    return
+  }
+  const skipped = selectedRowKeys.value.length - ids.length
+  const dlg = DialogPlugin.confirm({
+    header: "批量启用节点",
+    body: skipped > 0
+      ? `确认启用所选 ${ids.length} 个已禁用节点？另外 ${skipped} 个非禁用节点将跳过。`
+      : `确认启用所选 ${ids.length} 个节点？启用后将恢复接收流量。`,
+    confirmBtn: { content: "批量启用", theme: "primary" },
+    cancelBtn: "取消",
+    onConfirm: async () => {
+      dlg.destroy()
+      try {
+        await Promise.all(ids.map((id) => api.updateNode(id, { status: "online" })))
+        MessagePlugin.success(`已启用 ${ids.length} 个节点`)
+        selectedRowKeys.value = []
+        await loadList()
+      } catch (err: any) {
+        MessagePlugin.error(err.message || "批量启用失败")
+      }
+    },
+    onClose: () => { dlg.destroy() },
+  })
+}
+
 const handleBatchDisable = () => {
   const ids = selectedRowKeys.value
   if (!ids.length) return
@@ -854,10 +1042,71 @@ const handleMobileDropdown = (data: any, node: Node) => {
 const handleOpenInstallDialog = () => {
   installMode.value = "manual"
   installCommand.value = ""
+  installCommandStyle.value = ""
   sshInstallResult.value = null
   installParams.value.sshPassword = ""
   installDialogOpen.value = true
+  void loadOfflineBundleContext()
   handleFetchInstallCommand()
+}
+
+const loadOfflineBundleContext = async () => {
+  try {
+    const lic = await api.getSystemLicenseStatus()
+    offlineLocalBundles.value = String(lic.mode || "").toLowerCase() === "offline"
+    if (offlineLocalBundles.value) {
+      await loadLocalBundles()
+    } else {
+      localBundles.value = []
+    }
+  } catch {
+    offlineLocalBundles.value = false
+    localBundles.value = []
+  }
+}
+
+const loadLocalBundles = async () => {
+  if (!offlineLocalBundles.value) return
+  try {
+    bundleLoading.value = true
+    const res = await api.getLocalBundles()
+    localBundles.value = res.bundles || []
+  } catch (err: any) {
+    MessagePlugin.error(err.message || "加载节点包列表失败")
+  } finally {
+    bundleLoading.value = false
+  }
+}
+
+const triggerBundleUpload = () => {
+  bundleFileInput.value?.click()
+}
+
+const handleBundleFileChange = async (ev: Event) => {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ""
+  if (!file) return
+  try {
+    bundleUploading.value = true
+    await api.uploadLocalBundle(file)
+    MessagePlugin.success("节点包上传成功")
+    await loadLocalBundles()
+  } catch (err: any) {
+    MessagePlugin.error(err.message || "上传失败")
+  } finally {
+    bundleUploading.value = false
+  }
+}
+
+const handleDeleteBundle = async (filename: string) => {
+  try {
+    await api.deleteLocalBundle(filename)
+    MessagePlugin.success("已删除")
+    await loadLocalBundles()
+  } catch (err: any) {
+    MessagePlugin.error(err.message || "删除失败")
+  }
 }
 
 const handleFetchInstallCommand = async () => {
@@ -865,11 +1114,11 @@ const handleFetchInstallCommand = async () => {
   try {
     installLoading.value = true
     const res = await api.getNodeInstallCommand({
-      portalBase: FIXED_PORTAL_BASE,
       masterHost: installParams.value.masterHost.trim() || undefined,
       ttlMinutes: Number(installParams.value.ttlMinutes) > 0 ? Number(installParams.value.ttlMinutes) : undefined,
     })
     installCommand.value = res.command || ""
+    installCommandStyle.value = res.style || ""
     if (!res.command) {
       MessagePlugin.warning("未生成安装命令，请检查 master_host 配置")
     }
@@ -902,7 +1151,6 @@ const handleInstallViaSSH = async () => {
       ssh_password: sshPassword,
       master_host: installParams.value.masterHost.trim() || undefined,
       ttl_minutes: Number(installParams.value.ttlMinutes) > 0 ? Number(installParams.value.ttlMinutes) : undefined,
-      portal_base: FIXED_PORTAL_BASE,
     })
     if (sshInstallResult.value.ok) {
       MessagePlugin.success(
@@ -953,7 +1201,7 @@ const listColumns = computed(() => [
     cell: (_h: any, { row }: { row: Node }) =>
       h("div", { style: "display:flex;flex-direction:column" }, [
         h("span", { style: "font-weight:600" }, row.hostname || row.id),
-        h("span", { style: "font-size:12px;color:#94a3b8" }, row.public_ip || "-"),
+        h("span", { style: "font-size:12px;color:var(--app-text-faint)" }, row.public_ip || "-"),
       ]),
   },
   {
@@ -962,7 +1210,7 @@ const listColumns = computed(() => [
     width: 110,
     cell: (_h: any, { row }: { row: Node }) => {
       const info = statusTagInfo(row)
-      return h(Tag, { theme: info.theme as any, variant: "light" }, () => info.label)
+      return h(ElTag, { type: epTagType(info.theme), effect: "light" }, () => info.label)
     },
   },
   {
@@ -977,7 +1225,7 @@ const listColumns = computed(() => [
       return h("div", { style: "display:flex;flex-direction:column;gap:2px" }, [
         h("span", { class: "mono" }, ver),
         h("div", { style: "display:flex;align-items:center;gap:4px" }, [
-          h(Tag, { theme: "warning", variant: "light", size: "small" }, () => `可升级到 ${upgrade.target_version}`),
+          h(ElTag, { type: "warning", effect: "light", size: "small" }, () => `可升级到 ${upgrade.target_version}`),
         ]),
       ])
     },
@@ -995,30 +1243,28 @@ const listColumns = computed(() => [
       const failCount = Number(row.monitor_fail_count || 0)
       const ok = enabled && failCount < threshold
       const label = !enabled ? "未启用" : ok ? "正常" : "异常"
-      const theme = !enabled ? "default" : ok ? "success" : "danger"
+      const theme = !enabled ? "info" : ok ? "success" : "danger"
       const protoLabel = proto === "ping" ? "ping" : `${proto}:${port || "-"}`
       const errMsg = String(row.monitor_last_error || "")
       const shortErr = errMsg.length > 60 ? `${errMsg.slice(0, 60)}...` : errMsg
       return h("div", { style: "display:flex;flex-direction:column;gap:4px" }, [
         h("div", { style: "display:flex;align-items:center;gap:8px" }, [
-          h(Tag, { theme, variant: "light" }, () => label),
-          h(
-            Button,
-            { size: "small", variant: "text", onClick: () => openMonitorDialog(row) },
+          h(ElTag, { type: epTagType(theme), effect: "light" }, () => label),
+          h(ElButton, { size: "small", link: true, onClick: () => openMonitorDialog(row) },
             () => "配置"
           ),
         ]),
-        h("span", { style: "font-size:12px;color:#94a3b8" }, `${protoLabel} · 超时 ${timeout}s · 阈值 ${threshold}`),
+        h("span", { style: "font-size:12px;color:var(--app-text-faint)" }, `${protoLabel} · 超时 ${timeout}s · 阈值 ${threshold}`),
         enabled && row.monitor_last_at
           ? h(
               "span",
-              { style: "font-size:12px;color:#94a3b8" },
+              { style: "font-size:12px;color:var(--app-text-faint)" },
               `${row.monitor_last_ok ? "✓" : "✗"} ${formatTime(row.monitor_last_at)} · ${Number(
                 row.monitor_last_latency_ms || 0
               )}ms`
             )
           : null,
-        enabled && shortErr ? h("span", { style: "font-size:12px;color:#ef4444" }, shortErr) : null,
+        enabled && shortErr ? h("span", { style: "font-size:12px;color:var(--app-danger)" }, shortErr) : null,
       ])
     },
   },
@@ -1068,7 +1314,7 @@ const listColumns = computed(() => [
       const isLatest = upgrade ? upgrade.current_version === upgrade.target_version : true
       const togglingToDisabled = (row.status || "").trim().toLowerCase() !== "disabled"
       const dropdownItems = [
-        { content: togglingToDisabled ? "禁用节点" : "启用节点", value: "toggle", theme: togglingToDisabled ? "error" : "default" },
+        { content: togglingToDisabled ? "禁用节点" : "启用节点", value: "toggle", theme: togglingToDisabled ? "error" : "info" },
         { content: "重置令牌", value: "reset-token" },
         { content: "监控配置", value: "monitor" },
         { divider: true },
@@ -1082,37 +1328,33 @@ const listColumns = computed(() => [
         else if (val === "delete") handleDeleteNodeConfirm(row)
       }
       return h("div", { style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center" }, [
-        h(
-          Button,
-          { size: "small", variant: "text", theme: "primary", onClick: () => openDetail(row) },
+        h(ElButton, { size: "small", link: true, type: "primary", onClick: () => openDetail(row) },
           () => "详情"
         ),
         !isLatest
-          ? h(
-              Button,
-              { size: "small", variant: "outline", onClick: () => openUpgradeDialog([row.id]) },
+          ? h(ElButton, { size: "small", plain: true, onClick: () => openUpgradeDialog([row.id]) },
               () => "升级"
             )
           : null,
-        h(
-          Dropdown,
-          { trigger: "click", onClick: handleDropdownClick },
-          {
-            default: () => h(Button, { size: "small", variant: "text" }, () => "更多 ▾"),
+        h(ElDropdown, { trigger: "click", onCommand: handleDropdownClick }, {
+            default: () => h(ElButton, { size: "small", link: true }, () => "更多 ▾"),
             dropdown: () =>
-              h(DropdownMenu, {}, () =>
+              h(ElDropdownMenu, {}, () =>
                 dropdownItems.map((item: any) =>
                   item.divider
-                    ? h(DropdownItem, { divider: true })
+                    ? null
                     : h(
-                        DropdownItem,
-                        { value: item.value, class: item.theme === "error" ? "dropdown-danger" : "" },
+                        ElDropdownItem,
+                        {
+                          command: item.value,
+                          divided: item.value === "delete",
+                          class: item.theme === "error" ? "dropdown-danger" : "",
+                        },
                         () => item.content
                       )
                 )
               ),
-          }
-        ),
+          }),
       ])
     },
   },
@@ -1125,6 +1367,9 @@ const listPagination = computed(() => ({
   showJumper: true,
   showPageSize: true,
   pageSizeOptions: [10, 20, 50, 100],
+  onChange: (pi: { current: number; pageSize: number }) => {
+    handleListPageChange(pi)
+  },
 }))
 
 const handleListPageChange = (pagination: { current: number; pageSize: number }) => {
@@ -1152,8 +1397,10 @@ watch(installMode, () => {
 
 onMounted(() => {
   if (tab.value === "list") loadList({ page: 1 })
+  loadUpgradeInfo()
   sseConnect()
   startAutoRefresh()
+  startUpgradeInfoRefresh()
 })
 
 /* ---- SSE 实时指标合并 ---- */
@@ -1197,22 +1444,14 @@ const silentRefreshList = async () => {
   try {
     const q = search.value.trim()
     const status = statusFilter.value === "all" || statusFilter.value === "unknown" ? "" : statusFilter.value
-    const [res, upgrade] = await Promise.all([
-      api.listNodesOverview({
-        page: page.value,
-        pageSize: pageSize.value,
-        q: q || undefined,
-        status: status || undefined,
-      }),
-      api.getUpgradeInfo(),
-    ])
+    const res = await api.listNodesOverview({
+      page: page.value,
+      pageSize: pageSize.value,
+      q: q || undefined,
+      status: status || undefined,
+    })
     nodes.value = res.nodes || []
     total.value = res.total || 0
-    const m: Record<string, UpgradeNode> = {}
-    for (const n of upgrade?.nodes || []) {
-      if (n?.id) m[n.id] = n
-    }
-    upgradeNodeMap.value = m
     // 同步详情抽屉的快照
     if (detailDrawerVisible.value && detailNode.value) {
       const updated = (res.nodes || []).find((n: any) => n.id === detailNode.value!.id)
@@ -1243,353 +1482,172 @@ watch(sseConnected, () => {
   startAutoRefresh()
 })
 
+const UPGRADE_INFO_INTERVAL = 5 * 60_000
+let upgradeInfoTimer: ReturnType<typeof setInterval> | null = null
+
+const startUpgradeInfoRefresh = () => {
+  stopUpgradeInfoRefresh()
+  upgradeInfoTimer = setInterval(() => {
+    if (tab.value === "list") loadUpgradeInfo()
+  }, UPGRADE_INFO_INTERVAL)
+}
+
+const stopUpgradeInfoRefresh = () => {
+  if (upgradeInfoTimer) {
+    clearInterval(upgradeInfoTimer)
+    upgradeInfoTimer = null
+  }
+}
+
 onBeforeUnmount(() => {
   stopAutoRefresh()
+  stopUpgradeInfoRefresh()
   sseDisconnect()
 })
 </script>
 
 <style scoped>
-.toolbar {
+.node-detail-header {
   display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding-right: 8px;
 }
 
-.batch-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 10px 16px;
-  margin-bottom: 12px;
-  background: linear-gradient(135deg, rgba(99, 91, 255, 0.04) 0%, rgba(99, 91, 255, 0.08) 100%);
-  border: 1px solid rgba(99, 91, 255, 0.15);
-  border-radius: 10px;
-}
-
-.batch-bar-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: #3D35BC;
-  margin-right: 4px;
-}
-
-.page {
+.node-detail-header-main {
   min-width: 0;
 }
 
-.section-card {
-  min-width: 0;
-}
-
-.section-card :deep(.t-tabs) {
-  min-width: 0;
-}
-
-.section-card :deep(.t-tabs__content) {
-  min-width: 0;
-}
-
-.section-card :deep(.t-table) {
-  min-width: 100%;
-}
-
-.w-260 {
-  width: 260px;
-}
-
-.w-140 {
-  width: 140px;
-}
-
-.dialog-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.dialog-title {
+.node-detail-title {
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 600;
+  color: var(--app-text-strong);
+  line-height: 1.3;
 }
 
-.dialog-label {
-  font-size: 12px;
-  color: #94a3b8;
-  font-weight: 500;
-  margin-bottom: 6px;
-}
-
-.dialog-tip {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.grid-2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.row-label {
-  width: 90px;
-  font-size: 12px;
-  color: #94a3b8;
-  font-weight: 500;
-}
-
-.copy-row {
-  margin-top: 10px;
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.token-box {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  padding: 12px 14px;
-  border-radius: 10px;
-  word-break: break-all;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+.node-detail-subtitle {
+  margin-top: 4px;
   font-size: 13px;
-  color: #334155;
+  color: var(--app-text-muted);
 }
 
-.ssh-result-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 14px;
-  background: #f8fafc;
+.node-detail-header-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.node-detail-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  transition: border-color 0.2s ease;
+  gap: 16px;
+  padding: 4px 20px 20px;
 }
 
-.ssh-result-card:hover {
-  border-color: #cbd5e1;
+.node-detail-card :deep(.el-card__header) {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--app-border);
 }
 
-.ssh-result-head {
+.node-detail-card :deep(.el-card__body) {
+  padding: 16px;
+}
+
+.node-detail-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+
+.node-detail-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
-.ssh-result-title {
-  font-weight: 600;
-}
-
-.ssh-result-meta,
-.ssh-node-meta {
+.node-detail-metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.node-detail-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px 4px;
+  border-radius: var(--app-card-radius-sm);
+  background: var(--app-surface-muted);
+}
+
+.node-detail-metric-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+
+.node-detail-metric-meta {
   font-size: 12px;
-  color: #475569;
+  color: var(--app-text-faint);
+  text-align: center;
 }
 
-.ssh-log-box {
-  margin: 0;
-  min-height: 180px;
-  max-height: 320px;
-  overflow: auto;
-  padding: 12px;
-  border-radius: 8px;
-  background: #0f172a;
-  color: #e5e7eb;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+.node-detail-desc :deep(.el-descriptions__label) {
+  width: 112px;
+  color: var(--app-text-muted);
+  font-weight: 500;
 }
 
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+.node-detail-desc :deep(.el-descriptions__content) {
+  color: var(--app-text-strong);
 }
 
-.mono.muted {
-  color: #94a3b8;
+.node-detail-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.node-detail-footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 @media (max-width: 768px) {
-  .toolbar > * {
-    width: 100% !important;
-    min-width: 0 !important;
-  }
-
-  .toolbar :deep(.t-button) {
-    min-height: 44px;
-  }
-
-  .grid-2 {
-    grid-template-columns: 1fr;
-  }
-
-  .ssh-result-meta,
-  .ssh-node-meta {
-    grid-template-columns: 1fr;
-  }
-
-  .row {
+  .node-detail-header {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .row-label {
-    width: auto;
+  .node-detail-body {
+    padding: 4px 16px 16px;
   }
-}
 
-/* 详情抽屉 */
-.detail-body {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.detail-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.detail-section-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: #0f172a;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.detail-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px 16px;
-}
-
-.detail-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.detail-item-full {
-  grid-column: 1 / -1;
-}
-
-.detail-label {
-  font-size: 12px;
-  color: #94a3b8;
-  font-weight: 500;
-}
-
-.detail-value {
-  font-size: 13px;
-  color: #0f172a;
-  font-weight: 500;
-  word-break: break-all;
-}
-
-.detail-error {
-  color: #ef4444;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-/* 资源使用环 */
-.ring-row {
-  display: flex;
-  gap: 24px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.ring-card {
-  position: relative;
-  width: 120px;
-  height: 120px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.ring-svg {
-  width: 120px;
-  height: 120px;
-}
-
-.ring-label {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.ring-value {
-  font-size: 22px;
-  font-weight: 700;
-  color: #0f172a;
-  line-height: 1.2;
-}
-
-.ring-title {
-  font-size: 12px;
-  color: #94a3b8;
-  margin-top: 2px;
-}
-
-.ring-meta {
-  display: flex;
-  justify-content: center;
-  gap: 20px;
-  font-size: 12px;
-  color: #94a3b8;
-  flex-wrap: wrap;
-  margin-top: 4px;
-}
-
-/* 抽屉头部带返回按钮（移动端） */
-.drawer-header-with-back {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 16px;
-  font-weight: 600;
-  width: 100%;
-}
-
-.drawer-back-btn {
-  display: none;
-}
-
-@media (max-width: 768px) {
-  .drawer-back-btn {
-    display: inline-flex;
+  .node-detail-metrics {
+    grid-template-columns: 1fr;
   }
-}
-</style>
 
-<style>
-/* 全局（非 scoped）：危险下拉项 */
-.dropdown-danger {
-  color: #ef4444 !important;
+  .node-detail-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .node-detail-footer-actions {
+    justify-content: stretch;
+  }
+
+  .node-detail-footer-actions :deep(.el-button) {
+    flex: 1 1 calc(50% - 4px);
+    margin: 0;
+  }
 }
 </style>
